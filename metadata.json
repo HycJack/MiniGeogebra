@@ -1,0 +1,5 @@
+{
+  "name": "Mini GeoGebra",
+  "description": "A planar geometry drawing system based on GeoGebra core architecture.",
+  "requestFramePermissions": []
+}
