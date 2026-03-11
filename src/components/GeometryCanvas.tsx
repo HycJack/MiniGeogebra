@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Kernel } from '../kernel/core/Kernel';
 import { GeoPoint } from '../kernel/geo/GeoPoint';
 import { GeoLine } from '../kernel/geo/GeoLine';
@@ -12,6 +12,7 @@ import { AlgoSegmentTwoPoints } from '../kernel/algo/AlgoSegmentTwoPoints';
 import { AlgoCirclePointRadius } from '../kernel/algo/AlgoCirclePointRadius';
 import { AlgoCircleCenterPoint } from '../kernel/algo/AlgoCircleCenterPoint';
 import { AlgoCircleThreePoints } from '../kernel/algo/AlgoCircleThreePoints';
+import { AlgoCircleCenter } from '../kernel/algo/AlgoCircleCenter';
 import { AlgoIntersect } from '../kernel/algo/AlgoIntersect';
 import { AlgoParallelLine } from '../kernel/algo/AlgoParallelLine';
 import { AlgoOrthogonalLine } from '../kernel/algo/AlgoOrthogonalLine';
@@ -23,14 +24,15 @@ import { GeoElement } from '../kernel/geo/GeoElement';
 import { AlgoPointOnConic } from '../kernel/algo/AlgoPointOnConic';
 import { AlgoPointOnLine } from '../kernel/algo/AlgoPointOnLine';
 import { AlgoPointOnSegment } from '../kernel/algo/AlgoPointOnSegment';
-import { GeoNumeric, AnimationType } from '../kernel/geo/GeoNumeric';
+import { GeoNumeric } from '../kernel/geo/GeoNumeric';
 import { SliderControl } from './SliderControl';
 import { useLanguage } from '../i18n/LanguageContext';
 import { 
   MousePointer2, CircleDot, Minus, TrendingUp, Circle, 
   CircleDashed, Target, X, Crosshair, Equal, Baseline, 
   SplitSquareVertical, Scissors, Hexagon, Undo2, Redo2, 
-  Play, Pause, ZoomIn, ZoomOut, Home, Globe, Menu, ChevronDown 
+  Play, Pause, ZoomIn, ZoomOut, Home, Globe, Menu, ChevronDown,
+  Grid3X3, Axis3D, ChevronUp, Type, Sliders, ToggleLeft, CheckSquare, Plus
 } from 'lucide-react';
 
 interface StateSnapshot {
@@ -41,6 +43,19 @@ interface StateSnapshot {
 type Command = 
   | { type: 'add', elements: ConstructionElement[] }
   | { type: 'move', oldState: StateSnapshot, newState: StateSnapshot };
+
+interface UIElement {
+  id: string;
+  type: 'text' | 'slider' | 'button' | 'checkbox';
+  x: number;
+  y: number;
+  label?: string;
+  value?: any;
+  min?: number;
+  max?: number;
+  step?: number;
+  checked?: boolean;
+}
 
 const captureState = (kernel: Kernel): StateSnapshot => {
   const coords = new Map();
@@ -59,11 +74,26 @@ export const GeometryCanvas: React.FC = () => {
   const { t, language, setLanguage } = useLanguage();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [kernel] = useState(() => new Kernel());
-  const [mode, setMode] = useState<'move' | 'point' | 'line' | 'segment' | 'midpoint' | 'circle' | 'circle_center_point' | 'circle3' | 'intersect' | 'parallel' | 'orthogonal' | 'perpendicular_bisector' | 'angle_bisector' | 'polygon'>('move');
+  const [mode, setMode] = useState<'move' | 'point' | 'line' | 'segment' | 'midpoint' | 'circle' | 'circle_center_point' | 'circle3' | 'intersect' | 'parallel' | 'orthogonal' | 'perpendicular_bisector' | 'angle_bisector' | 'polygon' | 'text' | 'slider' | 'button' | 'checkbox'>('move');
   const [polygonPoints, setPolygonPoints] = useState<GeoPoint[]>([]);
   const [radius, setRadius] = useState<number>(50);
   const [selectedElements, setSelectedElements] = useState<GeoElement[]>([]);
   const [editingLabel, setEditingLabel] = useState<string>('');
+
+  useEffect(() => {
+    // 删除多边形绘制过程中创建的点
+    const pointsToDelete = [...polygonPoints];
+    if (pointsToDelete.length > 0) {
+      pointsToDelete.forEach(point => {
+        kernel.getConstruction().removeElement(point);
+      });
+      kernel.getConstruction().updateAllAlgorithms();
+      setRefresh(r => r + 1);
+    }
+    
+    setSelectedElements([]);
+    setPolygonPoints([]);
+  }, [mode]);
 
   useEffect(() => {
     if (selectedElements.length === 1) {
@@ -97,6 +127,21 @@ export const GeometryCanvas: React.FC = () => {
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
   const [isPanning, setIsPanning] = useState(false);
   const [lastPanPos, setLastPanPos] = useState({ x: 0, y: 0 });
+  const [initialTransformSet, setInitialTransformSet] = useState(false);
+  
+  const [showAxes, setShowAxes] = useState(true);
+  const [showGrid, setShowGrid] = useState(true);
+  const [showCircleMenu, setShowCircleMenu] = useState(false);
+  const circleMenuRef = useRef<HTMLButtonElement>(null);
+  const [circleMenuPosition, setCircleMenuPosition] = useState({ top: 0, left: 0 });
+  
+  const [showInsertMenu, setShowInsertMenu] = useState(false);
+  const insertMenuRef = useRef<HTMLButtonElement>(null);
+  const [insertMenuPosition, setInsertMenuPosition] = useState({ top: 0, left: 0 });
+  
+  const [uiElements, setUIElements] = useState<UIElement[]>([]);
+  const [editingUIElement, setEditingUIElement] = useState<string | null>(null);
+  const [draggingUIElement, setDraggingUIElement] = useState<string | null>(null);
 
   const undoStack = useRef<Command[]>([]);
   const redoStack = useRef<Command[]>([]);
@@ -116,19 +161,129 @@ export const GeometryCanvas: React.FC = () => {
   useEffect(() => {
     const updateSize = () => {
       if (containerRef.current) {
+        const dpr = window.devicePixelRatio || 1;
+        const width = containerRef.current.clientWidth;
+        const height = containerRef.current.clientHeight;
+        
         setCanvasSize({
-          width: containerRef.current.clientWidth,
-          height: containerRef.current.clientHeight
+          width: width * dpr,
+          height: height * dpr
         });
+        
+        const canvas = canvasRef.current;
+        if (canvas) {
+          canvas.style.width = `${width}px`;
+          canvas.style.height = `${height}px`;
+        }
+        
+        if (!initialTransformSet) {
+          setTransform({
+            x: width / 2,
+            y: height / 2,
+            scale: 1
+          });
+          setInitialTransformSet(true);
+        }
+        
         setRefresh(r => r + 1);
       }
     };
 
     window.addEventListener('resize', updateSize);
-    updateSize(); // Initial size
+    updateSize();
 
     return () => window.removeEventListener('resize', updateSize);
-  }, []);
+  }, [initialTransformSet]);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('.circle-menu-container')) {
+        setShowCircleMenu(false);
+      }
+    };
+
+    if (showCircleMenu) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showCircleMenu]);
+
+  useEffect(() => {
+    if (showCircleMenu && circleMenuRef.current) {
+      const rect = circleMenuRef.current.getBoundingClientRect();
+      setCircleMenuPosition({
+        top: rect.bottom + 4,
+        left: rect.left
+      });
+    }
+  }, [showCircleMenu]);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('.insert-menu-container')) {
+        setShowInsertMenu(false);
+      }
+    };
+
+    if (showInsertMenu) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showInsertMenu]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (document.activeElement?.tagName !== 'INPUT') {
+          e.preventDefault();
+          
+          // 删除多边形绘制过程中创建的点
+          if (polygonPoints.length > 0) {
+            polygonPoints.forEach(point => {
+              kernel.getConstruction().removeElement(point);
+            });
+            kernel.getConstruction().updateAllAlgorithms();
+          }
+          
+          setMode('move');
+          setSelectedElements([]);
+          setPolygonPoints([]);
+          setRefresh(r => r + 1);
+        }
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (selectedElements.length > 0 && document.activeElement?.tagName !== 'INPUT') {
+          e.preventDefault();
+          selectedElements.forEach(el => {
+            kernel.getConstruction().removeElement(el);
+          });
+          kernel.getConstruction().updateAllAlgorithms();
+          setSelectedElements([]);
+          setRefresh(r => r + 1);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedElements, kernel, polygonPoints]);
+
+  useEffect(() => {
+    if (showInsertMenu && insertMenuRef.current) {
+      const rect = insertMenuRef.current.getBoundingClientRect();
+      setInsertMenuPosition({
+        top: rect.bottom + 4,
+        left: rect.left
+      });
+    }
+  }, [showInsertMenu]);
 
   useEffect(() => {
     // Initial setup for demo
@@ -204,15 +359,18 @@ export const GeometryCanvas: React.FC = () => {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    const dpr = window.devicePixelRatio || 1;
+
     // Clear canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     ctx.save();
+    ctx.scale(dpr, dpr);
     ctx.translate(transform.x, transform.y);
     ctx.scale(transform.scale, transform.scale);
 
     // Draw grid
-    drawGrid(ctx, canvas.width, canvas.height, transform);
+    drawGrid(ctx, canvas.width / dpr, canvas.height / dpr, transform, showGrid, showAxes);
 
     // Draw elements
     const elements = kernel.getConstruction().getElements();
@@ -227,7 +385,7 @@ export const GeometryCanvas: React.FC = () => {
     // Draw conics (circles)
     elements.forEach(el => {
       if (el instanceof GeoConic) {
-        drawConic(ctx, el, transform.scale);
+        drawConic(ctx, el, selectedElements.includes(el), transform.scale);
       }
     });
 
@@ -236,7 +394,7 @@ export const GeometryCanvas: React.FC = () => {
       if (el instanceof GeoSegment) {
         drawSegment(ctx, el, selectedElements.includes(el), transform.scale);
       } else if (el instanceof GeoLine && !(el instanceof GeoSegment)) {
-        drawLine(ctx, el, canvas.width, canvas.height, selectedElements.includes(el), transform);
+        drawLine(ctx, el, selectedElements.includes(el), transform);
       }
     });
 
@@ -297,6 +455,33 @@ export const GeometryCanvas: React.FC = () => {
         ctx.beginPath();
         ctx.arc(center.getX(), center.getY(), r, 0, 2 * Math.PI);
         ctx.stroke();
+    } else if (mode === 'circle3' && selectedElements.length === 2) {
+        // Preview circle through two points and mouse position
+        const [p1, p2] = selectedElements as GeoPoint[];
+        const p3 = { x: targetX, y: targetY };
+        
+        // Calculate circumcenter from three points
+        const ax = p1.getX(), ay = p1.getY();
+        const bx = p2.getX(), by = p2.getY();
+        const cx = p3.x, cy = p3.y;
+        
+        const d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
+        if (Math.abs(d) > 1e-10) {
+            const ux = ((ax * ax + ay * ay) * (by - cy) + (bx * bx + by * by) * (cy - ay) + (cx * cx + cy * cy) * (ay - by)) / d;
+            const uy = ((ax * ax + ay * ay) * (cx - bx) + (bx * bx + by * by) * (ax - cx) + (cx * cx + cy * cy) * (bx - ax)) / d;
+            const r = Math.hypot(ux - ax, uy - ay);
+            
+            // Draw preview circle
+            ctx.beginPath();
+            ctx.arc(ux, uy, r, 0, 2 * Math.PI);
+            ctx.stroke();
+            
+            // Draw preview center point
+            ctx.beginPath();
+            ctx.arc(ux, uy, 3 / transform.scale, 0, 2 * Math.PI);
+            ctx.fillStyle = 'rgba(100, 100, 100, 0.5)';
+            ctx.fill();
+        }
     } else if ((mode === 'parallel' || mode === 'orthogonal') && selectedElements.length === 1 && selectedElements[0] instanceof GeoLine) {
          // Preview line through mouse
          const l = selectedElements[0] as GeoLine;
@@ -309,9 +494,9 @@ export const GeometryCanvas: React.FC = () => {
          const c = -(a * targetX + b * targetY);
          
          const startX = -transform.x / transform.scale;
-         const endX = (canvas.width - transform.x) / transform.scale;
+         const endX = ((canvas.width / dpr) - transform.x) / transform.scale;
          const startY = -transform.y / transform.scale;
-         const endY = (canvas.height - transform.y) / transform.scale;
+         const endY = ((canvas.height / dpr) - transform.y) / transform.scale;
 
          // Draw this line
          if (Math.abs(b) > 1e-6) {
@@ -328,6 +513,114 @@ export const GeometryCanvas: React.FC = () => {
             ctx.lineTo(x, endY);
             ctx.stroke();
          }
+    } else if (mode === 'perpendicular_bisector' && selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
+        // Preview perpendicular bisector through midpoint
+        const p1 = selectedElements[0] as GeoPoint;
+        const mx = (p1.getX() + targetX) / 2;
+        const my = (p1.getY() + targetY) / 2;
+        
+        // Vector from p1 to target
+        const a = targetX - p1.getX();
+        const b = targetY - p1.getY();
+        
+        // Line through M with normal (a, b)
+        const c = -(a * mx + b * my);
+        
+        const startX = -transform.x / transform.scale;
+        const endX = ((canvas.width / dpr) - transform.x) / transform.scale;
+        const startY = -transform.y / transform.scale;
+        const endY = ((canvas.height / dpr) - transform.y) / transform.scale;
+
+        if (Math.abs(b) > 1e-6) {
+            const y1 = (-c - a * startX) / b;
+            const y2 = (-c - a * endX) / b;
+            ctx.beginPath();
+            ctx.moveTo(startX, y1);
+            ctx.lineTo(endX, y2);
+            ctx.stroke();
+        } else {
+            const x = -c / a;
+            ctx.beginPath();
+            ctx.moveTo(x, startY);
+            ctx.lineTo(x, endY);
+            ctx.stroke();
+        }
+        
+        // Draw midpoint preview
+        ctx.beginPath();
+        ctx.arc(mx, my, 3 / transform.scale, 0, 2 * Math.PI);
+        ctx.fillStyle = 'rgba(100, 100, 100, 0.5)';
+        ctx.fill();
+    } else if (mode === 'angle_bisector' && selectedElements.length >= 1 && selectedElements.length < 3) {
+        if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
+            // Need two more points - just show line from first point to mouse
+            const p1 = selectedElements[0] as GeoPoint;
+            ctx.beginPath();
+            ctx.moveTo(p1.getX(), p1.getY());
+            ctx.lineTo(targetX, targetY);
+            ctx.stroke();
+        } else if (selectedElements.length === 2 && selectedElements[0] instanceof GeoPoint && selectedElements[1] instanceof GeoPoint) {
+            // Have A and B, preview angle bisector with C at mouse position
+            const [A, B] = selectedElements as GeoPoint[];
+            const C = { x: targetX, y: targetY };
+            
+            const bx = B.getX();
+            const by = B.getY();
+            
+            // Vector BA
+            const bax = A.getX() - bx;
+            const bay = A.getY() - by;
+            const lenBA = Math.hypot(bax, bay);
+            
+            // Vector BC
+            const bcx = C.x - bx;
+            const bcy = C.y - by;
+            const lenBC = Math.hypot(bcx, bcy);
+            
+            if (lenBA > 1e-9 && lenBC > 1e-9) {
+                // Normalized vectors
+                const uX = bax / lenBA;
+                const uY = bay / lenBA;
+                const vX = bcx / lenBC;
+                const vY = bcy / lenBC;
+                
+                // Bisector direction vector w = u + v
+                const wX = uX + vX;
+                const wY = uY + vY;
+                
+                let nx, ny;
+                
+                if (Math.hypot(wX, wY) < 1e-9) {
+                    nx = uX;
+                    ny = uY;
+                } else {
+                    nx = -wY;
+                    ny = wX;
+                }
+                
+                const c = -(nx * bx + ny * by);
+                
+                const startX = -transform.x / transform.scale;
+                const endX = ((canvas.width / dpr) - transform.x) / transform.scale;
+                const startY = -transform.y / transform.scale;
+                const endY = ((canvas.height / dpr) - transform.y) / transform.scale;
+                
+                if (Math.abs(ny) > 1e-6) {
+                    const y1 = (-c - nx * startX) / ny;
+                    const y2 = (-c - nx * endX) / ny;
+                    ctx.beginPath();
+                    ctx.moveTo(startX, y1);
+                    ctx.lineTo(endX, y2);
+                    ctx.stroke();
+                } else {
+                    const x = -c / nx;
+                    ctx.beginPath();
+                    ctx.moveTo(x, startY);
+                    ctx.lineTo(x, endY);
+                    ctx.stroke();
+                }
+            }
+        }
     }
     
     ctx.restore();
@@ -341,26 +634,39 @@ export const GeometryCanvas: React.FC = () => {
 
     ctx.restore(); // Restore the global transform
 
-  }, [kernel, refresh, selectedElements, mousePos, mode, polygonPoints, radius, hoveredPoint, transform]);
+  }, [kernel, refresh, selectedElements, mousePos, mode, polygonPoints, radius, hoveredPoint, transform, showGrid, showAxes]);
 
-  const drawConic = (ctx: CanvasRenderingContext2D, c: GeoConic, scale: number) => {
+  const drawConic = (ctx: CanvasRenderingContext2D, c: GeoConic, selected: boolean, scale: number) => {
     if (!c.isDefined()) return;
     // Only circles for now
     const center = c.getCenter();
     const r = c.getRadius();
     if (r <= 0) return;
     
-    ctx.strokeStyle = '#000';
-    ctx.lineWidth = 1 / scale;
+    if (selected) {
+      ctx.beginPath();
+      ctx.arc(center.x, center.y, r + 4 / scale, 0, 2 * Math.PI);
+      ctx.strokeStyle = 'rgba(59, 130, 246, 0.3)';
+      ctx.lineWidth = 6 / scale;
+      ctx.stroke();
+    }
+    
+    ctx.strokeStyle = selected ? '#3b82f6' : '#000';
+    ctx.lineWidth = (selected ? 3 : 1) / scale;
     ctx.beginPath();
     ctx.arc(center.x, center.y, r, 0, 2 * Math.PI);
     ctx.stroke();
+    
+    if (selected) {
+      const label = c.label || c.id;
+      ctx.font = `bold ${14 / scale}px sans-serif`;
+      ctx.fillStyle = '#1e40af';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(label, center.x + r + 10 / scale, center.y);
+    }
   };
 
-  const drawGrid = (ctx: CanvasRenderingContext2D, w: number, h: number, transform: {x: number, y: number, scale: number}) => {
-    ctx.strokeStyle = '#e5e7eb';
-    ctx.lineWidth = 1 / transform.scale;
-    
+  const drawGrid = (ctx: CanvasRenderingContext2D, w: number, h: number, transform: {x: number, y: number, scale: number}, showGrid: boolean, showAxes: boolean) => {
     const startX = -transform.x / transform.scale;
     const endX = (w - transform.x) / transform.scale;
     const startY = -transform.y / transform.scale;
@@ -380,83 +686,127 @@ export const GeometryCanvas: React.FC = () => {
     const firstX = Math.floor(startX / step) * step;
     const firstY = Math.floor(startY / step) * step;
     
-    for (let x = firstX; x <= endX; x += step) {
-      ctx.beginPath();
-      ctx.moveTo(x, startY);
-      ctx.lineTo(x, endY);
-      ctx.stroke();
-    }
-    for (let y = firstY; y <= endY; y += step) {
-      ctx.beginPath();
-      ctx.moveTo(startX, y);
-      ctx.lineTo(endX, y);
-      ctx.stroke();
+    // Draw grid
+    if (showGrid) {
+      ctx.strokeStyle = '#e5e7eb';
+      ctx.lineWidth = 1 / transform.scale;
+      
+      for (let x = firstX; x <= endX; x += step) {
+        ctx.beginPath();
+        ctx.moveTo(x, startY);
+        ctx.lineTo(x, endY);
+        ctx.stroke();
+      }
+      for (let y = firstY; y <= endY; y += step) {
+        ctx.beginPath();
+        ctx.moveTo(startX, y);
+        ctx.lineTo(endX, y);
+        ctx.stroke();
+      }
     }
     
     // Draw axes
-    ctx.strokeStyle = '#9ca3af';
-    ctx.lineWidth = 2 / transform.scale;
-    if (0 >= startX && 0 <= endX) {
-      ctx.beginPath();
-      ctx.moveTo(0, startY);
-      ctx.lineTo(0, endY);
-      ctx.stroke();
-    }
-    if (0 >= startY && 0 <= endY) {
-      ctx.beginPath();
-      ctx.moveTo(startX, 0);
-      ctx.lineTo(endX, 0);
-      ctx.stroke();
-    }
+    if (showAxes) {
+      ctx.strokeStyle = '#9ca3af';
+      ctx.lineWidth = 2 / transform.scale;
+      if (0 >= startX && 0 <= endX) {
+        ctx.beginPath();
+        ctx.moveTo(0, startY);
+        ctx.lineTo(0, endY);
+        ctx.stroke();
+      }
+      if (0 >= startY && 0 <= endY) {
+        ctx.beginPath();
+        ctx.moveTo(startX, 0);
+        ctx.lineTo(endX, 0);
+        ctx.stroke();
+      }
 
-    // Draw numbers
-    ctx.fillStyle = '#6b7280';
-    ctx.font = `${10 / transform.scale}px sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    
-    for (let x = firstX; x <= endX; x += step) {
-      if (Math.abs(x) > 1e-10) {
-        ctx.fillText(parseFloat(x.toPrecision(4)).toString(), x, 4 / transform.scale);
+      // Draw numbers
+      ctx.fillStyle = '#6b7280';
+      ctx.font = `${10 / transform.scale}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      
+      for (let x = firstX; x <= endX; x += step) {
+        if (Math.abs(x) > 1e-10) {
+          ctx.fillText(parseFloat(x.toPrecision(4)).toString(), x, 4 / transform.scale);
+        }
       }
-    }
-    
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
-    for (let y = firstY; y <= endY; y += step) {
-      if (Math.abs(y) > 1e-10) {
-        ctx.fillText(parseFloat(y.toPrecision(4)).toString(), -4 / transform.scale, y);
+      
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      for (let y = firstY; y <= endY; y += step) {
+        if (Math.abs(y) > 1e-10) {
+          ctx.fillText(parseFloat(y.toPrecision(4)).toString(), -4 / transform.scale, y);
+        }
       }
+      
+      // Origin
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'top';
+      ctx.fillText('0', -4 / transform.scale, 4 / transform.scale);
     }
-    
-    // Origin
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'top';
-    ctx.fillText('0', -4 / transform.scale, 4 / transform.scale);
   };
 
   const drawPoint = (ctx: CanvasRenderingContext2D, p: GeoPoint, selected: boolean, scale: number) => {
     if (!p.isDefined()) return;
     const x = p.getX();
     const y = p.getY();
+    
+    const baseRadius = selected ? 8 : 6;
+    const pointRadius = baseRadius / scale;
+    
+    if (selected) {
+      ctx.beginPath();
+      ctx.arc(x, y, (baseRadius + 4) / scale, 0, 2 * Math.PI);
+      ctx.strokeStyle = '#3b82f6';
+      ctx.lineWidth = 2 / scale;
+      ctx.stroke();
+      
+      ctx.beginPath();
+      ctx.arc(x, y, (baseRadius + 8) / scale, 0, 2 * Math.PI);
+      ctx.strokeStyle = 'rgba(59, 130, 246, 0.3)';
+      ctx.lineWidth = 3 / scale;
+      ctx.stroke();
+    }
+    
     ctx.beginPath();
-    ctx.arc(x, y, (selected ? 7 : 5) / scale, 0, 2 * Math.PI);
-    ctx.fillStyle = selected ? '#3b82f6' : '#6b7280'; // blue or gray
+    ctx.arc(x, y, pointRadius, 0, 2 * Math.PI);
+    
     if (p.isIndependent()) {
-        ctx.fillStyle = selected ? '#2563eb' : '#1d4ed8'; // darker blue for free points
+      ctx.fillStyle = selected ? '#1e40af' : '#1d4ed8';
     } else {
-        ctx.fillStyle = selected ? '#4b5563' : '#6b7280'; // dark gray for dependent points
+      ctx.fillStyle = selected ? '#374151' : '#6b7280';
     }
     ctx.fill();
     
-    // Label
-    ctx.fillStyle = '#000';
-    ctx.font = `${12 / scale}px sans-serif`;
-    ctx.fillText(p.label || p.id, x + 8 / scale, y - 8 / scale);
+    ctx.strokeStyle = selected ? '#1e3a8a' : '#374151';
+    ctx.lineWidth = 1 / scale;
+    ctx.stroke();
+    
+    const label = p.label || p.id;
+    ctx.font = `bold ${14 / scale}px sans-serif`;
+    
+    const labelOffsetX = 15;
+    const labelOffsetY = -15;
+    const labelX = x + labelOffsetX;
+    const labelY = y + labelOffsetY;
+    
+    ctx.fillStyle = selected ? '#1e40af' : '#1f2937';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(label, labelX, labelY);
   };
 
-  const drawLine = (ctx: CanvasRenderingContext2D, l: GeoLine, w: number, h: number, selected: boolean, transform: {x: number, y: number, scale: number}) => {
+  const drawLine = (ctx: CanvasRenderingContext2D, l: GeoLine, selected: boolean, transform: {x: number, y: number, scale: number}) => {
     if (!l.isDefined()) return;
+    
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.width / dpr;
+    const h = canvas.height / dpr;
     
     const startX = -transform.x / transform.scale;
     const endX = (w - transform.x) / transform.scale;
@@ -599,17 +949,14 @@ export const GeometryCanvas: React.FC = () => {
           if (clickedObj instanceof GeoSegment) {
               param.intervalMin = 0;
               param.intervalMax = 1;
-              param.animationType = AnimationType.OSCILLATING;
               algo = new AlgoPointOnSegment(kernel, clickedObj, param);
           } else if (clickedObj instanceof GeoLine) {
               param.intervalMin = -10; // Arbitrary range for line
               param.intervalMax = 10;
-              param.animationType = AnimationType.OSCILLATING;
               algo = new AlgoPointOnLine(kernel, clickedObj, param);
           } else if (clickedObj instanceof GeoConic) {
               param.intervalMin = 0;
               param.intervalMax = 2 * Math.PI;
-              param.animationType = AnimationType.INCREASING;
               algo = new AlgoPointOnConic(kernel, clickedObj, param);
           }
           
@@ -771,13 +1118,19 @@ export const GeometryCanvas: React.FC = () => {
     } else if (mode === 'circle3') {
         if (clickedPoint) {
             const currentSelected = [...selectedElements, clickedPoint];
-            // Filter duplicates if needed, but user might click same point
             if (currentSelected.length === 3) {
                 const [p1, p2, p3] = currentSelected as GeoPoint[];
                 const circle = new AlgoCircleThreePoints(kernel, p1, p2, p3);
                 kernel.getConstruction().addElement(circle);
                 kernel.getConstruction().addElement(circle.getOutput());
                 circle.update();
+                
+                // Create center point using algorithm
+                const centerAlgo = new AlgoCircleCenter(kernel, circle.getOutput());
+                kernel.getConstruction().addElement(centerAlgo);
+                kernel.getConstruction().addElement(centerAlgo.getOutput());
+                centerAlgo.update();
+                
                 setSelectedElements([]);
                 kernel.notifyUpdate(circle);
             } else {
@@ -796,6 +1149,13 @@ export const GeometryCanvas: React.FC = () => {
                 kernel.getConstruction().addElement(circle);
                 kernel.getConstruction().addElement(circle.getOutput());
                 circle.update();
+                
+                // Create center point using algorithm
+                const centerAlgo = new AlgoCircleCenter(kernel, circle.getOutput());
+                kernel.getConstruction().addElement(centerAlgo);
+                kernel.getConstruction().addElement(centerAlgo.getOutput());
+                centerAlgo.update();
+                
                 setSelectedElements([]);
                 kernel.notifyUpdate(circle);
             } else {
@@ -959,6 +1319,22 @@ export const GeometryCanvas: React.FC = () => {
              setPolygonPoints([...polygonPoints, p]);
              setSelectedElements([...selectedElements, p]);
         }
+    } else if (mode === 'text' || mode === 'slider' || mode === 'button' || mode === 'checkbox') {
+      const id = `ui_${Date.now()}`;
+      const newUIElement: UIElement = {
+        id,
+        type: mode,
+        x,
+        y,
+        label: mode === 'text' ? 'Text' : mode === 'slider' ? 'Slider' : mode === 'button' ? 'Button' : 'Checkbox',
+        value: mode === 'slider' ? 50 : undefined,
+        min: mode === 'slider' ? 0 : undefined,
+        max: mode === 'slider' ? 100 : undefined,
+        step: mode === 'slider' ? 1 : undefined,
+        checked: mode === 'checkbox' ? false : undefined
+      };
+      setUIElements([...uiElements, newUIElement]);
+      setEditingUIElement(id);
     }
 
     const elementsAfter = kernel.getConstruction().getElements();
@@ -979,6 +1355,13 @@ export const GeometryCanvas: React.FC = () => {
         y: prev.y + (screenY - lastPanPos.y)
       }));
       setLastPanPos({ x: screenX, y: screenY });
+      return;
+    }
+
+    if (draggingUIElement) {
+      setUIElements(prev => prev.map(el => 
+        el.id === draggingUIElement ? { ...el, x, y } : el
+      ));
       return;
     }
 
@@ -1026,6 +1409,11 @@ export const GeometryCanvas: React.FC = () => {
   const handleMouseUp = () => {
     if (isPanning) {
       setIsPanning(false);
+      return;
+    }
+    
+    if (draggingUIElement) {
+      setDraggingUIElement(null);
       return;
     }
     
@@ -1099,9 +1487,17 @@ export const GeometryCanvas: React.FC = () => {
     setRefresh(r => r + 1);
   };
 
-  const handleWheel = (e: React.WheelEvent) => {
+  const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault();
-    const { screenX, screenY, x, y } = getMousePos(e);
+    
+    if (!containerRef.current) return;
+    
+    const rect = containerRef.current.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+    
+    const x = (mouseX - transform.x) / transform.scale;
+    const y = (mouseY - transform.y) / transform.scale;
     
     const zoomFactor = 1.1;
     const direction = e.deltaY < 0 ? 1 : -1;
@@ -1113,11 +1509,22 @@ export const GeometryCanvas: React.FC = () => {
       
       return {
         scale: newScale,
-        x: screenX - x * newScale,
-        y: screenY - y * newScale
+        x: mouseX - x * newScale,
+        y: mouseY - y * newScale
       };
     });
-  };
+  }, [transform]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    canvas.addEventListener('wheel', handleWheel, { passive: false });
+    
+    return () => {
+      canvas.removeEventListener('wheel', handleWheel);
+    };
+  }, [handleWheel]);
 
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -1190,45 +1597,101 @@ export const GeometryCanvas: React.FC = () => {
       </header>
 
       {/* Toolbar */}
-      <div className="h-14 bg-white border-b border-gray-200 px-2 flex items-center gap-1 overflow-x-auto shrink-0 z-10 shadow-sm">
-        <ToolButton icon={<MousePointer2 size={22} />} label={t('move')} active={mode === 'move'} onClick={() => { setMode('move'); setPolygonPoints([]); setSelectedElements([]); }} />
-        <div className="w-px h-8 bg-gray-200 mx-1"></div>
+      <div className="h-14 bg-white border-b border-gray-200 px-2 flex items-center gap-1 overflow-x-auto shrink-0 z-30 shadow-sm">
+        <ToolButton icon={<MousePointer2 size={22} />} label={t('move')} active={mode === 'move'} onClick={() => setMode('move')} />
         
-        <ToolButton icon={<CircleDot size={22} />} label={t('point')} active={mode === 'point'} onClick={() => setMode('point')} />
-        <ToolButton icon={<X size={22} />} label={t('intersect')} active={mode === 'intersect'} onClick={() => setMode('intersect')} />
-        <ToolButton icon={<Crosshair size={22} />} label={t('midpoint')} active={mode === 'midpoint'} onClick={() => setMode('midpoint')} />
-        <div className="w-px h-8 bg-gray-200 mx-1"></div>
+        <ToolButton icon={<Circle size={22} fill="currentColor" />} label={t('point')} active={mode === 'point'} onClick={() => setMode('point')} />
         
-        <ToolButton icon={<TrendingUp size={22} />} label={t('line')} active={mode === 'line'} onClick={() => setMode('line')} />
         <ToolButton icon={<Minus size={22} />} label={t('segment')} active={mode === 'segment'} onClick={() => setMode('segment')} />
-        <div className="w-px h-8 bg-gray-200 mx-1"></div>
+        <ToolButton icon={<TrendingUp size={22} />} label={t('line')} active={mode === 'line'} onClick={() => setMode('line')} />
         
-        <ToolButton icon={<Equal size={22} />} label={t('parallel')} active={mode === 'parallel'} onClick={() => setMode('parallel')} />
-        <ToolButton icon={<Baseline size={22} />} label={t('orthogonal')} active={mode === 'orthogonal'} onClick={() => setMode('orthogonal')} />
-        <ToolButton icon={<SplitSquareVertical size={22} />} label={t('perpendicularBisector')} active={mode === 'perpendicularBisector'} onClick={() => setMode('perpendicularBisector')} />
-        <ToolButton icon={<Scissors size={22} />} label={t('angleBisector')} active={mode === 'angleBisector'} onClick={() => setMode('angleBisector')} />
-        <div className="w-px h-8 bg-gray-200 mx-1"></div>
+        <div className="relative z-[100] circle-menu-container">
+          <button
+            ref={circleMenuRef}
+            className={`p-2 rounded-lg flex items-center justify-center gap-1 min-w-[3rem] transition-all ${
+              (mode === 'circle' || mode === 'circle_center_point' || mode === 'circle3')
+                ? 'bg-blue-100 text-blue-700 shadow-inner' 
+                : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+            }`}
+            onClick={() => setShowCircleMenu(!showCircleMenu)}
+            title={t('circleTools')}
+          >
+            <CircleDot size={22} />
+            {showCircleMenu ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          </button>
+          
+          {showCircleMenu && (
+            <div 
+              className="fixed bg-white border border-gray-200 rounded-lg shadow-lg z-[9999] min-w-[180px]"
+              style={{
+                top: `${circleMenuPosition.top}px`,
+                left: `${circleMenuPosition.left}px`
+              }}>
+              <button
+                className={`w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2 ${
+                  mode === 'circle' ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-700'
+                }`}
+                onClick={() => {
+                  setMode('circle');
+                  setShowCircleMenu(false);
+                }}
+              >
+                <Circle size={18} />
+                <span>{t('circleRadius')}</span>
+              </button>
+              <button
+                className={`w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2 ${
+                  mode === 'circle_center_point' ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-700'
+                }`}
+                onClick={() => {
+                  setMode('circle_center_point');
+                  setShowCircleMenu(false);
+                }}
+              >
+                <CircleDashed size={18} />
+                <span>{t('circleCenterPoint')}</span>
+              </button>
+              <button
+                className={`w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2 ${
+                  mode === 'circle3' ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-700'
+                }`}
+                onClick={() => {
+                  setMode('circle3');
+                  setShowCircleMenu(false);
+                }}
+              >
+                <Target size={18} />
+                <span>{t('circle3Points')}</span>
+              </button>
+            </div>
+          )}
+        </div>
+        
+        {mode === 'circle' && (
+          <div className="flex items-center gap-1 px-2 border border-gray-200 rounded-md bg-gray-50">
+            <span className="text-xs font-medium text-gray-500">R=</span>
+            <input 
+              type="number" 
+              value={radius} 
+              onChange={(e) => setRadius(Number(e.target.value))}
+              className="w-12 px-1 py-0.5 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500"
+              min="1"
+            />
+          </div>
+        )}
+        {/* <div className="w-px h-8 bg-gray-200 mx-1"></div> */}
         
         <ToolButton icon={<Hexagon size={22} />} label={t('polygon')} active={mode === 'polygon'} onClick={() => setMode('polygon')} />
         <div className="w-px h-8 bg-gray-200 mx-1"></div>
         
-        <div className="flex items-center bg-gray-50 rounded-md p-1 border border-gray-200">
-          <ToolButton icon={<Circle size={22} />} label={t('circleRadius')} active={mode === 'circle'} onClick={() => setMode('circle')} />
-          {mode === 'circle' && (
-              <div className="flex items-center gap-1 px-2 border-l border-gray-200 ml-1">
-                  <span className="text-xs font-medium text-gray-500">R=</span>
-                  <input 
-                      type="number" 
-                      value={radius} 
-                      onChange={(e) => setRadius(Number(e.target.value))}
-                      className="w-12 px-1 py-0.5 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500"
-                      min="1"
-                  />
-              </div>
-          )}
-        </div>
-        <ToolButton icon={<CircleDashed size={22} />} label={t('circleCenterPoint')} active={mode === 'circle_center_point'} onClick={() => setMode('circle_center_point')} />
-        <ToolButton icon={<Target size={22} />} label={t('circle3Points')} active={mode === 'circle3'} onClick={() => setMode('circle3')} />
+        <ToolButton icon={<X size={22} />} label={t('intersect')} active={mode === 'intersect'} onClick={() => setMode('intersect')} />
+        <ToolButton icon={<Crosshair size={22} />} label={t('midpoint')} active={mode === 'midpoint'} onClick={() => setMode('midpoint')} />
+        <div className="w-px h-8 bg-gray-200 mx-1"></div>
+        
+        <ToolButton icon={<Equal size={22} />} label={t('parallel')} active={mode === 'parallel'} onClick={() => setMode('parallel')} />
+        <ToolButton icon={<Baseline size={22} />} label={t('orthogonal')} active={mode === 'orthogonal'} onClick={() => setMode('orthogonal')} />
+        <ToolButton icon={<SplitSquareVertical size={22} />} label={t('perpendicularBisector')} active={mode === 'perpendicular_bisector'} onClick={() => setMode('perpendicular_bisector')} />
+        <ToolButton icon={<Scissors size={22} />} label={t('angleBisector')} active={mode === 'angle_bisector'} onClick={() => setMode('angle_bisector')} />
         
         <div className="w-px h-8 bg-gray-200 mx-1"></div>
         <div className="flex items-center gap-2 px-2">
@@ -1243,6 +1706,100 @@ export const GeometryCanvas: React.FC = () => {
             placeholder={selectedElements.length === 1 ? '' : 'Select one object'}
             className="w-24 px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500 disabled:bg-gray-100 disabled:text-gray-400"
           />
+        </div>
+        
+        <div className="w-px h-8 bg-gray-200 mx-1"></div>
+        <div className="flex items-center gap-1">
+          <button
+            className={`p-2 rounded-lg flex flex-col items-center justify-center gap-1 min-w-[3rem] transition-all ${
+              showAxes 
+                ? 'bg-blue-100 text-blue-700 shadow-inner' 
+                : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+            }`}
+            onClick={() => setShowAxes(!showAxes)}
+            title={t('toggleAxes')}
+          >
+            <Axis3D size={22} />
+          </button>
+          <button
+            className={`p-2 rounded-lg flex flex-col items-center justify-center gap-1 min-w-[3rem] transition-all ${
+              showGrid 
+                ? 'bg-blue-100 text-blue-700 shadow-inner' 
+                : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+            }`}
+            onClick={() => setShowGrid(!showGrid)}
+            title={t('toggleGrid')}
+          >
+            <Grid3X3 size={22} />
+          </button>
+        </div>
+        
+        <div className="w-px h-8 bg-gray-200 mx-1"></div>
+        
+        <div className="relative z-[100] insert-menu-container">
+          <button
+            ref={insertMenuRef}
+            className={`p-2 rounded-lg flex items-center justify-center gap-1 min-w-[3rem] transition-all ${
+              showInsertMenu
+                ? 'bg-blue-100 text-blue-700 shadow-inner' 
+                : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+            }`}
+            onClick={() => setShowInsertMenu(!showInsertMenu)}
+            title={t('insertTools')}
+          >
+            <Plus size={22} />
+            {showInsertMenu ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          </button>
+          
+          {showInsertMenu && (
+            <div 
+              className="fixed bg-white border border-gray-200 rounded-lg shadow-lg z-[9999] min-w-[180px]"
+              style={{
+                top: `${insertMenuPosition.top}px`,
+                left: `${insertMenuPosition.left}px`
+              }}>
+              <button
+                className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2 text-gray-700"
+                onClick={() => {
+                  setMode('text');
+                  setShowInsertMenu(false);
+                }}
+              >
+                <Type size={18} />
+                <span>{t('insertText')}</span>
+              </button>
+              <button
+                className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2 text-gray-700"
+                onClick={() => {
+                  setMode('slider');
+                  setShowInsertMenu(false);
+                }}
+              >
+                <Sliders size={18} />
+                <span>{t('insertSlider')}</span>
+              </button>
+              <button
+                className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2 text-gray-700"
+                onClick={() => {
+                  setMode('button');
+                  setShowInsertMenu(false);
+                }}
+              >
+                <ToggleLeft size={18} />
+                <span>{t('insertButton')}</span>
+              </button>
+              <button
+                className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2 text-gray-700"
+                onClick={() => {
+                  setMode('checkbox');
+                  setShowInsertMenu(false);
+                }}
+              >
+                <CheckSquare size={18} />
+                <span>{t('insertCheckbox')}</span>
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="flex-1"></div>
@@ -1317,19 +1874,157 @@ export const GeometryCanvas: React.FC = () => {
         </div>
 
         {/* Canvas Area */}
-        <div className="flex-1 relative bg-white" ref={containerRef}>
+        <div className="flex-1 relative bg-white z-0" ref={containerRef}>
           <canvas
               ref={canvasRef}
               width={canvasSize.width}
               height={canvasSize.height}
-              className={`absolute top-0 left-0 touch-none ${isPanning ? 'cursor-grabbing' : 'cursor-crosshair'}`}
+              className={`absolute top-0 left-0 ${isPanning ? 'cursor-grabbing' : 'cursor-crosshair'}`}
+              style={{ touchAction: 'none' }}
               onMouseDown={handleMouseDown}
               onMouseMove={handleMouseMove}
               onMouseUp={handleMouseUp}
               onMouseLeave={handleMouseUp}
-              onWheel={handleWheel}
               onContextMenu={handleContextMenu}
           />
+          
+          {/* UI Elements */}
+          {uiElements.map(element => {
+            const screenX = element.x * transform.scale + transform.x;
+            const screenY = element.y * transform.scale + transform.y;
+            
+            const handleUIDragStart = (e: React.MouseEvent) => {
+              e.stopPropagation();
+              setDraggingUIElement(element.id);
+            };
+            
+            if (element.type === 'text') {
+              return (
+                <div
+                  key={element.id}
+                  className="absolute"
+                  style={{
+                    left: `${screenX}px`,
+                    top: `${screenY}px`,
+                    transform: 'translate(-50%, -50%)'
+                  }}
+                >
+                  {editingUIElement === element.id ? (
+                    <input
+                      type="text"
+                      defaultValue={element.label}
+                      autoFocus
+                      onBlur={(e) => {
+                        const updated = uiElements.map(el => 
+                          el.id === element.id ? { ...el, label: e.target.value } : el
+                        );
+                        setUIElements(updated);
+                        setEditingUIElement(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          const updated = uiElements.map(el => 
+                            el.id === element.id ? { ...el, label: (e.target as HTMLInputElement).value } : el
+                          );
+                          setUIElements(updated);
+                          setEditingUIElement(null);
+                        }
+                      }}
+                      className="px-2 py-1 border border-blue-500 rounded text-sm focus:outline-none"
+                    />
+                  ) : (
+                    <div 
+                      className="px-3 py-2 bg-white border border-gray-300 rounded shadow-sm cursor-move hover:border-blue-400"
+                      onDoubleClick={() => setEditingUIElement(element.id)}
+                      onMouseDown={handleUIDragStart}
+                    >
+                      {element.label}
+                    </div>
+                  )}
+                </div>
+              );
+            } else if (element.type === 'slider') {
+              return (
+                <div
+                  key={element.id}
+                  className="absolute bg-white border border-gray-300 rounded-lg shadow-sm p-3 cursor-move"
+                  style={{
+                    left: `${screenX}px`,
+                    top: `${screenY}px`,
+                    transform: 'translate(-50%, -50%)'
+                  }}
+                  onMouseDown={handleUIDragStart}
+                >
+                  <div className="text-sm font-medium mb-2">{element.label}</div>
+                  <input
+                    type="range"
+                    min={element.min}
+                    max={element.max}
+                    step={element.step}
+                    value={element.value}
+                    onChange={(e) => {
+                      e.stopPropagation();
+                      const updated = uiElements.map(el => 
+                        el.id === element.id ? { ...el, value: Number(e.target.value) } : el
+                      );
+                      setUIElements(updated);
+                    }}
+                    className="w-32"
+                    onMouseDown={(e) => e.stopPropagation()}
+                  />
+                  <div className="text-xs text-gray-600 mt-1 text-center">{element.value}</div>
+                </div>
+              );
+            } else if (element.type === 'button') {
+              return (
+                <button
+                  key={element.id}
+                  className="absolute px-4 py-2 bg-blue-500 text-white rounded-lg shadow-sm hover:bg-blue-600 transition-colors cursor-move"
+                  style={{
+                    left: `${screenX}px`,
+                    top: `${screenY}px`,
+                    transform: 'translate(-50%, -50%)'
+                  }}
+                  onMouseDown={handleUIDragStart}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    alert(`Button "${element.label}" clicked!`);
+                  }}
+                >
+                  {element.label}
+                </button>
+              );
+            } else if (element.type === 'checkbox') {
+              return (
+                <label
+                  key={element.id}
+                  className="absolute flex items-center gap-2 bg-white border border-gray-300 rounded-lg shadow-sm px-3 py-2 cursor-move hover:border-blue-400"
+                  style={{
+                    left: `${screenX}px`,
+                    top: `${screenY}px`,
+                    transform: 'translate(-50%, -50%)'
+                  }}
+                  onMouseDown={handleUIDragStart}
+                >
+                  <input
+                    type="checkbox"
+                    checked={element.checked}
+                    onChange={(e) => {
+                      e.stopPropagation();
+                      const updated = uiElements.map(el => 
+                        el.id === element.id ? { ...el, checked: e.target.checked } : el
+                      );
+                      setUIElements(updated);
+                    }}
+                    className="w-4 h-4"
+                    onMouseDown={(e) => e.stopPropagation()}
+                  />
+                  <span className="text-sm">{element.label}</span>
+                </label>
+              );
+            }
+            return null;
+          })}
           
           {/* Zoom Controls */}
           <div className="absolute bottom-6 right-6 flex flex-col shadow-lg rounded-lg overflow-hidden border border-gray-200 bg-white">
@@ -1349,7 +2044,12 @@ export const GeometryCanvas: React.FC = () => {
               </button>
               <button 
                   className="w-10 h-10 flex items-center justify-center text-gray-600 hover:bg-gray-100 hover:text-blue-600 transition-colors"
-                  onClick={() => setTransform({ x: 0, y: 0, scale: 1 })}
+                  onClick={() => {
+                    const dpr = window.devicePixelRatio || 1;
+                    const width = canvasSize.width / dpr;
+                    const height = canvasSize.height / dpr;
+                    setTransform({ x: width / 2, y: height / 2, scale: 1 });
+                  }}
                   title={t('resetView')}
               >
                   <Home size={20} />
@@ -1362,16 +2062,49 @@ export const GeometryCanvas: React.FC = () => {
 };
 
 // Helper component for toolbar buttons
-const ToolButton: React.FC<{ icon: React.ReactNode, label: string, active: boolean, onClick: () => void }> = ({ icon, label, active, onClick }) => (
-  <button
-    className={`p-2 rounded-lg flex flex-col items-center justify-center gap-1 min-w-[3rem] transition-all ${
-      active 
-        ? 'bg-blue-100 text-blue-700 shadow-inner' 
-        : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
-    }`}
-    onClick={onClick}
-    title={label}
-  >
-    {icon}
-  </button>
-);
+const ToolButton: React.FC<{ icon: React.ReactNode, label: string, active: boolean, onClick: () => void }> = ({ icon, label, active, onClick }) => {
+  const [showTooltip, setShowTooltip] = useState(false);
+  const buttonRef = React.useRef<HTMLButtonElement>(null);
+  const [tooltipPosition, setTooltipPosition] = useState({ top: 0, left: 0 });
+  
+  React.useEffect(() => {
+    if (showTooltip && buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect();
+      setTooltipPosition({
+        top: rect.top - 8,
+        left: rect.left + rect.width / 2
+      });
+    }
+  }, [showTooltip]);
+  
+  return (
+    <div className="relative z-[100]">
+      <button
+        ref={buttonRef}
+        className={`p-2 rounded-lg flex flex-col items-center justify-center gap-1 min-w-[3rem] transition-all ${
+          active 
+            ? 'bg-blue-100 text-blue-700 shadow-inner' 
+            : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+        }`}
+        onClick={onClick}
+        onMouseEnter={() => setShowTooltip(true)}
+        onMouseLeave={() => setShowTooltip(false)}
+      >
+        {icon}
+      </button>
+      
+      {showTooltip && (
+        <div 
+          className="fixed px-3 py-1.5 bg-gray-900 text-white text-sm font-medium rounded-lg shadow-lg whitespace-nowrap z-[9999] pointer-events-none"
+          style={{
+            top: `${tooltipPosition.top}px`,
+            left: `${tooltipPosition.left}px`,
+            transform: 'translate(-50%, -100%)'
+          }}>
+          {label}
+          <div className="absolute left-1/2 transform -translate-x-1/2 -bottom-1 border-4 border-transparent border-t-gray-900"></div>
+        </div>
+      )}
+    </div>
+  );
+};

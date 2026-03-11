@@ -63,16 +63,23 @@ export class AnimationManager {
         currentFrameRate = Math.max(AnimationManager.MIN_ANIMATION_FRAME_RATE, Math.min(AnimationManager.MAX_ANIMATION_FRAME_RATE, currentFrameRate));
 
         let changed = false;
+        const changedElements: GeoElement[] = [];
+        
         for (const geo of this.animatedGeos) {
             if ((geo as any).doAnimationStep) {
                 if ((geo as any as Animatable).doAnimationStep(currentFrameRate)) {
                     changed = true;
+                    changedElements.push(geo);
                 }
             }
         }
 
         if (changed) {
-            this.kernel.getConstruction().updateAllAlgorithms();
+            // 使用增量算法更新：只更新依赖于变化元素的算法
+            for (const element of changedElements) {
+                this.kernel.getConstruction().updateDependentAlgorithms(element);
+            }
+            
             if (this.animatedGeos.length > 0) {
                 this.kernel.notifyUpdate(this.animatedGeos[0]);
             }

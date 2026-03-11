@@ -1,5 +1,5 @@
 import React from 'react';
-import { GeoNumeric, AnimationType } from '../kernel/geo/GeoNumeric';
+import { GeoNumeric } from '../kernel/geo/GeoNumeric';
 import { Kernel } from '../kernel/core/Kernel';
 import { useLanguage } from '../i18n/LanguageContext';
 
@@ -15,7 +15,6 @@ export const SliderControl: React.FC<SliderControlProps> = ({ numeric, kernel })
   const max = numeric.intervalMax;
   const isAnimating = numeric.isAnimating();
   const speed = numeric.animationSpeed;
-  const type = numeric.animationType;
 
   const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = parseFloat(e.target.value);
@@ -45,11 +44,6 @@ export const SliderControl: React.FC<SliderControlProps> = ({ numeric, kernel })
       numeric.animationSpeed = val;
       kernel.notifyUpdate(numeric);
     }
-  };
-
-  const handleTypeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    numeric.animationType = parseInt(e.target.value, 10) as AnimationType;
-    kernel.notifyUpdate(numeric);
   };
 
   const toggleAnimation = () => {
@@ -104,30 +98,16 @@ export const SliderControl: React.FC<SliderControlProps> = ({ numeric, kernel })
         />
       </div>
       
-      <div className="flex items-center justify-between gap-2 mt-3 pt-3 border-t border-gray-100">
-        <div className="flex items-center gap-1">
-          <label className="text-xs text-gray-500">Speed:</label>
-          <input
-            type="number"
-            min="0.1"
-            step="0.1"
-            value={speed}
-            onChange={handleSpeedChange}
-            className="w-14 px-1 py-1 border rounded text-xs text-center bg-gray-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-          />
-        </div>
-        <div className="flex items-center gap-1">
-          <label className="text-xs text-gray-500">Type:</label>
-          <select
-            value={type}
-            onChange={handleTypeChange}
-            className="px-1 py-1 border rounded text-xs bg-gray-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-          >
-            <option value={AnimationType.OSCILLATING}>Oscillating</option>
-            <option value={AnimationType.INCREASING}>Increasing</option>
-            <option value={AnimationType.DECREASING}>Decreasing</option>
-          </select>
-        </div>
+      <div className="flex items-center justify-start gap-2 mt-3 pt-3 border-t border-gray-100">
+        <label className="text-xs text-gray-500">Speed:</label>
+        <input
+          type="number"
+          min="0.1"
+          step="0.1"
+          value={speed}
+          onChange={handleSpeedChange}
+          className="w-14 px-1 py-1 border rounded text-xs text-center bg-gray-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+        />
       </div>
     </div>
   );

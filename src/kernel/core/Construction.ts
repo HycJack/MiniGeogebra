@@ -1,6 +1,7 @@
 import { IKernel } from './Interfaces';
 import { ConstructionElement } from './ConstructionElement';
 import { AlgoElement } from '../algo/AlgoElement';
+import { GeoElement } from '../geo/GeoElement';
 
 export class Construction {
   private elements: ConstructionElement[] = [];
@@ -44,6 +45,48 @@ export class Construction {
     for (const algo of this.algoElements) {
       algo.update();
     }
+  }
+
+  updateDependentAlgorithms(changedElement: GeoElement) {
+    // 只更新依赖于changedElement的算法
+    const dependentAlgos = this.getDependentAlgorithms(changedElement);
+    
+    // 按照构造顺序排序
+    dependentAlgos.sort((a, b) => a.constIndex - b.constIndex);
+    
+    for (const algo of dependentAlgos) {
+      algo.update();
+    }
+  }
+
+  private getDependentAlgorithms(element: GeoElement): AlgoElement[] {
+    const dependent = new Set<AlgoElement>();
+    
+    // 遍历所有算法，找出依赖于该元素的算法
+    for (const algo of this.algoElements) {
+      if (this.isDependentOn(algo, element)) {
+        dependent.add(algo);
+      }
+    }
+    
+    return Array.from(dependent);
+  }
+
+  private isDependentOn(algo: AlgoElement, element: GeoElement): boolean {
+    // 检查算法的输入是否包含该元素
+    const inputs = algo.getInput();
+    for (const input of inputs) {
+      if (input === element) {
+        return true;
+      }
+      // 递归检查：如果输入元素本身也是算法的输出，检查该算法是否依赖于element
+      if (input.parentAlgo) {
+        if (this.isDependentOn(input.parentAlgo, element)) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   getElements(): ConstructionElement[] {

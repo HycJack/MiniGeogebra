@@ -39,7 +39,15 @@ export const translations = {
     zoomOut: '缩小',
     resetView: '重置视图',
     emptyState: '使用上方的工具创建对象。',
-    label: '标签'
+    label: '标签',
+    toggleAxes: '显示/隐藏坐标轴',
+    toggleGrid: '显示/隐藏网格',
+    circleTools: '圆工具',
+    insertTools: '插入工具',
+    insertText: '插入文本',
+    insertSlider: '插入滑块',
+    insertButton: '插入按钮',
+    insertCheckbox: '插入复选框'
   },
   en: {
     title: 'Mini GeoGebra',
@@ -77,7 +85,15 @@ export const translations = {
     zoomOut: 'Zoom Out',
     resetView: 'Reset View',
     emptyState: 'Use the tools above to create objects.',
-    label: 'Label'
+    label: 'Label',
+    toggleAxes: 'Show/Hide Axes',
+    toggleGrid: 'Show/Hide Grid',
+    circleTools: 'Circle Tools',
+    insertTools: 'Insert Tools',
+    insertText: 'Insert Text',
+    insertSlider: 'Insert Slider',
+    insertButton: 'Insert Button',
+    insertCheckbox: 'Insert Checkbox'
   }
 };
 
