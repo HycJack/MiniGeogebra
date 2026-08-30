@@ -8,6 +8,8 @@ export interface IKernel {
   notifyUpdate(element: ConstructionElement): void;
   getConstruction(): Construction;
   getAnimationManager(): any;
+  withBatchedUpdates<T>(fn: () => T): T;
+  recomputeDependents(changedElement: ConstructionElement): void;
 }
 
 export interface IApplication {

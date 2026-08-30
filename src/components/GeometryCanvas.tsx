@@ -22,8 +22,11 @@ import { AlgoDistance } from '../kernel/algo/AlgoDistance';
 import { AlgoAngle } from '../kernel/algo/AlgoAngle';
 import { AlgoArea } from '../kernel/algo/AlgoArea';
 import { AlgoAngleBisector } from '../kernel/algo/AlgoAngleBisector';
+import { AlgoTangent } from '../kernel/algo/AlgoTangent';
+import { AlgoLocus } from '../kernel/algo/AlgoLocus';
 import { ConstructionElement } from '../kernel/core/ConstructionElement';
 import { GeoElement } from '../kernel/geo/GeoElement';
+import { GeoLocus } from '../kernel/geo/GeoLocus';
 
 import { AlgoPointOnConic } from '../kernel/algo/AlgoPointOnConic';
 import { AlgoPointOnLine } from '../kernel/algo/AlgoPointOnLine';
@@ -41,7 +44,9 @@ import {
   Grid3X3, Axis3D, ChevronUp, Type, Sliders, ToggleLeft, CheckSquare,
   Ruler,
   Triangle,
-  Square
+  Square,
+  CornerDownRight,
+  Activity
 } from 'lucide-react';
 
 interface StateSnapshot {
@@ -83,7 +88,7 @@ export const GeometryCanvas: React.FC = () => {
   const { t, language, setLanguage } = useLanguage();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [kernel] = useState(() => new Kernel());
-  const [mode, setMode] = useState<'move' | 'point' | 'line' | 'segment' | 'midpoint' | 'circle' | 'circle_center_point' | 'circle3' | 'intersect' | 'parallel' | 'orthogonal' | 'perpendicular_bisector' | 'angle_bisector' | 'polygon' | 'text' | 'slider' | 'button' | 'checkbox' | 'distance' | 'angle' | 'area'>('move');
+  const [mode, setMode] = useState<'move' | 'point' | 'line' | 'segment' | 'midpoint' | 'circle' | 'circle_center_point' | 'circle3' | 'intersect' | 'parallel' | 'orthogonal' | 'perpendicular_bisector' | 'angle_bisector' | 'polygon' | 'text' | 'slider' | 'button' | 'checkbox' | 'distance' | 'angle' | 'area' | 'tangent' | 'locus'>('move');
   const [polygonPoints, setPolygonPoints] = useState<GeoPoint[]>([]);
   const [radius, setRadius] = useState<number>(50);
   const [selectedElements, setSelectedElements] = useState<GeoElement[]>([]);
@@ -431,6 +436,13 @@ export const GeometryCanvas: React.FC = () => {
     elements.forEach(el => {
       if (el instanceof GeoConic) {
         drawConic(ctx, el, selectedElements.includes(el), coord.xScale);
+      }
+    });
+
+    // Draw locus curves
+    elements.forEach(el => {
+      if (el instanceof GeoLocus) {
+        drawLocus(ctx, el, selectedElements.includes(el), coord.xScale);
       }
     });
 
@@ -909,6 +921,24 @@ export const GeometryCanvas: React.FC = () => {
     ctx.stroke();
   };
 
+  const drawLocus = (ctx: CanvasRenderingContext2D, locus: GeoLocus, selected: boolean, scale: number) => {
+    if (!locus.isDefined()) return;
+    const samples = locus.getSamples();
+    const segments = locus.getSegments();
+    if (samples.length < 2 || segments.length === 0) return;
+    ctx.strokeStyle = selected ? '#3b82f6' : '#8b5cf6';
+    ctx.lineWidth = (selected ? 3 : 2) / scale;
+    for (const seg of segments) {
+      if (seg.end - seg.start < 1) continue;
+      ctx.beginPath();
+      ctx.moveTo(samples[seg.start].x, samples[seg.start].y);
+      for (let i = seg.start + 1; i <= seg.end; i++) {
+        ctx.lineTo(samples[i].x, samples[i].y);
+      }
+      ctx.stroke();
+    }
+  };
+
   const getMousePos = (e: React.MouseEvent | React.WheelEvent) => {
     const rect = canvasRef.current!.getBoundingClientRect();
     const screenX = e.clientX - rect.left;
@@ -1379,8 +1409,40 @@ export const GeometryCanvas: React.FC = () => {
         setSelectedElements([]);
         setRenderRev(r => r + 1);
       }
-    }
-  } else if (mode === 'polygon') {
+    } else if (mode === 'tangent') {
+      if (clickedPoint) {
+        const currentSelected = [...selectedElements, clickedPoint];
+        if (currentSelected.length === 2 && currentSelected[0] instanceof GeoPoint) {
+          const clickedCircle = elements.slice().reverse().find(el => el instanceof GeoConic) as GeoConic | undefined;
+          if (clickedCircle) {
+            const algo = new AlgoTangent(kernel, clickedCircle, currentSelected[0] as GeoPoint);
+            kernel.getConstruction().addElement(algo);
+            algo.getOutputLines().forEach(l => kernel.getConstruction().addElement(l));
+            algo.getOutputPoints().forEach(p => kernel.getConstruction().addElement(p));
+            algo.compute();
+            setSelectedElements([]);
+            setRenderRev(r => r + 1);
+            return;
+          }
+        }
+        setSelectedElements(currentSelected.slice(-2));
+      }
+    } else if (mode === 'locus') {
+      if (clickedPoint) {
+        const currentSelected = [...selectedElements, clickedPoint];
+        if (currentSelected.length === 2) {
+          const [tracer, driver] = currentSelected as GeoPoint[];
+          const algo = new AlgoLocus(kernel, tracer, driver);
+          kernel.getConstruction().addElement(algo);
+          kernel.getConstruction().addElement(algo.getOutputLocus());
+          algo.compute();
+          setSelectedElements([]);
+          setRenderRev(r => r + 1);
+        } else {
+          setSelectedElements(currentSelected);
+        }
+      }
+    } else if (mode === 'polygon') {
         if (clickedPoint) {
             // If clicked start point, close polygon
             if (polygonPoints.length > 2 && clickedPoint === polygonPoints[0]) {
@@ -1761,6 +1823,10 @@ export const GeometryCanvas: React.FC = () => {
         <ToolButton icon={<Hexagon size={22} />} label={t('polygon')} active={mode === 'polygon'} onClick={() => setMode('polygon')} />
         <div className="w-px h-8 bg-gray-200 mx-1"></div>
         
+        <ToolButton icon={<CornerDownRight size={22} />} label={t('tangent')} active={mode === 'tangent'} onClick={() => setMode('tangent')} />
+        <ToolButton icon={<Activity size={22} />} label={t('locus')} active={mode === 'locus'} onClick={() => setMode('locus')} />
+        <div className="w-px h-8 bg-gray-200 mx-1"></div>
+        
         <ToolButton icon={<X size={22} />} label={t('intersect')} active={mode === 'intersect'} onClick={() => setMode('intersect')} />
         <ToolButton icon={<Crosshair size={22} />} label={t('midpoint')} active={mode === 'midpoint'} onClick={() => setMode('midpoint')} />
         <div className="w-px h-8 bg-gray-200 mx-1"></div>
@@ -1954,6 +2020,7 @@ export const GeometryCanvas: React.FC = () => {
                 else if (typeName === 'GeoConic') typeName = t('typeCircle');
                 else if (typeName === 'GeoPolygon') typeName = t('typePolygon');
                 else if (typeName === 'GeoNumeric') typeName = t('typeNumeric');
+                else if (typeName === 'GeoLocus') typeName = t('typeLocus');
 
                 return (
                     <div key={el.id} className="group flex flex-col p-2 rounded-lg hover:bg-gray-50 border border-transparent hover:border-gray-100 transition-colors">

@@ -13,6 +13,7 @@ import { GeoElement } from '../geo/GeoElement';
 export abstract class AlgoElement extends ConstructionElement {
   protected input: GeoElement[] = [];
   protected output: GeoElement[] = [];
+  public parentAlgo: AlgoElement | null = null;
 
   constructor(kernel: IKernel) {
     super(kernel);

@@ -12,6 +12,7 @@ export class Kernel implements IKernel {
   // 避免拖动时每一帧都全场重算（原 updateAllAlgorithms 行为）。
   private pendingUpdates = new Set<ConstructionElement>();
   private flushScheduled = false;
+  private inBatch = false;
 
   constructor() {
     this.construction = new Construction(this);
@@ -39,14 +40,42 @@ export class Kernel implements IKernel {
   notifyUpdate(element: ConstructionElement): void {
     if (element.isIndependent()) {
       this.pendingUpdates.add(element);
-      if (!this.flushScheduled) {
+      if (!this.flushScheduled && !this.inBatch) {
         this.flushScheduled = true;
         Promise.resolve().then(() => this.flushPendingUpdates());
       }
     }
-    if (this.updateCallback) {
+    if (this.updateCallback && !this.inBatch) {
       this.updateCallback();
     }
+  }
+
+  /**
+   * 批处理更新：闭区间内的所有变动与回调被累积，结束时统一触发一次视图刷新。
+   * 供算法内部"干算"使用（如轨迹采样：反复挪动驱动点、重算依赖链、读数），
+   * 避免每次采样都触发渲染回调造成闪烁。
+   */
+  withBatchedUpdates<T>(fn: () => T): T {
+    const prev = this.inBatch;
+    this.inBatch = true;
+    try {
+      return fn();
+    } finally {
+      this.inBatch = prev;
+      if (!prev && this.updateCallback) {
+        this.updateCallback();
+      }
+    }
+  }
+
+  /**
+   * 立即同步重算依赖 element 的所有算法（按构造序）。
+   * 与 notifyUpdate 的异步/独立元素语义解耦，供 locus 等算法在批处理内做确定性干算。
+   */
+  recomputeDependents(changedElement: ConstructionElement): void {
+    const algos = this.construction.getDependentAlgorithms(changedElement);
+    algos.sort((a, b) => a.constIndex - b.constIndex);
+    for (const algo of algos) algo.update();
   }
 
   /**

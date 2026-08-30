@@ -47,7 +47,10 @@ export const translations = {
     insertText: '插入文本',
     insertSlider: '插入滑块',
     insertButton: '插入按钮',
-    insertCheckbox: '插入复选框'
+    insertCheckbox: '插入复选框',
+    tangent: '切线',
+    locus: '轨迹',
+    typeLocus: '轨迹'
   },
   en: {
     title: 'Mini GeoGebra',
@@ -93,7 +96,10 @@ export const translations = {
     insertText: 'Insert Text',
     insertSlider: 'Insert Slider',
     insertButton: 'Insert Button',
-    insertCheckbox: 'Insert Checkbox'
+    insertCheckbox: 'Insert Checkbox',
+    tangent: 'Tangent',
+    locus: 'Locus',
+    typeLocus: 'Locus'
   }
 };
 

@@ -24,6 +24,8 @@ import { AlgoTranslate } from '../algo/AlgoTranslate';
 import { AlgoDistance } from '../algo/AlgoDistance';
 import { AlgoAngle } from '../algo/AlgoAngle';
 import { AlgoArea } from '../algo/AlgoArea';
+import { AlgoTangent } from '../algo/AlgoTangent';
+import { AlgoLocus } from '../algo/AlgoLocus';
 import { CoordinateSystem } from '../core/CoordinateSystem';
 
 /**
@@ -96,6 +98,8 @@ function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[]): AlgoEle
     case 'AlgoDistance':             return new AlgoDistance(kernel, inputs[0], inputs[1]);
     case 'AlgoAngle':                return new AlgoAngle(kernel, ...asPoints(3));
     case 'AlgoArea':                 return new AlgoArea(kernel, inputs[0]);
+    case 'AlgoTangent':              return new AlgoTangent(kernel, inputs[0], inputs[1]);
+    case 'AlgoLocus':                return new AlgoLocus(kernel, inputs[1], inputs[0]);
     default:
       throw new Error(`[ConstructionSerializer] unknown algorithm type: ${type}`);
   }
