@@ -356,13 +356,15 @@ export class WebGLRendererFallback implements IRenderer {
   frameCommit(): void { this.flush(); }
 }
 
-/** 优先尝试 WebGL2，失败则回退为 CanvasRenderer */
-export function createRenderer(canvas: HTMLCanvasElement, preferWebGL = true): IRenderer {
-  if (preferWebGL) {
-    try {
-      const r = new WebGLRendererFallback(canvas);
-      if (r.supportsWebGL) return r;
-    } catch { /* fall through */ }
-  }
-  return new CanvasRenderer(canvas.getContext('2d')!);
+/**
+ * 创建渲染器。
+ * 注意：同一 canvas 只能持有一种上下文（2D 或 WebGL），不能同时持有。
+ * WebGLRendererFallback 内部先取 2D 再取 WebGL2 会导致后者返回 null，
+ * 因此实际上始终回退为 CanvasRenderer。为避免无谓开销，直接使用 CanvasRenderer。
+ */
+export function createRenderer(canvas: HTMLCanvasElement, _preferWebGL = true): IRenderer {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas 2D context not available');
+  console.log('[MiniGeogebra] Renderer: Canvas2D');
+  return new CanvasRenderer(ctx);
 }
