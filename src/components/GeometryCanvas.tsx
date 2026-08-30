@@ -1663,7 +1663,7 @@ export const GeometryCanvas: React.FC = () => {
       return next;
     });
   };
-  }, [handleWheel]);
+  }, []);
 
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
