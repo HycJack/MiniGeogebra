@@ -403,7 +403,7 @@ export const GeometryCanvas: React.FC = () => {
     setRenderRev(r => r + 1);
   };
 
-  const { schedule } = useRenderLoop(() => {  useEffect(() => {
+  const { schedule } = useRenderLoop(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -691,7 +691,6 @@ export const GeometryCanvas: React.FC = () => {
 
     ctx.restore(); // Restore the global transform
 
-  }, [kernel, selectedElements, mousePos, mode, polygonPoints, radius, hoveredPoint, coord, showGrid, showAxes]);
   }, [renderRev, selectedElements, mousePos, mode, polygonPoints, radius, hoveredPoint, coord, showGrid, showAxes]);
 
   useEffect(() => {
