@@ -134,7 +134,6 @@ export const GeometryCanvas: React.FC = () => {
   };
 
   const [draggedElement, setDraggedElement] = useState<GeoElement | null>(null);
-  const [refresh, setRefresh] = useState(0);
   const [renderRev, setRenderRev] = useState(0); // RAF 渲染节流信号
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [hoveredPoint, setHoveredPoint] = useState<GeoPoint | null>(null);
@@ -421,7 +420,7 @@ export const GeometryCanvas: React.FC = () => {
     ctx.scale(coord.xScale, coord.yScale);
 
     // Draw grid
-    drawGrid(ctx, canvas.width / dpr, canvas.height / dpr, transform, showGrid, showAxes);
+    drawGrid(ctx, canvas.width / dpr, canvas.height / dpr, coord, showGrid, showAxes);
 
     // Draw elements
     const elements = kernel.getConstruction().getElements();
@@ -452,7 +451,7 @@ export const GeometryCanvas: React.FC = () => {
       if (el instanceof GeoSegment) {
         drawSegment(ctx, el, selectedElements.includes(el), coord.xScale);
       } else if (el instanceof GeoLine && !(el instanceof GeoSegment)) {
-        drawLine(ctx, el, selectedElements.includes(el), transform);
+        drawLine(ctx, el, selectedElements.includes(el), coord);
       }
     });
 
@@ -493,9 +492,6 @@ export const GeometryCanvas: React.FC = () => {
         const dx = targetX - p1.getX();
         const dy = targetY - p1.getY();
         if (Math.hypot(dx, dy) > 1 / coord.xScale) {
-            // Extend to screen bounds
-            const slope = dy / dx;
-            // Simple drawing: just a long segment for preview
             ctx.beginPath();
             ctx.moveTo(p1.getX() - 10000 * dx, p1.getY() - 10000 * dy);
             ctx.lineTo(p1.getX() + 10000 * dx, p1.getY() + 10000 * dy);
@@ -695,7 +691,7 @@ export const GeometryCanvas: React.FC = () => {
 
     ctx.restore(); // Restore the global transform
 
-  }, [kernel, refresh, selectedElements, mousePos, mode, polygonPoints, radius, hoveredPoint, transform, showGrid, showAxes]);
+  }, [kernel, selectedElements, mousePos, mode, polygonPoints, radius, hoveredPoint, coord, showGrid, showAxes]);
   }, [renderRev, selectedElements, mousePos, mode, polygonPoints, radius, hoveredPoint, coord, showGrid, showAxes]);
 
   useEffect(() => {
@@ -1645,12 +1641,29 @@ export const GeometryCanvas: React.FC = () => {
 
   const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault();
-
     if (!containerRef.current) return;
-
     const rect = containerRef.current.getBoundingClientRect();
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
+    const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+    setCoord(prev => {
+      let next = prev.zoom(factor, mouseX, mouseY);
+      if (next.xScale < 0.1) next = prev.zoom(0.1 / prev.xScale, mouseX, mouseY);
+      else if (next.xScale > 10) next = prev.zoom(10 / prev.xScale, mouseX, mouseY);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    el.addEventListener('wheel', handleWheel, { passive: false });
+    return () => el.removeEventListener('wheel', handleWheel);
+  }, [handleWheel]);
+
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+  };
 
   const zoom = (factor: number) => {
     if (!containerRef.current) return;
@@ -1662,32 +1675,6 @@ export const GeometryCanvas: React.FC = () => {
       if (next.xScale < 0.1) next = prev.zoom(0.1 / prev.xScale, sx, sy);
       else if (next.xScale > 10) next = prev.zoom(10 / prev.xScale, sx, sy);
       return next;
-    });
-  };
-  }, []);
-
-  const handleContextMenu = (e: React.MouseEvent) => {
-    e.preventDefault();
-  };
-
-  const zoom = (factor: number) => {
-    if (!containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
-    const screenX = rect.width / 2;
-    const screenY = rect.height / 2;
-    
-    setTransform(prev => {
-      const newScale = prev.scale * factor;
-      if (newScale < 0.1 || newScale > 10) return prev;
-      
-      const x = (screenX - prev.x) / prev.scale;
-      const y = (screenY - prev.y) / prev.scale;
-      
-      return {
-        scale: newScale,
-        x: screenX - x * newScale,
-        y: screenY - y * newScale
-      };
     });
   };
 
@@ -2076,8 +2063,8 @@ export const GeometryCanvas: React.FC = () => {
           
           {/* UI Elements */}
           {uiElements.map(element => {
-            const screenX = element.x * coord.xScale + transform.x;
-            const screenY = element.y * coord.xScale + transform.y;
+            const screenX = element.x * coord.xScale + coord.xZero;
+            const screenY = element.y * coord.yScale + coord.yZero;
             
             const handleUIDragStart = (e: React.MouseEvent) => {
               e.stopPropagation();

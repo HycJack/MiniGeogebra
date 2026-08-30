@@ -76,30 +76,33 @@ const VERSION = 1;
 
 /** 工厂：按类型重建算法实例（正常构造，input 已存在于 map 中） */
 function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[]): AlgoElement {
-  const asPoints = (n: number) => inputs.slice(0, n) as import('../geo/GeoPoint').GeoPoint[];
+  const asPoint = (n: number) => inputs[n] as import('../geo/GeoPoint').GeoPoint;
+  const asConic = (n: number) => inputs[n] as import('../geo/GeoConic').GeoConic;
+  const asLine = (n: number) => inputs[n] as import('../geo/GeoLine').GeoLine;
+  const asSegment = (n: number) => inputs[n] as import('../geo/GeoSegment').GeoSegment;
 
   switch (type) {
-    case 'AlgoLineTwoPoints':        return new AlgoLineTwoPoints(kernel, ...asPoints(2));
-    case 'AlgoSegmentTwoPoints':     return new AlgoSegmentTwoPoints(kernel, ...asPoints(2));
-    case 'AlgoMidpoint':             return new AlgoMidpoint(kernel, ...asPoints(2));
-    case 'AlgoCirclePointRadius':    return new AlgoCirclePointRadius(kernel, inputs[0] as import('../geo/GeoPoint').GeoPoint, (inputs[1] as any)?.value ?? 50);
-    case 'AlgoCircleCenterPoint':    return new AlgoCircleCenterPoint(kernel, ...asPoints(2));
-    case 'AlgoCircleThreePoints':    return new AlgoCircleThreePoints(kernel, ...asPoints(3));
-    case 'AlgoCircleCenter':         return new AlgoCircleCenter(kernel, inputs[0] as import('../geo/GeoConic').GeoConic);
+    case 'AlgoLineTwoPoints':        return new AlgoLineTwoPoints(kernel, asPoint(0), asPoint(1));
+    case 'AlgoSegmentTwoPoints':     return new AlgoSegmentTwoPoints(kernel, asPoint(0), asPoint(1));
+    case 'AlgoMidpoint':             return new AlgoMidpoint(kernel, asPoint(0), asPoint(1));
+    case 'AlgoCirclePointRadius':    return new AlgoCirclePointRadius(kernel, asPoint(0), (inputs[1] as any)?.value ?? 50);
+    case 'AlgoCircleCenterPoint':    return new AlgoCircleCenterPoint(kernel, asPoint(0), asPoint(1));
+    case 'AlgoCircleThreePoints':    return new AlgoCircleThreePoints(kernel, asPoint(0), asPoint(1), asPoint(2));
+    case 'AlgoCircleCenter':         return new AlgoCircleCenter(kernel, asConic(0));
     case 'AlgoIntersect':            return new AlgoIntersect(kernel, inputs[0], inputs[1]);
-    case 'AlgoParallelLine':         return new AlgoParallelLine(kernel, inputs[0] as import('../geo/GeoPoint').GeoPoint, inputs[1] as import('../geo/GeoLine').GeoLine);
-    case 'AlgoOrthogonalLine':       return new AlgoOrthogonalLine(kernel, inputs[0] as import('../geo/GeoPoint').GeoPoint, inputs[1] as import('../geo/GeoLine').GeoLine);
-    case 'AlgoPerpendicularBisector':return new AlgoPerpendicularBisector(kernel, ...asPoints(2));
-    case 'AlgoAngleBisector':        return new AlgoAngleBisector(kernel, ...asPoints(3));
-    case 'AlgoPointOnLine':          return new AlgoPointOnLine(kernel, inputs[0] as import('../geo/GeoLine').GeoLine, inputs[1] as GeoNumeric);
-    case 'AlgoPointOnSegment':       return new AlgoPointOnSegment(kernel, inputs[0] as import('../geo/GeoSegment').GeoSegment, inputs[1] as GeoNumeric);
-    case 'AlgoPointOnConic':         return new AlgoPointOnConic(kernel, inputs[0] as import('../geo/GeoConic').GeoConic, inputs[1] as GeoNumeric);
+    case 'AlgoParallelLine':         return new AlgoParallelLine(kernel, asPoint(0), asLine(1));
+    case 'AlgoOrthogonalLine':       return new AlgoOrthogonalLine(kernel, asPoint(0), asLine(1));
+    case 'AlgoPerpendicularBisector':return new AlgoPerpendicularBisector(kernel, asPoint(0), asPoint(1));
+    case 'AlgoAngleBisector':        return new AlgoAngleBisector(kernel, asPoint(0), asPoint(1), asPoint(2));
+    case 'AlgoPointOnLine':          return new AlgoPointOnLine(kernel, asLine(0), inputs[1] as GeoNumeric);
+    case 'AlgoPointOnSegment':       return new AlgoPointOnSegment(kernel, asSegment(0), inputs[1] as GeoNumeric);
+    case 'AlgoPointOnConic':         return new AlgoPointOnConic(kernel, asConic(0), inputs[1] as GeoNumeric);
     case 'AlgoTranslate':            return new AlgoTranslate(kernel, inputs[0], inputs[1] as import('../geo/GeoVector').GeoVector);
     case 'AlgoDistance':             return new AlgoDistance(kernel, inputs[0], inputs[1]);
-    case 'AlgoAngle':                return new AlgoAngle(kernel, ...asPoints(3));
+    case 'AlgoAngle':                return new AlgoAngle(kernel, asPoint(0), asPoint(1), asPoint(2));
     case 'AlgoArea':                 return new AlgoArea(kernel, inputs[0]);
-    case 'AlgoTangent':              return new AlgoTangent(kernel, inputs[0], inputs[1]);
-    case 'AlgoLocus':                return new AlgoLocus(kernel, inputs[1], inputs[0]);
+    case 'AlgoTangent':              return new AlgoTangent(kernel, asConic(0), asPoint(1));
+    case 'AlgoLocus':                return new AlgoLocus(kernel, inputs[1] as import('../geo/GeoPoint').GeoPoint, inputs[0] as import('../geo/GeoPoint').GeoPoint);
     default:
       throw new Error(`[ConstructionSerializer] unknown algorithm type: ${type}`);
   }
@@ -188,10 +191,11 @@ export function deserialize(kernel: Kernel, json: string): { coord?: CoordinateS
       instance = new GeoPoint(kernel, new GeoVec3D(c[0], c[1], c[2]));
     } else if (el.type === 'GeoNumeric') {
       instance = new GeoNumeric(kernel, el.value ?? 0);
-      instance.intervalMin = el.intervalMin ?? 0;
-      instance.intervalMax = el.intervalMax ?? 2 * Math.PI;
-      instance.animationSpeed = el.animationSpeed ?? 1;
-      instance.animationIncrement = el.animationIncrement ?? 0.01;
+      const num = instance as GeoNumeric;
+      num.intervalMin = el.intervalMin ?? 0;
+      num.intervalMax = el.intervalMax ?? 2 * Math.PI;
+      num.animationSpeed = el.animationSpeed ?? 1;
+      num.animationIncrement = el.animationIncrement ?? 0.01;
     } else {
       throw new Error(`[ConstructionSerializer] unsupported independent element type: ${el.type}`);
     }
