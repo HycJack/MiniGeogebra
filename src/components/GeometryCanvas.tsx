@@ -46,7 +46,8 @@ import {
   Triangle,
   Square,
   CornerDownRight,
-  Activity
+  Activity,
+  Plus
 } from 'lucide-react';
 
 interface StateSnapshot {
