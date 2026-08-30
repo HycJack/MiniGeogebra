@@ -6,6 +6,9 @@ import { GeoLine } from '../kernel/geo/GeoLine';
 import { GeoSegment } from '../kernel/geo/GeoSegment';
 import { GeoPolygon } from '../kernel/geo/GeoPolygon';
 import { GeoConic } from '../kernel/geo/GeoConic';
+import { elementIntersectsRect } from '../kernel/view/BoundingBoxHelper';
+import { applySnap, SNAP_POINT_RADIUS, calculateGridStep } from '../kernel/core/Snap';
+import { SvgRenderer } from '../kernel/view/SvgRenderer';
 import { GeoVec3D } from '../kernel/core/GeoVec3D';
 import { AlgoMidpoint } from '../kernel/algo/AlgoMidpoint';
 import { AlgoLineTwoPoints } from '../kernel/algo/AlgoLineTwoPoints';
@@ -114,6 +117,7 @@ export const GeometryCanvas: React.FC = () => {
     
     setSelectedElements([]);
     setPolygonPoints([]);
+    cancelBoxSelect();
   }, [mode]);
 
   useEffect(() => {
@@ -132,6 +136,19 @@ export const GeometryCanvas: React.FC = () => {
     if (!canvas) return;
     setRenderer(createRenderer(canvas, true));
     return () => setRenderer(null);
+  }, []);
+
+  /** P2: 清空框选状态并擦除选择框 */
+  const cancelBoxSelect = useCallback(() => {
+    setIsBoxSelecting(false);
+    setBoxStartScreen(null);
+    setBoxEndScreen(null);
+    const ctx = overlayCanvasRef.current?.getContext('2d');
+    if (ctx && canvasRef.current) {
+      const w = canvasRef.current.clientWidth;
+      const h = canvasRef.current.clientHeight;
+      ctx.clearRect(0, 0, w, h);
+    }
   }, []);
 
   const handleLabelChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -156,6 +173,7 @@ export const GeometryCanvas: React.FC = () => {
   const [hoveredPoint, setHoveredPoint] = useState<GeoPoint | null>(null);
   const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
   const [renderer, setRenderer] = useState<IRenderer | null>(null);
+  const [overlayCanvasRef] = useState(React.createRef<HTMLCanvasElement>());
   
   const [coord, setCoord] = useState<CoordinateSystem>(() => CoordinateSystem.centered(800, 600, 1));
   const [isPanning, setIsPanning] = useState(false);
@@ -174,6 +192,18 @@ export const GeometryCanvas: React.FC = () => {
   const [uiElements, setUIElements] = useState<UIElement[]>([]);
   const [editingUIElement, setEditingUIElement] = useState<string | null>(null);
   const [draggingUIElement, setDraggingUIElement] = useState<string | null>(null);
+
+  // --- P2: 多选 / 框选 ---
+  const boxModifierDown = useRef(false);
+
+  const [isBoxSelecting, setIsBoxSelecting] = useState(false);
+  const [boxStartScreen, setBoxStartScreen] = useState<{x: number; y: number} | null>(null);
+  const [boxEndScreen, setBoxEndScreen] = useState<{x: number; y: number} | null>(null);
+
+  // --- P2: 吸附（网格 / 点）---
+  const [snapEnabled, setSnapEnabled] = useState(true);
+  const [snapToGrid, setSnapToGrid] = useState(true);
+  const [snapToPoint, setSnapToPoint] = useState(true);
 
   const undoStack = useRef<Command[]>([]);
   const redoStack = useRef<Command[]>([]);
@@ -230,6 +260,56 @@ export const GeometryCanvas: React.FC = () => {
       console.error('[export failed]', err);
       alert('导出失败，请查看控制台');
     }
+  };
+
+  /** 下载任意文件 */
+  const downloadFile = (content: string, filename: string, type?: string) => {
+    const blob = new Blob([content], { type: type || 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  /** 导出为 PNG */
+  const handleExportPNG = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    downloadFile(canvas.toDataURL('image/png'), `minigeogebra-${Date.now()}.png`, 'image/png');
+  };
+
+  /** 导出为 SVG */
+  const handleExportSVG = () => {
+    try {
+      const svgR = new SvgRenderer();
+      const bounds = coord.visibleWorldBounds();
+      _renderToSvg(svgR, bounds);
+      const svgStr = svgR.toSvgString(bounds);
+      downloadFile(svgStr, `minigeogebra-${Date.now()}.svg`, 'image/svg+xml');
+    } catch (err) {
+      console.error('[svg export failed]', err);
+      alert('SVG 导出失败，请查看控制台');
+    }
+  };
+
+  /** 把当前构造以世界坐标重绘到 SVG 后端 */
+  const _renderToSvg = (renderer: IRenderer, bounds: { minX: number; maxX: number; minY: number; maxY: number }) => {
+    const viewBoxW = (bounds.maxX - bounds.minX) * coord.xScale;
+    const viewBoxH = (bounds.maxY - bounds.minY) * coord.xScale;
+    drawGrid(renderer, viewBoxW, viewBoxH, coord, true, true);
+    const elements = kernel.getConstruction().getElements();
+    elements.forEach(el => { if (el instanceof GeoPolygon) drawPolygon(renderer, el, false, coord.xScale); });
+    elements.forEach(el => { if (el instanceof GeoConic) drawConic(renderer, el, false, coord.xScale); });
+    elements.forEach(el => { if (el instanceof GeoLocus) drawLocus(renderer, el, false, coord.xScale); });
+    elements.forEach(el => {
+      if (el instanceof GeoSegment) drawSegment(renderer, el, false, coord.xScale);
+      else if (el instanceof GeoLine && !(el instanceof GeoSegment)) drawLine(renderer, el, false, coord, viewBoxW, viewBoxH);
+    });
+    elements.forEach(el => { if (el instanceof GeoPoint) drawPoint(renderer, el, false, coord.xScale); });
   };
 
   const handleImportPick = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -350,6 +430,7 @@ export const GeometryCanvas: React.FC = () => {
           setMode('move');
           setSelectedElements([]);
           setPolygonPoints([]);
+          cancelBoxSelect();
           setRenderRev(r => r + 1);
         }
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -357,6 +438,9 @@ export const GeometryCanvas: React.FC = () => {
           e.preventDefault();
           deleteWithDependents(selectedElements);
         }
+      } else if (e.altKey && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault();
+        setSnapEnabled(prev => !prev);
       }
     };
 
@@ -899,15 +983,15 @@ export const GeometryCanvas: React.FC = () => {
     renderer.fillText(label, labelX, labelY);
   };
 
-  const drawLine = (renderer: IRenderer, l: GeoLine, selected: boolean, coord: CoordinateSystem) => {
+  const drawLine = (renderer: IRenderer, l: GeoLine, selected: boolean, coord: CoordinateSystem, wPx?: number, hPx?: number) => {
     if (!l.isDefined()) return;
     
     const canvas = canvasRef.current;
     if (!canvas) return;
     
     const dpr = window.devicePixelRatio || 1;
-    const w = canvas.width / dpr;
-    const h = canvas.height / dpr;
+    const w = wPx ?? canvas.width / dpr;
+    const h = hPx ?? canvas.height / dpr;
     
     const startX = coord.screenToWorldX(0);
     const endX = coord.screenToWorldX(w);
@@ -975,12 +1059,27 @@ export const GeometryCanvas: React.FC = () => {
     }
   };
 
-  const getMousePos = (e: React.MouseEvent | React.WheelEvent) => {
+  /** P2: 获取鼠标原始屏幕坐标 */
+  const getScreenPos = (e: React.MouseEvent | React.WheelEvent) => {
     const rect = canvasRef.current!.getBoundingClientRect();
-    const screenX = e.clientX - rect.left;
-    const screenY = e.clientY - rect.top;
+    return { screenX: e.clientX - rect.left, screenY: e.clientY - rect.top };
+  };
+
+  /** P2: 当前缩放对应的网格步长 */
+  const getGridStep = () => calculateGridStep(coord.xScale);
+
+  const getMousePos = (e: React.MouseEvent | React.WheelEvent, useSnap: boolean = false): { screenX: number; screenY: number; x: number; y: number } => {
+    const { screenX, screenY } = getScreenPos(e);
     const world = coord.screenToWorld(screenX, screenY);
-    return { screenX, screenY, x: world.x, y: world.y };
+    let { x, y } = world;
+    if (useSnap && snapEnabled) {
+      const snapRadius = SNAP_POINT_RADIUS / coord.xScale;
+      const snapped = applySnap(x, y, snapRadius, snapToGrid, snapToPoint,
+        kernel.getConstruction().getElements().filter(e => e instanceof GeoPoint) as GeoPoint[], getGridStep());
+      x = snapped.x;
+      y = snapped.y;
+    }
+    return { screenX, screenY, x, y };
   };
 
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -1006,12 +1105,10 @@ export const GeometryCanvas: React.FC = () => {
     ) as GeoPoint | undefined;
 
     if (mode === 'move') {
-      if (clickedPoint) {
-        setDraggedElement(clickedPoint);
-        setSelectedElements([clickedPoint]);
-      } else {
-        // Check for other elements
-        const clickedObj = elements.slice().reverse().find(el => {
+      // 命中测试：优先命中点，再命中其他几何对象
+      let clickedObj: GeoElement | undefined;
+      if (!clickedPoint) {
+        clickedObj = elements.slice().reverse().find(el => {
             if (el instanceof GeoSegment) {
                 return (el as any).isOnPath({ getX: () => x, getY: () => y }, 5 / coord.xScale);
             } else if (el instanceof GeoLine) {
@@ -1029,13 +1126,30 @@ export const GeometryCanvas: React.FC = () => {
             }
             return false;
         }) as GeoElement | undefined;
+      }
 
-        if (clickedObj) {
-            setDraggedElement(clickedObj);
-            setSelectedElements([clickedObj]);
-        } else {
-            setSelectedElements([]);
+      if (clickedPoint) {
+        if (e.ctrlKey || e.metaKey) {
+          setSelectedElements(prev => prev.includes(clickedPoint) ? prev.filter(e => e !== clickedPoint) : [...prev, clickedPoint]);
+          return;
         }
+        setDraggedElement(clickedPoint);
+        setSelectedElements([clickedPoint]);
+      } else if (clickedObj) {
+        if (e.ctrlKey || e.metaKey) {
+          setSelectedElements(prev => prev.includes(clickedObj) ? prev.filter(e => e !== clickedObj) : [...prev, clickedObj]);
+          return;
+        }
+        setDraggedElement(clickedObj);
+        setSelectedElements([clickedObj]);
+      } else if (e.button === 0 && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+        // 空白处左键按住拖动 -> 启动框选
+        boxModifierDown.current = false;
+        setBoxStartScreen({ x: screenX, y: screenY });
+        setIsBoxSelecting(true);
+        return;
+      } else {
+        setSelectedElements([]);
       }
     } else if (mode === 'point') {
       const clickedObj = elements.slice().reverse().find(el => {
@@ -1564,6 +1678,30 @@ export const GeometryCanvas: React.FC = () => {
     ) as GeoPoint | undefined;
     setHoveredPoint(hovered || null);
 
+    // P2: 绘制框选矩形覆盖层
+    if (isBoxSelecting && boxStartScreen) {
+      setBoxEndScreen({ x: screenX, y: screenY });
+      const ctx = overlayCanvasRef.current?.getContext('2d');
+      if (ctx && canvasRef.current) {
+        const w = canvasRef.current.clientWidth;
+        const h = canvasRef.current.clientHeight;
+        ctx.clearRect(0, 0, w, h);
+        const sx = Math.min(boxStartScreen.x, screenX);
+        const sy = Math.min(boxStartScreen.y, screenY);
+        const sw = Math.abs(screenX - boxStartScreen.x);
+        const sh = Math.abs(screenY - boxStartScreen.y);
+        ctx.save();
+        ctx.globalAlpha = 0.15;
+        ctx.fillStyle = '#3b82f6';
+        ctx.fillRect(sx, sy, sw, sh);
+        ctx.strokeStyle = '#3b82f6';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.strokeRect(sx, sy, sw, sh);
+        ctx.restore();
+      }
+    }
+
     if (draggedElement) {
       if (draggedElement instanceof GeoPoint && draggedElement.isIndependent()) {
         draggedElement.setCoords(x, y);
@@ -1605,6 +1743,43 @@ export const GeometryCanvas: React.FC = () => {
     
     if (draggingUIElement) {
       setDraggingUIElement(null);
+      return;
+    }
+
+    // P2: 框选完成
+    if (isBoxSelecting) {
+      if (!boxStartScreen || !boxEndScreen) {
+        cancelBoxSelect();
+        return;
+      }
+      const dist = Math.hypot(boxEndScreen.x - boxStartScreen.x, boxEndScreen.y - boxStartScreen.y);
+      if (dist < 4) {
+        // 短按：清除选择
+        setSelectedElements([]);
+        cancelBoxSelect();
+        return;
+      }
+      // 转为世界坐标矩形
+      const p1 = coord.screenToWorld(boxStartScreen.x, boxStartScreen.y);
+      const p2 = coord.screenToWorld(boxEndScreen.x, boxEndScreen.y);
+      const rect = {
+        minX: Math.min(p1.x, p2.x),
+        maxX: Math.max(p1.x, p2.x),
+        minY: Math.min(p1.y, p2.y),
+        maxY: Math.max(p1.y, p2.y),
+      };
+      const elements = kernel.getConstruction().getElements();
+      const hitElements: GeoElement[] = [];
+      for (const el of elements) {
+        if (elementIntersectsRect(el, rect)) hitElements.push(el);
+      }
+      if (boxModifierDown.current) {
+        const hitSet = new Set(hitElements);
+        setSelectedElements(prev => prev.filter(e => !hitSet.has(e)).concat(hitElements));
+      } else {
+        setSelectedElements(hitElements);
+      }
+      cancelBoxSelect();
       return;
     }
     
@@ -2032,6 +2207,27 @@ export const GeometryCanvas: React.FC = () => {
         </button>
         <input ref={fileInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleImportPick} />
 
+        <button
+          className={`flex items-center gap-1 px-2 py-1.5 rounded-md text-sm font-medium transition-colors ${
+            snapEnabled ? 'bg-blue-50 text-blue-700' : 'bg-gray-100 text-gray-600'
+          }`}
+          onClick={() => setSnapEnabled(!snapEnabled)}
+          title={snapEnabled ? '关闭吸附（Alt+S）' : '开启吸附（Alt+S）'}>
+          <Target size={14} />
+          <span className="text-xs">吸附</span>
+        </button>
+        <button
+          className="px-2 py-1.5 rounded-md text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
+          onClick={handleExportPNG}
+          title="导出为 PNG">
+          导出 PNG
+        </button>
+        <button
+          className="px-2 py-1.5 rounded-md text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
+          onClick={handleExportSVG}
+          title="导出为 SVG">
+          导出 SVG
+        </button>
         <div className="flex-1"></div>
         <button 
             className={`flex items-center gap-2 px-3 py-1.5 rounded-md font-medium transition-colors ${isAnimating ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
@@ -2106,6 +2302,11 @@ export const GeometryCanvas: React.FC = () => {
 
         {/* Canvas Area */}
         <div className="flex-1 relative bg-white z-0" ref={containerRef}>
+          <canvas
+            ref={overlayCanvasRef}
+            className="absolute inset-0 pointer-events-none z-[5]"
+            style={{ touchAction: 'none' }}
+          />
           <canvas
               ref={canvasRef}
               width={canvasSize.width}

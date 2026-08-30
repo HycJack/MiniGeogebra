@@ -1,0 +1,492 @@
+diff --git a/src/components/GeometryCanvas.tsx b/src/components/GeometryCanvas.tsx
+--- a/src/components/GeometryCanvas.tsx
+
++++ b/src/components/GeometryCanvas.tsx
+
+@@ -6,6 +6,8 @@
+
+ import { GeoSegment } from '../kernel/geo/GeoSegment';
+ import { GeoPolygon } from '../kernel/geo/GeoPolygon';
+ import { GeoConic } from '../kernel/geo/GeoConic';
++import { elementIntersectsRect } from '../kernel/view/BoundingBoxHelper';
++import { applySnap, SNAP_POINT_RADIUS } from '../kernel/core/Snap';
+ import { GeoVec3D } from '../kernel/core/GeoVec3D';
+ import { AlgoMidpoint } from '../kernel/algo/AlgoMidpoint';
+ import { AlgoLineTwoPoints } from '../kernel/algo/AlgoLineTwoPoints';
+@@ -114,6 +116,7 @@
+
+     
+     setSelectedElements([]);
+     setPolygonPoints([]);
++    cancelBoxSelect();
+   }, [mode]);
+ 
+   useEffect(() => {
+@@ -132,6 +135,19 @@
+
+     if (!canvas) return;
+     setRenderer(createRenderer(canvas, true));
+     return () => setRenderer(null);
++  }, []);
++
++  /** P2: 清空框选状态并擦除选择框 */
++  const cancelBoxSelect = useCallback(() => {
++    setIsBoxSelecting(false);
++    setBoxStartScreen(null);
++    setBoxEndScreen(null);
++    const ctx = overlayCanvasRef.current?.getContext('2d');
++    if (ctx) {
++      const w = canvasRef.current!.clientWidth;
++      const h = canvasRef.current!.clientHeight;
++      ctx.clearRect(0, 0, w, h);
++    }
+   }, []);
+ 
+   const handleLabelChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+@@ -149,6 +165,8 @@
+
+       }
+     }
+   };
++
++  const [overlayCanvasRef] = useState(React.createRef<HTMLCanvasElement>());
+ 
+   const [draggedElement, setDraggedElement] = useState<GeoElement | null>(null);
+   const [renderRev, setRenderRev] = useState(0); // RAF 渲染节流信号
+@@ -175,6 +193,18 @@
+
+   const [editingUIElement, setEditingUIElement] = useState<string | null>(null);
+   const [draggingUIElement, setDraggingUIElement] = useState<string | null>(null);
+ 
++  // --- P2: 多选 / 框选 ---
++  const boxModifierDown = useRef(false);   // 框选按下时的 Ctrl/Cmd 修饰键状态
++
++  const [isBoxSelecting, setIsBoxSelecting] = useState(false);
++  const [boxStartScreen, setBoxStartScreen] = useState<{x: number; y: number} | null>(null);
++  const [boxEndScreen, setBoxEndScreen] = useState<{x: number; y: number} | null>(null);
++
++  // --- P2: 吸附（网格 / 点）---
++  const [snapEnabled, setSnapEnabled] = useState(true);
++  const [snapToGrid, setSnapToGrid] = useState(true);
++  const [snapToPoint, setSnapToPoint] = useState(true);
++
+   const undoStack = useRef<Command[]>([]);
+   const redoStack = useRef<Command[]>([]);
+   const [dragStartState, setDragStartState] = useState<StateSnapshot | null>(null);
+@@ -350,6 +380,7 @@
+
+           setMode('move');
+           setSelectedElements([]);
+           setPolygonPoints([]);
++          cancelBoxSelect();
+           setRenderRev(r => r + 1);
+         }
+       } else if (e.key === 'Delete' || e.key === 'Backspace') {
+@@ -975,12 +1006,31 @@
+
+     }
+   };
+ 
+-  const getMousePos = (e: React.MouseEvent | React.WheelEvent) => {
++  /** P2: 获取鼠标原始屏幕坐标（不含世界坐标转换 / 吸附） */
++  const getScreenPos = (e: React.MouseEvent | React.WheelEvent) => {
+     const rect = canvasRef.current!.getBoundingClientRect();
+-    const screenX = e.clientX - rect.left;
+-    const screenY = e.clientY - rect.top;
++    return { screenX: e.clientX - rect.left, screenY: e.clientY - rect.top };
++  };
++
++  /** P2: 当前缩放对应的网格步长（世界单位） */
++  const getGridStep = () => calculateGridStep(coord.xScale);
++
++  /** 
++   * P2: 鼠标坐标转换；useSnap=true 时应用吸附（网格/点吸附）
++   * 吸附热区与点击热区对齐（10px 屏幕距离 / scale）
++   */
++  const getMousePos = (e: React.MouseEvent | React.WheelEvent, useSnap: boolean = false): { screenX: number; screenY: number; x: number; y: number } => {
++    const { screenX, screenY } = getScreenPos(e);
+     const world = coord.screenToWorld(screenX, screenY);
+-    return { screenX, screenY, x: world.x, y: world.y };
++    let { x, y } = world;
++    if (useSnap && snapEnabled) {
++      const snapRadius = SNAP_POINT_RADIUS / coord.xScale;
++      const snapped = applySnap(x, y, snapRadius, snapToGrid, snapToPoint,
++        kernel.getConstruction().getElements().filter(e => e instanceof GeoPoint), getGridStep());
++      x = snapped.x;
++      y = snapped.y;
++    }
++    return { screenX, screenY, x, y };
+   };
+ 
+   const handleMouseDown = (e: React.MouseEvent) => {
+@@ -1006,12 +1056,10 @@
+
+     ) as GeoPoint | undefined;
+ 
+     if (mode === 'move') {
+-      if (clickedPoint) {
+-        setDraggedElement(clickedPoint);
+-        setSelectedElements([clickedPoint]);
+-      } else {
+-        // Check for other elements
+-        const clickedObj = elements.slice().reverse().find(el => {
++      // 命中测试：优先命中点，再命中其他几何对象
++      let clickedObj: GeoElement | undefined;
++      if (!clickedPoint) {
++        clickedObj = elements.slice().reverse().find(el => {
+             if (el instanceof GeoSegment) {
+                 return (el as any).isOnPath({ getX: () => x, getY: () => y }, 5 / coord.xScale);
+             } else if (el instanceof GeoLine) {
+@@ -1029,14 +1077,34 @@
+
+             }
+             return false;
+         }) as GeoElement | undefined;
+-
+-        if (clickedObj) {
+-            setDraggedElement(clickedObj);
+-            setSelectedElements([clickedObj]);
+-        } else {
+-            setSelectedElements([]);
+-        }
+-      }
++      }
++
++      if (clickedPoint) {
++        // Ctrl/Cmd：toggle 选择；否则设为拖拽目标
++        if (e.ctrlKey || e.metaKey) {
++          setSelectedElements(prev => prev.includes(clickedPoint) ? prev.filter(e => e !== clickedPoint) : [...prev, clickedPoint]);
++          return;
++        }
++        setDraggedElement(clickedPoint);
++        setSelectedElements([clickedPoint]);
++      } else if (clickedObj) {
++        // Ctrl/Cmd：toggle 选择；否则设为拖拽目标
++        if (e.ctrlKey || e.metaKey) {
++          setSelectedElements(prev => prev.includes(clickedObj) ? prev.filter(e => e !== clickedObj) : [...prev, clickedObj]);
++          return;
++        }
++        setDraggedElement(clickedObj);
++        setSelectedElements([clickedObj]);
++      } else if (e.button === 0 && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
++        // 空白处左键按住拖动 -> 启动框选（短按将在 mouseUp 判断）
++        boxModifierDown.current = false;
++        setBoxStartScreen({ screenX, screenY });
++        setIsBoxSelecting(true);
++        return;
++      } else {
++        setSelectedElements([]);
++      }
++    }
+     } else if (mode === 'point') {
+       const clickedObj = elements.slice().reverse().find(el => {
+           if (el instanceof GeoSegment) {
+@@ -1564,6 +1632,30 @@
+
+     ) as GeoPoint | undefined;
+     setHoveredPoint(hovered || null);
+ 
++    // P2: 绘制框选矩形覆盖层
++    if (isBoxSelecting && boxStartScreen && boxEndScreen) {
++      setBoxEndScreen({ x: screenX, y: screenY });
++      const ctx = overlayCanvasRef.current?.getContext('2d');
++      if (ctx) {
++        const w = canvasRef.current!.clientWidth;
++        const h = canvasRef.current!.clientHeight;
++        ctx.clearRect(0, 0, w, h);
++        const sx = Math.min(boxStartScreen.x, boxEndScreen.x);
++        const sy = Math.min(boxStartScreen.y, boxEndScreen.y);
++        const sw = Math.abs(boxEndScreen.x - boxStartScreen.x);
++        const sh = Math.abs(boxEndScreen.y - boxStartScreen.y);
++        ctx.save();
++        ctx.globalAlpha = 0.15;
++        ctx.fillStyle = '#3b82f6';
++        ctx.fillRect(sx, sy, sw, sh);
++        ctx.strokeStyle = '#3b82f6';
++        ctx.lineWidth = 1;
++        ctx.setLineDash([4, 4]);
++        ctx.strokeRect(sx, sy, sw, sh);
++        ctx.restore();
++      }
++    }
++
+     if (draggedElement) {
+       if (draggedElement instanceof GeoPoint && draggedElement.isIndependent()) {
+         draggedElement.setCoords(x, y);
+@@ -1603,6 +1695,44 @@
+
+       return;
+     }
+     
++    // P2: 清空框选状态并擦除选择框
++    if (isBoxSelecting) {
++      if (!boxStartScreen || !boxEndScreen) {
++        cancelBoxSelect();
++        return;
++      }
++      const dist = Math.hypot(boxEndScreen.x - boxStartScreen.x, boxEndScreen.y - boxStartScreen.y);
++      if (dist < 4) {
++        // 短按：清除选择（点空白行为）
++        setSelectedElements([]);
++        cancelBoxSelect();
++        return;
++      }
++      // 转为世界坐标矩形
++      const p1 = coord.screenToWorld(boxStartScreen.x, boxStartScreen.y);
++      const p2 = coord.screenToWorld(boxEndScreen.x, boxEndScreen.y);
++      const rect = {
++        minX: Math.min(p1.x, p2.x),
++        maxX: Math.max(p1.x, p2.x),
++        minY: Math.min(p1.y, p2.y),
++        maxY: Math.max(p1.y, p2.y),
++      };
++      const elements = kernel.getConstruction().getElements();
++      const hitElements: GeoElement[] = [];
++      for (const el of elements) {
++        if (elementIntersectsRect(el, rect)) hitElements.push(el);
++      }
++      if (boxModifierDown.current) {
++        // Ctrl/Cmd：对框中元素做批量 toggle
++        const hitSet = new Set(hitElements);
++        setSelectedElements(prev => prev.filter(e => !hitSet.has(e)).concat(hitElements));
++      } else {
++        setSelectedElements(hitElements);
++      }
++      cancelBoxSelect();
++      return;
++    }
++
+     if (draggingUIElement) {
+       setDraggingUIElement(null);
+       return;
+@@ -2032,6 +2162,15 @@
+
+         </button>
+         <input ref={fileInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleImportPick} />
+ 
++        <button
++          className={`flex items-center gap-1 px-2 py-1.5 rounded-md text-sm font-medium transition-colors ${
++            snapEnabled ? 'bg-blue-50 text-blue-700' : 'bg-gray-100 text-gray-600'
++          }`}
++          onClick={() => setSnapEnabled(!snapEnabled)}
++          title={snapEnabled ? '关闭吸附（Alt+S）' : '开启吸附（Alt+S）'}>
++          <Target size={14} />
++          <span className="text-xs">吸附</span>
++        </button>
+         <div className="flex-1"></div>
+         <button 
+             className={`flex items-center gap-2 px-3 py-1.5 rounded-md font-medium transition-colors ${isAnimating ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+@@ -2106,6 +2245,11 @@
+
+ 
+         {/* Canvas Area */}
+         <div className="flex-1 relative bg-white z-0" ref={containerRef}>
++          <canvas
++            ref={overlayCanvasRef}
++            className="absolute inset-0 pointer-events-none z-[5]"
++            style={{ touchAction: 'none' }}
++          />
+           <canvas
+               ref={canvasRef}
+               width={canvasSize.width}
+diff --git a/src/kernel/core/Snap.ts b/src/kernel/core/Snap.ts
+--- /dev/null
+
++++ b/src/kernel/core/Snap.ts
+
+@@ -0,0 +1,79 @@
+
++import { GeoPoint } from '../geo/GeoPoint';
++
++export const SNAP_POINT_RADIUS = 10; // 吸附热区（像素，与点击热区对齐）
++
++/** 吸附计算后的位置信息 */
++export interface SnappedPosition {
++  x: number;
++  y: number;
++  type?: 'grid' | 'point';
++  point?: GeoPoint;
++}
++
++/** 
++ * 计算当前缩放下的网格步长（单位：世界坐标）
++ * 目标：网格线间隔约 50px（屏幕空间）
++ */
++export function calculateGridStep(scale: number): number {
++  const targetStepScreen = 50; // px
++  const targetStepWorld = targetStepScreen / scale;
++  const magnitude = Math.pow(10, Math.floor(Math.log10(targetStepWorld)));
++  const residual = targetStepWorld / magnitude;
++  let step = magnitude;
++  if (residual > 5) step = 10 * magnitude;
++  else if (residual > 2) step = 5 * magnitude;
++  else if (residual > 1) step = 2 * magnitude;
++  return step;
++}
++
++/** 
++ * 应用吸附：网格吸附 + 点到点吸附
++ * @param radius 吸附半径（世界坐标单位）
++ * @param snapToGrid 是否开启网格吸附
++ * @param snapToPoint 是否开启点吸附
++ * @param points 候选吸附点列表（过滤未定义点后使用）
++ * @param gridStep 网格步长（世界坐标单位），可让吸附者缓存复用
++ * @returns 吸附后的坐标；若未触发吸附则原样返回
++ */
++export function applySnap(
++  x: number,
++  y: number,
++  radius: number,
++  snapToGrid: boolean,
++  snapToPoint: boolean,
++  points: GeoPoint[] = [],
++  gridStep?: number
++): SnappedPosition {
++  let best: { x: number; y: number; dist: number; type?: 'grid' | 'point'; point?: GeoPoint } | null = null;
++
++  if (snapToGrid && gridStep !== undefined) {
++    const gx = Math.round(x / gridStep) * gridStep;
++    const gy = Math.round(y / gridStep) * gridStep;
++    const d = Math.hypot(gx - x, gy - y);
++    if (d < radius && (!best || d < best.dist)) {
++      best = { x: gx, y: gy, dist: d, type: 'grid' };
++    }
++  }
++
++  if (snapToPoint && points.length > 0) {
++    for (const p of points) {
++      if (!p.isDefined()) continue;
++      const d = Math.hypot(p.getX() - x, p.getY() - y);
++      if (d < radius && d < (best?.dist ?? Infinity)) {
++        best = { x: p.getX(), y: p.getY(), dist: d, type: 'point', point: p };
++        break;
++      }
++    }
++  }
++
++  if (best) {
++    // 舍入至 8 位小数，避免浮点数累积误差
++    return {
++      x: parseFloat(best.x.toFixed(8)),
++      y: parseFloat(best.y.toFixed(8)),
++      type: best.type,
++      point: best.point,
++    };
++  }
++  return { x, y };
++}
+diff --git a/src/kernel/view/BoundingBoxHelper.ts b/src/kernel/view/BoundingBoxHelper.ts
+--- /dev/null
+
++++ b/src/kernel/view/BoundingBoxHelper.ts
+
+@@ -0,0 +1,108 @@
+
++import { GeoPoint } from '../geo/GeoPoint';
++import { GeoLine } from '../geo/GeoLine';
++import { GeoSegment } from '../geo/GeoSegment';
++import { GeoConic } from '../geo/GeoConic';
++import { GeoPolygon } from '../geo/GeoPolygon';
++import { GeoElement } from '../geo/GeoElement';
++
++/** 轴对齐矩形（世界坐标） */
++export interface Rect {
++  minX: number;
++  maxX: number;
++  minY: number;
++  maxY: number;
++}
++
++/**
++ * 判断单个几何元素是否与选择框相交
++ * @param eps 相交判定容差（世界坐标单位），通常传入 5 / coord.xScale
++ * @returns true 表示元素应被框选包含
++ */
++export function elementIntersectsRect(el: GeoElement, rect: Rect, eps: number = 5): boolean {
++  if (el instanceof GeoPoint) {
++    return (
++      rect.minX - eps <= el.getX() &&
++      el.getX() <= rect.maxX + eps &&
++      rect.minY - eps <= el.getY() &&
++      el.getY() <= rect.maxY + eps
++    );
++  }
++  if (el instanceof GeoSegment) {
++    const s = el as GeoSegment;
++    if (ptInRect(s.startPoint, rect, eps) || ptInRect(s.endPoint, rect, eps)) return true;
++    return segmentIntersectsRect(s.startPoint, s.endPoint, rect, eps);
++  }
++  if (el instanceof GeoLine) {
++    const l = el as GeoLine;
++    let minDist = Infinity;
++    for (const corner of corners(rect)) {
++      const len = Math.hypot(l.a, l.b);
++      if (len === 0) continue;
++      const d = Math.abs(l.a * corner.x + l.b * corner.y + l.c) / len;
++      minDist = Math.min(minDist, d);
++    }
++    return minDist <= eps;
++  }
++  if (el instanceof GeoConic) {
++    const c = el as GeoConic;
++    if (!c.isDefined()) return false;
++    const center = c.getCenter();
++    const r = c.getRadius();
++    if (r <= 0) return false;
++    if (ptInRect(center, rect, eps)) return true;
++    // 圆心到矩形的最短距离（考虑圆完全包围矩形的情况）
++    const dx = Math.max(rect.minX - center.x, 0, center.x - rect.maxX);
++    const dy = Math.max(rect.minY - center.y, 0, center.y - rect.maxY);
++    return Math.hypot(dx, dy) <= r + eps;
++  }
++  if (el instanceof GeoPolygon) {
++    const p = el as GeoPolygon;
++    for (const v of p.vertices) {
++      if (ptInRect(v, rect, eps)) return true;
++    }
++    // 粗略扩展：任一顶点邻域进入框内，或框的任意顶点落在多边形区域内
++    if ((p as any).isInRegionXY && corners(rect).some(c => (p as any).isInRegionXY(c.x, c.y))) return true;
++    return false;
++  }
++  return false;
++}
++
++function ptInRect(p: GeoPoint, rect: Rect, eps: number): boolean {
++  return rect.minX - eps <= p.getX() && p.getX() <= rect.maxX + eps &&
++         rect.minY - eps <= p.getY() && p.getY() <= rect.maxY + eps;
++}
++
++function corners(rect: Rect): { x: number; y: number }[] {
++  return [
++    { x: rect.minX, y: rect.minY },
++    { x: rect.maxX, y: rect.minY },
++    { x: rect.maxX, y: rect.maxY },
++    { x: rect.minX, y: rect.maxY },
++  ];
++}
++
++/** 线段与轴对齐矩形任意边是否相交 */
++function segmentIntersectsRect(p1: GeoPoint, p2: GeoPoint, rect: Rect, eps: number): boolean {
++  const edges: [{ x: number; y: number }, { x: number; y: number }][] = [
++    [{ x: rect.minX, y: rect.minY }, { x: rect.maxX, y: rect.minY }],
++    [{ x: rect.maxX, y: rect.minY }, { x: rect.maxX, y: rect.maxY }],
++    [{ x: rect.maxX, y: rect.maxY }, { x: rect.minX, y: rect.maxY }],
++    [{ x: rect.minX, y: rect.maxY }, { x: rect.minX, y: rect.minY }],
++  ];
++  for (const edge of edges) {
++    if (linesIntersect(
++      { x: p1.getX(), y: p1.getY() }, { x: p2.getX(), y: p2.getY() },
++      edge[0], edge[1], eps)) return true;
++  }
++  return false;
++}
++
++/** 两线段是否相交（含端点，允许 eps 容差） */
++function linesIntersect(a: { x: number; y: number }, b: { x: number; y: number },
++                       c: { x: number; y: number }, d: { x: number; y: number }, eps: number): boolean {
++  const den = (a.x - b.x) * (c.y - d.y) - (a.y - b.y) * (c.x - d.x);
++  if (Math.abs(den) < 1e-12) return false;
++  const t = ((a.x - c.x) * (c.y - d.y) - (a.y - c.y) * (c.x - d.x)) / den;
++  const u = -((a.x - b.x) * (a.y - c.y) - (a.y - b.y) * (a.x - c.x)) / den;
++  return t >= -eps && t <= 1 + eps && u >= -eps && u <= 1 + eps;
++}
