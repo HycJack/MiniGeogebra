@@ -69,11 +69,10 @@ export class Kernel implements IKernel {
   }
 
   /**
-   * 立即同步重算依赖 element 的所有算法（按构造序）。
-   * 与 notifyUpdate 的异步/独立元素语义解耦，供 locus 等算法在批处理内做确定性干算。
+   * P1-1: 同步重算依赖 element 的所有算法。内部使用正向依赖图快速路径。
    */
   recomputeDependents(changedElement: ConstructionElement): void {
-    const algos = this.construction.getDependentAlgorithms(changedElement);
+    const algos = this.construction.getForwardDependentAlgorithms(changedElement);
     algos.sort((a, b) => a.constIndex - b.constIndex);
     for (const algo of algos) algo.update();
   }
@@ -89,7 +88,7 @@ export class Kernel implements IKernel {
 
     const affected = new Set<import('../algo/AlgoElement').AlgoElement>();
     for (const el of this.pendingUpdates) {
-      for (const algo of this.construction.getDependentAlgorithms(el)) {
+      for (const algo of this.construction.getForwardDependentAlgorithms(el)) {
         affected.add(algo);
       }
     }
@@ -104,14 +103,14 @@ export class Kernel implements IKernel {
   }
 
   /**
-   * 同步 flush pending updates（拖动等场景需要“本帧立即重算依赖”，不能等微任务）。
+   * 同步 flush pending updates（拖动等场景需要"本帧立即重算依赖"，不能等微任务）。
    */
   flushNow(): void {
     if (!this.flushScheduled || this.pendingUpdates.size === 0) return;
     this.flushScheduled = false;
     const affected = new Set<import('../algo/AlgoElement').AlgoElement>();
     for (const el of this.pendingUpdates) {
-      for (const algo of this.construction.getDependentAlgorithms(el)) {
+      for (const algo of this.construction.getForwardDependentAlgorithms(el)) {
         affected.add(algo);
       }
     }

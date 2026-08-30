@@ -6,9 +6,10 @@ import { useLanguage } from '../i18n/LanguageContext';
 interface SliderControlProps {
   numeric: GeoNumeric;
   kernel: Kernel;
+  onNumericChange?: (oldValue: number, newValue: number) => void;
 }
 
-export const SliderControl: React.FC<SliderControlProps> = ({ numeric, kernel }) => {
+export const SliderControl: React.FC<SliderControlProps> = ({ numeric, kernel, onNumericChange }) => {
   const { t } = useLanguage();
   const value = numeric.getValue();
   const min = numeric.intervalMin;
@@ -18,8 +19,10 @@ export const SliderControl: React.FC<SliderControlProps> = ({ numeric, kernel })
 
   const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = parseFloat(e.target.value);
+    const oldValue = numeric.getValue();
     numeric.setValue(val);
     kernel.notifyUpdate(numeric);
+    onNumericChange?.(oldValue, val);
   };
 
   const handleMinChange = (e: React.ChangeEvent<HTMLInputElement>) => {

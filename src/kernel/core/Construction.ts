@@ -14,6 +14,9 @@ export class Construction {
   private algoElements: AlgoElement[] = [];
   private stepCounter = 0;
 
+  // P1-1: 显式正向依赖图 element -> 直接依赖它的算法集合
+  private forwardDeps = new Map<ConstructionElement, Set<AlgoElement>>();
+
   constructor(public kernel: IKernel) {}
 
   addElement(element: ConstructionElement, index?: number) {
@@ -29,6 +32,30 @@ export class Construction {
 
     if (element instanceof AlgoElement) {
       this.algoElements.push(element);
+      this.registerForwardDeps(element);
+    }
+  }
+
+  /**
+   * P1-1: 为构造器登记正向依赖边 —— input GeoElement -> 该算法。
+   */
+  registerForwardDeps(algo: AlgoElement): void {
+    for (const input of algo.getInput()) {
+      let set = this.forwardDeps.get(input);
+      if (!set) {
+        set = new Set();
+        this.forwardDeps.set(input, set);
+      }
+      set.add(algo);
+    }
+  }
+
+  /** P1-1: 清理被删除元素在正向依赖图中的所有记录 */
+  unregisterForwardDeps(element: ConstructionElement): void {
+    this.forwardDeps.delete(element);
+    for (const [, set] of this.forwardDeps.entries()) {
+      set.delete(element as AlgoElement);
+      if (set.size === 0) this.forwardDeps.delete(element);
     }
   }
 
@@ -40,6 +67,7 @@ export class Construction {
       const aIdx = this.algoElements.indexOf(element);
       if (aIdx >= 0) this.algoElements.splice(aIdx, 1);
     }
+    this.unregisterForwardDeps(element);
   }
 
   updateAllAlgorithms() {
@@ -51,11 +79,39 @@ export class Construction {
   }
 
   updateDependentAlgorithms(changedElement: GeoElement) {
-    const dependentAlgos = this.getDependentAlgorithms(changedElement);
+    const dependentAlgos = this.getForwardDependentAlgorithms(changedElement);
     dependentAlgos.sort((a, b) => a.constIndex - b.constIndex);
     for (const algo of dependentAlgos) {
       algo.update();
     }
+  }
+
+  /**
+   * P1-1: 基于显式正向图的增量查询（O(受影响边数)）。
+   */
+  getForwardDependentAlgorithms(element: ConstructionElement): AlgoElement[] {
+    const dependent = new Set<AlgoElement>();
+    const queue: ConstructionElement[] = [];
+
+    if (element.isAlgoElement()) {
+      (element as AlgoElement).getGeoElements().forEach(g => queue.push(g));
+    } else {
+      queue.push(element);
+    }
+
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      const algos = this.forwardDeps.get(cur);
+      if (algos) {
+        for (const algo of algos) {
+          if (!dependent.has(algo)) {
+            dependent.add(algo);
+            algo.getGeoElements().forEach(g => queue.push(g));
+          }
+        }
+      }
+    }
+    return Array.from(dependent);
   }
 
   /**
@@ -113,9 +169,9 @@ export class Construction {
         enqueue(cur.parentAlgo);
       }
 
-      // 2) 收集所有依赖 cur 的算法及其全部输出
-      for (const algo of this.algoElements) {
-        if (!toDelete.has(algo) && this.isDependentOn(algo, cur)) {
+      // 2) 收集所有依赖 cur 的算法及其全部输出（用正向图 O(k) 替代全量扫描）
+      for (const algo of this.getForwardDependentAlgorithms(cur)) {
+        if (!toDelete.has(algo)) {
           enqueue(algo);
           for (const out of algo.getGeoElements()) {
             enqueue(out);
@@ -159,6 +215,7 @@ export class Construction {
     this.elements = [];
     this.algoElements = [];
     this.stepCounter = 0;
+    this.forwardDeps.clear();
   }
 
   getNextPointLabel(additionalLabels?: Set<string>): string {

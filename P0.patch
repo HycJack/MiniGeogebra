@@ -1,0 +1,200 @@
+diff --git a/src/kernel/algo/AlgoCircleThreePoints.ts b/src/kernel/algo/AlgoCircleThreePoints.ts
+--- a/src/kernel/algo/AlgoCircleThreePoints.ts
++++ b/src/kernel/algo/AlgoCircleThreePoints.ts
+--- a/src/kernel/algo/AlgoCircleThreePoints.ts
++++ b/src/kernel/algo/AlgoCircleThreePoints.ts
+@@ -79,6 +79,7 @@
+     // For this prototype, we'll assume it stays defined or we add a method.
+     // Let's assume it's fine for now.
+   }
++    this.outputConic.setDefined();
+ 
+   getOutput(): GeoConic {
+     return this.outputConic;
+diff --git a/src/kernel/algo/AlgoAngleBisector.ts b/src/kernel/algo/AlgoAngleBisector.ts
+--- a/src/kernel/algo/AlgoAngleBisector.ts
++++ b/src/kernel/algo/AlgoAngleBisector.ts
+--- a/src/kernel/algo/AlgoAngleBisector.ts
++++ b/src/kernel/algo/AlgoAngleBisector.ts
+@@ -74,6 +74,7 @@
+     this.outputLine.b = ny;
+     this.outputLine.c = c;
+   }
++    this.outputLine.setDefined();
+ 
+   getOutput(): GeoLine {
+     return this.outputLine;
+diff --git a/src/kernel/algo/AlgoCircleCenter.ts b/src/kernel/algo/AlgoCircleCenter.ts
+--- a/src/kernel/algo/AlgoCircleCenter.ts
++++ b/src/kernel/algo/AlgoCircleCenter.ts
+--- a/src/kernel/algo/AlgoCircleCenter.ts
++++ b/src/kernel/algo/AlgoCircleCenter.ts
+@@ -31,6 +31,7 @@
+     const center = this.circle.getCenter();
+     this.outputPoint.setCoords(center.x, center.y);
+   }
++    this.outputPoint.setDefined();
+ 
+   getOutput(): GeoPoint {
+     return this.outputPoint;
+diff --git a/src/kernel/algo/AlgoCircleCenterPoint.ts b/src/kernel/algo/AlgoCircleCenterPoint.ts
+--- a/src/kernel/algo/AlgoCircleCenterPoint.ts
++++ b/src/kernel/algo/AlgoCircleCenterPoint.ts
+--- a/src/kernel/algo/AlgoCircleCenterPoint.ts
++++ b/src/kernel/algo/AlgoCircleCenterPoint.ts
+@@ -44,6 +44,7 @@
+       h * h + k * k - r2 // F
+     ];
+   }
++    this.outputConic.setDefined();
+ 
+   getOutput(): GeoConic {
+     return this.outputConic;
+diff --git a/src/kernel/algo/AlgoCirclePointRadius.ts b/src/kernel/algo/AlgoCirclePointRadius.ts
+--- a/src/kernel/algo/AlgoCirclePointRadius.ts
++++ b/src/kernel/algo/AlgoCirclePointRadius.ts
+--- a/src/kernel/algo/AlgoCirclePointRadius.ts
++++ b/src/kernel/algo/AlgoCirclePointRadius.ts
+@@ -40,6 +40,7 @@
+       h * h + k * k - r * r // F
+     ];
+   }
++    this.outputConic.setDefined();
+ 
+   getOutput(): GeoConic {
+     return this.outputConic;
+diff --git a/src/kernel/algo/AlgoIntersect.ts b/src/kernel/algo/AlgoIntersect.ts
+--- a/src/kernel/algo/AlgoIntersect.ts
++++ b/src/kernel/algo/AlgoIntersect.ts
+--- a/src/kernel/algo/AlgoIntersect.ts
++++ b/src/kernel/algo/AlgoIntersect.ts
+@@ -67,6 +67,7 @@
+     
+     const p = this.outputPoints[0];
+     p.setCoords(x, y, 1);
++    p.setDefined();
+ 
+     // Check if it's on the segments
+     if (l1.getClassName() === 'GeoSegment' && !(l1 as any).isOnPath(p)) {
+@@ -119,6 +120,7 @@
+       if (i < this.outputPoints.length) {
+         const p = this.outputPoints[i];
+         p.setCoords(pt.x, pt.y, 1);
++        p.setDefined();
+         if (line.getClassName() === 'GeoSegment' && !(line as any).isOnPath(p)) {
+           p.setUndefined();
+         }
+diff --git a/src/kernel/algo/AlgoLineTwoPoints.ts b/src/kernel/algo/AlgoLineTwoPoints.ts
+--- a/src/kernel/algo/AlgoLineTwoPoints.ts
++++ b/src/kernel/algo/AlgoLineTwoPoints.ts
+--- a/src/kernel/algo/AlgoLineTwoPoints.ts
++++ b/src/kernel/algo/AlgoLineTwoPoints.ts
+@@ -44,6 +44,7 @@
+     this.outputLine.b = b;
+     this.outputLine.c = c;
+   }
++    this.outputLine.setDefined();
+ 
+   getOutput(): GeoLine {
+     return this.outputLine;
+diff --git a/src/kernel/algo/AlgoMidpoint.ts b/src/kernel/algo/AlgoMidpoint.ts
+--- a/src/kernel/algo/AlgoMidpoint.ts
++++ b/src/kernel/algo/AlgoMidpoint.ts
+--- a/src/kernel/algo/AlgoMidpoint.ts
++++ b/src/kernel/algo/AlgoMidpoint.ts
+@@ -27,6 +27,7 @@
+     const y = (this.p1.getY() + this.p2.getY()) / 2;
+     this.outputPoint.setCoords(x, y);
+   }
++    this.outputPoint.setDefined();
+ 
+   getOutput(): GeoPoint {
+     return this.outputPoint;
+diff --git a/src/kernel/algo/AlgoOrthogonalLine.ts b/src/kernel/algo/AlgoOrthogonalLine.ts
+--- a/src/kernel/algo/AlgoOrthogonalLine.ts
++++ b/src/kernel/algo/AlgoOrthogonalLine.ts
+--- a/src/kernel/algo/AlgoOrthogonalLine.ts
++++ b/src/kernel/algo/AlgoOrthogonalLine.ts
+@@ -41,6 +41,7 @@
+     this.outputLine.b = newB;
+     this.outputLine.c = newC;
+   }
++    this.outputLine.setDefined();
+ 
+   getOutput(): GeoLine {
+     return this.outputLine;
+diff --git a/src/kernel/algo/AlgoParallelLine.ts b/src/kernel/algo/AlgoParallelLine.ts
+--- a/src/kernel/algo/AlgoParallelLine.ts
++++ b/src/kernel/algo/AlgoParallelLine.ts
+--- a/src/kernel/algo/AlgoParallelLine.ts
++++ b/src/kernel/algo/AlgoParallelLine.ts
+@@ -37,6 +37,7 @@
+     this.outputLine.b = b;
+     this.outputLine.c = c;
+   }
++    this.outputLine.setDefined();
+ 
+   getOutput(): GeoLine {
+     return this.outputLine;
+diff --git a/src/kernel/algo/AlgoPerpendicularBisector.ts b/src/kernel/algo/AlgoPerpendicularBisector.ts
+--- a/src/kernel/algo/AlgoPerpendicularBisector.ts
++++ b/src/kernel/algo/AlgoPerpendicularBisector.ts
+--- a/src/kernel/algo/AlgoPerpendicularBisector.ts
++++ b/src/kernel/algo/AlgoPerpendicularBisector.ts
+@@ -45,6 +45,7 @@
+     this.outputLine.b = b;
+     this.outputLine.c = c;
+   }
++    this.outputLine.setDefined();
+ 
+   getOutput(): GeoLine {
+     return this.outputLine;
+diff --git a/src/kernel/algo/AlgoPointOnConic.ts b/src/kernel/algo/AlgoPointOnConic.ts
+--- a/src/kernel/algo/AlgoPointOnConic.ts
++++ b/src/kernel/algo/AlgoPointOnConic.ts
+--- a/src/kernel/algo/AlgoPointOnConic.ts
++++ b/src/kernel/algo/AlgoPointOnConic.ts
+@@ -34,6 +34,7 @@
+     
+     this.outputPoint.setCoords(x, y, 1);
+   }
++    this.outputPoint.setDefined();
+ 
+   getOutput(): GeoPoint {
+     return this.outputPoint;
+diff --git a/src/kernel/algo/AlgoPointOnLine.ts b/src/kernel/algo/AlgoPointOnLine.ts
+--- a/src/kernel/algo/AlgoPointOnLine.ts
++++ b/src/kernel/algo/AlgoPointOnLine.ts
+--- a/src/kernel/algo/AlgoPointOnLine.ts
++++ b/src/kernel/algo/AlgoPointOnLine.ts
+@@ -51,6 +51,7 @@
+     
+     this.outputPoint.setCoords(x, y, 1);
+   }
++    this.outputPoint.setDefined();
+ 
+   getOutput(): GeoPoint {
+     return this.outputPoint;
+diff --git a/src/kernel/algo/AlgoPointOnSegment.ts b/src/kernel/algo/AlgoPointOnSegment.ts
+--- a/src/kernel/algo/AlgoPointOnSegment.ts
++++ b/src/kernel/algo/AlgoPointOnSegment.ts
+--- a/src/kernel/algo/AlgoPointOnSegment.ts
++++ b/src/kernel/algo/AlgoPointOnSegment.ts
+@@ -38,6 +38,7 @@
+     
+     this.outputPoint.setCoords(x, y, 1);
+   }
++    this.outputPoint.setDefined();
+ 
+   getOutput(): GeoPoint {
+     return this.outputPoint;
+diff --git a/src/kernel/core/Epsilon.ts b/src/kernel/core/Epsilon.ts
+new file mode 100644
+index 0000000..e69de29
+--- /dev/null
++++ b/src/kernel/core/Epsilon.ts
+@@ -0,0 +1,4 @@
++export const EPS = 1e-9;
++
++/** 获取当前容差设置，供需要统一精度的计算模块使用 */
++export function getEPS(): number { return EPS; }

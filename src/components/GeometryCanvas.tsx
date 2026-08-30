@@ -33,6 +33,8 @@ import { AlgoPointOnLine } from '../kernel/algo/AlgoPointOnLine';
 import { AlgoPointOnSegment } from '../kernel/algo/AlgoPointOnSegment';
 import { GeoNumeric } from '../kernel/geo/GeoNumeric';
 import { CoordinateSystem } from '../kernel/core/CoordinateSystem';
+import { IRenderer } from '../kernel/view/IRenderer';
+import { createRenderer } from '../kernel/view/WebGLRendererFallback';
 import { serialize as serializeConstruction, deserialize as deserializeConstruction, downloadJSON } from '../kernel/persistence/ConstructionSerializer';
 import { SliderControl } from './SliderControl';
 import { useLanguage } from '../i18n/LanguageContext';
@@ -55,9 +57,13 @@ interface StateSnapshot {
   numerics: Map<string, number>;
 }
 
-type Command = 
+type Command =
   | { type: 'add', elements: ConstructionElement[] }
-  | { type: 'move', oldState: StateSnapshot, newState: StateSnapshot };
+  | { type: 'delete', elements: ConstructionElement[] }
+  | { type: 'move', oldState: StateSnapshot, newState: StateSnapshot }
+  | { type: 'style', element: GeoElement, before: Record<string, unknown>, after: Record<string, unknown> }
+  | { type: 'numeric', element: GeoNumeric, oldValue: number, newValue: number }
+  | { type: 'rename', element: ConstructionElement, oldLabel: string, newLabel: string };
 
 interface UIElement {
   id: string;
@@ -118,14 +124,25 @@ export const GeometryCanvas: React.FC = () => {
     }
   }, [selectedElements]);
 
+  /** P1-3: 数值变化的撤销入口（拖动滑块时由 SliderControl 注入） */
+  const notifyNumericChange = useCallback((numeric: GeoNumeric, newValue: number) => recordNumericChange(numeric, newValue), []);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    setRenderer(createRenderer(canvas, true));
+    return () => setRenderer(null);
+  }, []);
+
   const handleLabelChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setEditingLabel(e.target.value);
   };
 
+  /** P1-3: 标签编辑提交时记录 rename 命令 */
   const handleLabelSubmit = () => {
     if (selectedElements.length === 1) {
       if (editingLabel.trim() !== '') {
-        selectedElements[0].label = editingLabel.trim();
+        recordRename(selectedElements[0], editingLabel.trim());
         setRenderRev(r => r + 1);
       } else {
         setEditingLabel(selectedElements[0].label);
@@ -138,6 +155,7 @@ export const GeometryCanvas: React.FC = () => {
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [hoveredPoint, setHoveredPoint] = useState<GeoPoint | null>(null);
   const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
+  const [renderer, setRenderer] = useState<IRenderer | null>(null);
   
   const [coord, setCoord] = useState<CoordinateSystem>(() => CoordinateSystem.centered(800, 600, 1));
   const [isPanning, setIsPanning] = useState(false);
@@ -167,19 +185,40 @@ export const GeometryCanvas: React.FC = () => {
     setRenderRev(r => r + 1);
   };
 
+  /** P1-3: 记录数值参数的变化 */
+  const recordNumericChange = (numeric: GeoNumeric, newValue: number) => {
+    const oldValue = numeric.getValue();
+    if (oldValue !== newValue) {
+      addCommand({ type: 'numeric', element: numeric, oldValue, newValue });
+    }
+  };
+
+  /** P1-3: 记录重命名操作 */
+  const recordRename = (element: ConstructionElement, newLabel: string) => {
+    const oldLabel = ((element as any).label || '');
+    if (oldLabel !== newLabel) {
+      (element as any).label = newLabel;
+      addCommand({ type: 'rename', element, oldLabel, newLabel });
+    }
+  };
+
+  /** P2 骨架：样式系统的撤销包装 */
+  const recordStyleChange = (_element: GeoElement, _changes: Record<string, unknown>) => {
+    console.warn('[MiniGeogebra] recordStyleChange is a P2 feature; no-op now.');
+  };
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  /** 删除一组元素及其全部依赖，并记录可撤销快照 */
+  /** P1-3: 删除元素及其全部依赖，并记录 'delete' 命令 */
   const deleteWithDependents = (els: ConstructionElement[]) => {
     if (els.length === 0) return;
-    const cascade: ConstructionElement[] = [];
     const construction = kernel.getConstruction();
+    const cascade = new Set<ConstructionElement>();
     for (const el of els) {
-      cascade.push(...construction.collectDeletionCascade(el));
+      for (const c of construction.collectDeletionCascade(el)) cascade.add(c);
       construction.deleteElementWithDependents(el);
     }
-    construction.updateAllAlgorithms();
-    addCommand({ type: 'add', elements: cascade });
+    addCommand({ type: 'delete', elements: Array.from(cascade).sort((a, b) => a.constIndex - b.constIndex) });
     setSelectedElements([]);
     setRenderRev(r => r + 1);
   };
@@ -405,22 +444,21 @@ export const GeometryCanvas: React.FC = () => {
 
   const { schedule } = useRenderLoop(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!canvas || !renderer) return;
+    renderer.viewportSize(canvas.width, canvas.height);
 
     const dpr = window.devicePixelRatio || 1;
 
     // Clear canvas
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    renderer.clearRect(0, 0, canvas.width, canvas.height);
 
-    ctx.save();
-    ctx.scale(dpr, dpr);
-    ctx.translate(coord.xZero, coord.yZero);
-    ctx.scale(coord.xScale, coord.yScale);
+    renderer.save();
+    renderer.scale(dpr, dpr);
+    renderer.translate(coord.xZero, coord.yZero);
+    renderer.scale(coord.xScale, coord.yScale);
 
     // Draw grid
-    drawGrid(ctx, canvas.width / dpr, canvas.height / dpr, coord, showGrid, showAxes);
+    drawGrid(renderer, canvas.width / dpr, canvas.height / dpr, coord, showGrid, showAxes);
 
     // Draw elements
     const elements = kernel.getConstruction().getElements();
@@ -428,87 +466,87 @@ export const GeometryCanvas: React.FC = () => {
     // Draw polygons first (fill)
     elements.forEach(el => {
       if (el instanceof GeoPolygon) {
-        drawPolygon(ctx, el, selectedElements.includes(el), coord.xScale);
+        drawPolygon(renderer, el, selectedElements.includes(el), coord.xScale);
       }
     });
 
     // Draw conics (circles)
     elements.forEach(el => {
       if (el instanceof GeoConic) {
-        drawConic(ctx, el, selectedElements.includes(el), coord.xScale);
+        drawConic(renderer, el, selectedElements.includes(el), coord.xScale);
       }
     });
 
     // Draw locus curves
     elements.forEach(el => {
       if (el instanceof GeoLocus) {
-        drawLocus(ctx, el, selectedElements.includes(el), coord.xScale);
+        drawLocus(renderer, el, selectedElements.includes(el), coord.xScale);
       }
     });
 
     // Draw lines and segments
     elements.forEach(el => {
       if (el instanceof GeoSegment) {
-        drawSegment(ctx, el, selectedElements.includes(el), coord.xScale);
+        drawSegment(renderer, el, selectedElements.includes(el), coord.xScale);
       } else if (el instanceof GeoLine && !(el instanceof GeoSegment)) {
-        drawLine(ctx, el, selectedElements.includes(el), coord);
+        drawLine(renderer, el, selectedElements.includes(el), coord);
       }
     });
 
     // Draw polygon being created
     if (mode === 'polygon' && polygonPoints.length > 0) {
-        ctx.strokeStyle = '#9ca3af'; // gray-400
-        ctx.lineWidth = 1 / coord.xScale;
-        ctx.setLineDash([5 / coord.xScale, 5 / coord.xScale]);
-        ctx.beginPath();
-        ctx.moveTo(polygonPoints[0].getX(), polygonPoints[0].getY());
+        renderer.strokeStyle = '#9ca3af'; // gray-400
+        renderer.lineWidth = 1 / coord.xScale;
+        renderer.setLineDash([5 / coord.xScale, 5 / coord.xScale]);
+        renderer.beginPath();
+        renderer.moveTo(polygonPoints[0].getX(), polygonPoints[0].getY());
         for (let i = 1; i < polygonPoints.length; i++) {
-            ctx.lineTo(polygonPoints[i].getX(), polygonPoints[i].getY());
+            renderer.lineTo(polygonPoints[i].getX(), polygonPoints[i].getY());
         }
         // Draw line to mouse
-        ctx.lineTo(mousePos.x, mousePos.y);
-        ctx.stroke();
-        ctx.setLineDash([]);
+        renderer.lineTo(mousePos.x, mousePos.y);
+        renderer.stroke();
+        renderer.setLineDash([]);
     }
 
     // Draw Previews
-    ctx.save();
-    ctx.strokeStyle = 'rgba(100, 100, 100, 0.5)';
-    ctx.setLineDash([5 / coord.xScale, 5 / coord.xScale]);
-    ctx.lineWidth = 1 / coord.xScale;
+    renderer.save();
+    renderer.strokeStyle = 'rgba(100, 100, 100, 0.5)';
+    renderer.setLineDash([5 / coord.xScale, 5 / coord.xScale]);
+    renderer.lineWidth = 1 / coord.xScale;
     
     const targetX = hoveredPoint ? hoveredPoint.getX() : mousePos.x;
     const targetY = hoveredPoint ? hoveredPoint.getY() : mousePos.y;
 
     if (mode === 'segment' && selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
         const p1 = selectedElements[0] as GeoPoint;
-        ctx.beginPath();
-        ctx.moveTo(p1.getX(), p1.getY());
-        ctx.lineTo(targetX, targetY);
-        ctx.stroke();
+        renderer.beginPath();
+        renderer.moveTo(p1.getX(), p1.getY());
+        renderer.lineTo(targetX, targetY);
+        renderer.stroke();
     } else if (mode === 'line' && selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
         const p1 = selectedElements[0] as GeoPoint;
         // Draw line through p1 and target
         const dx = targetX - p1.getX();
         const dy = targetY - p1.getY();
         if (Math.hypot(dx, dy) > 1 / coord.xScale) {
-            ctx.beginPath();
-            ctx.moveTo(p1.getX() - 10000 * dx, p1.getY() - 10000 * dy);
-            ctx.lineTo(p1.getX() + 10000 * dx, p1.getY() + 10000 * dy);
-            ctx.stroke();
+            renderer.beginPath();
+            renderer.moveTo(p1.getX() - 10000 * dx, p1.getY() - 10000 * dy);
+            renderer.lineTo(p1.getX() + 10000 * dx, p1.getY() + 10000 * dy);
+            renderer.stroke();
         }
     } else if (mode === 'circle') {
         // Preview circle with radius
-        ctx.beginPath();
-        ctx.arc(targetX, targetY, radius, 0, 2 * Math.PI);
-        ctx.stroke();
+        renderer.beginPath();
+        renderer.arc(targetX, targetY, radius, 0, 2 * Math.PI);
+        renderer.stroke();
     } else if (mode === 'circle_center_point' && selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
         // Preview circle with center at selected point and radius to target
         const center = selectedElements[0] as GeoPoint;
         const r = Math.hypot(targetX - center.getX(), targetY - center.getY());
-        ctx.beginPath();
-        ctx.arc(center.getX(), center.getY(), r, 0, 2 * Math.PI);
-        ctx.stroke();
+        renderer.beginPath();
+        renderer.arc(center.getX(), center.getY(), r, 0, 2 * Math.PI);
+        renderer.stroke();
     } else if (mode === 'circle3' && selectedElements.length === 2) {
         // Preview circle through two points and mouse position
         const [p1, p2] = selectedElements as GeoPoint[];
@@ -526,15 +564,15 @@ export const GeometryCanvas: React.FC = () => {
             const r = Math.hypot(ux - ax, uy - ay);
             
             // Draw preview circle
-            ctx.beginPath();
-            ctx.arc(ux, uy, r, 0, 2 * Math.PI);
-            ctx.stroke();
+            renderer.beginPath();
+            renderer.arc(ux, uy, r, 0, 2 * Math.PI);
+            renderer.stroke();
             
             // Draw preview center point
-            ctx.beginPath();
-            ctx.arc(ux, uy, 3 / coord.xScale, 0, 2 * Math.PI);
-            ctx.fillStyle = 'rgba(100, 100, 100, 0.5)';
-            ctx.fill();
+            renderer.beginPath();
+            renderer.arc(ux, uy, 3 / coord.xScale, 0, 2 * Math.PI);
+            renderer.fillStyle = 'rgba(100, 100, 100, 0.5)';
+            renderer.fill();
         }
     } else if ((mode === 'parallel' || mode === 'orthogonal') && selectedElements.length === 1 && selectedElements[0] instanceof GeoLine) {
          // Preview line through mouse
@@ -557,16 +595,16 @@ export const GeometryCanvas: React.FC = () => {
          if (Math.abs(b) > 1e-6) {
             const y1 = (-c - a * startX) / b;
             const y2 = (-c - a * endX) / b;
-            ctx.beginPath();
-            ctx.moveTo(startX, y1);
-            ctx.lineTo(endX, y2);
-            ctx.stroke();
+            renderer.beginPath();
+            renderer.moveTo(startX, y1);
+            renderer.lineTo(endX, y2);
+            renderer.stroke();
          } else {
             const x = -c / a;
-            ctx.beginPath();
-            ctx.moveTo(x, startY);
-            ctx.lineTo(x, endY);
-            ctx.stroke();
+            renderer.beginPath();
+            renderer.moveTo(x, startY);
+            renderer.lineTo(x, endY);
+            renderer.stroke();
          }
     } else if (mode === 'perpendicular_bisector' && selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
         // Preview perpendicular bisector through midpoint
@@ -590,31 +628,31 @@ export const GeometryCanvas: React.FC = () => {
         if (Math.abs(b) > 1e-6) {
             const y1 = (-c - a * startX) / b;
             const y2 = (-c - a * endX) / b;
-            ctx.beginPath();
-            ctx.moveTo(startX, y1);
-            ctx.lineTo(endX, y2);
-            ctx.stroke();
+            renderer.beginPath();
+            renderer.moveTo(startX, y1);
+            renderer.lineTo(endX, y2);
+            renderer.stroke();
         } else {
             const x = -c / a;
-            ctx.beginPath();
-            ctx.moveTo(x, startY);
-            ctx.lineTo(x, endY);
-            ctx.stroke();
+            renderer.beginPath();
+            renderer.moveTo(x, startY);
+            renderer.lineTo(x, endY);
+            renderer.stroke();
         }
         
         // Draw midpoint preview
-        ctx.beginPath();
-        ctx.arc(mx, my, 3 / coord.xScale, 0, 2 * Math.PI);
-        ctx.fillStyle = 'rgba(100, 100, 100, 0.5)';
-        ctx.fill();
+        renderer.beginPath();
+        renderer.arc(mx, my, 3 / coord.xScale, 0, 2 * Math.PI);
+        renderer.fillStyle = 'rgba(100, 100, 100, 0.5)';
+        renderer.fill();
     } else if (mode === 'angle_bisector' && selectedElements.length >= 1 && selectedElements.length < 3) {
         if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
             // Need two more points - just show line from first point to mouse
             const p1 = selectedElements[0] as GeoPoint;
-            ctx.beginPath();
-            ctx.moveTo(p1.getX(), p1.getY());
-            ctx.lineTo(targetX, targetY);
-            ctx.stroke();
+            renderer.beginPath();
+            renderer.moveTo(p1.getX(), p1.getY());
+            renderer.lineTo(targetX, targetY);
+            renderer.stroke();
         } else if (selectedElements.length === 2 && selectedElements[0] instanceof GeoPoint && selectedElements[1] instanceof GeoPoint) {
             // Have A and B, preview angle bisector with C at mouse position
             const [A, B] = selectedElements as GeoPoint[];
@@ -665,39 +703,41 @@ export const GeometryCanvas: React.FC = () => {
                 if (Math.abs(ny) > 1e-6) {
                     const y1 = (-c - nx * startX) / ny;
                     const y2 = (-c - nx * endX) / ny;
-                    ctx.beginPath();
-                    ctx.moveTo(startX, y1);
-                    ctx.lineTo(endX, y2);
-                    ctx.stroke();
+                    renderer.beginPath();
+                    renderer.moveTo(startX, y1);
+                    renderer.lineTo(endX, y2);
+                    renderer.stroke();
                 } else {
                     const x = -c / nx;
-                    ctx.beginPath();
-                    ctx.moveTo(x, startY);
-                    ctx.lineTo(x, endY);
-                    ctx.stroke();
+                    renderer.beginPath();
+                    renderer.moveTo(x, startY);
+                    renderer.lineTo(x, endY);
+                    renderer.stroke();
                 }
             }
         }
     }
     
-    ctx.restore();
+    renderer.restore();
 
     // Draw points last
     elements.forEach(el => {
       if (el instanceof GeoPoint) {
-        drawPoint(ctx, el, selectedElements.includes(el), coord.xScale);
+        drawPoint(renderer, el, selectedElements.includes(el), coord.xScale);
       }
     });
 
-    ctx.restore(); // Restore the global transform
+    renderer.restore(); // Restore the global transform
 
-  }, [renderRev, selectedElements, mousePos, mode, polygonPoints, radius, hoveredPoint, coord, showGrid, showAxes]);
+    renderer.frameCommit();
+
+  }, [renderRev, selectedElements, mousePos, mode, polygonPoints, radius, hoveredPoint, coord, showGrid, showAxes, renderer]);
 
   useEffect(() => {
     schedule(); // 首帧立即绘制
   }, [schedule]);
 
-  const drawConic = (ctx: CanvasRenderingContext2D, c: GeoConic, selected: boolean, scale: number) => {
+  const drawConic = (renderer: IRenderer, c: GeoConic, selected: boolean, scale: number) => {
     if (!c.isDefined()) return;
     // Only circles for now
     const center = c.getCenter();
@@ -705,29 +745,29 @@ export const GeometryCanvas: React.FC = () => {
     if (r <= 0) return;
     
     if (selected) {
-      ctx.beginPath();
-      ctx.arc(center.x, center.y, r + 4 / scale, 0, 2 * Math.PI);
-      ctx.strokeStyle = 'rgba(59, 130, 246, 0.3)';
-      ctx.lineWidth = 6 / scale;
-      ctx.stroke();
+      renderer.beginPath();
+      renderer.arc(center.x, center.y, r + 4 / scale, 0, 2 * Math.PI);
+      renderer.strokeStyle = 'rgba(59, 130, 246, 0.3)';
+      renderer.lineWidth = 6 / scale;
+      renderer.stroke();
     }
     
-    ctx.strokeStyle = selected ? '#3b82f6' : '#000';
-    ctx.lineWidth = (selected ? 3 : 1) / scale;
-    ctx.beginPath();
-    ctx.arc(center.x, center.y, r, 0, 2 * Math.PI);
-    ctx.stroke();
+    renderer.strokeStyle = selected ? '#3b82f6' : '#000';
+    renderer.lineWidth = (selected ? 3 : 1) / scale;
+    renderer.beginPath();
+    renderer.arc(center.x, center.y, r, 0, 2 * Math.PI);
+    renderer.stroke();
     
     if (selected) {
       const label = c.label || c.id;
-      ctx.font = `bold ${14 / scale}px sans-serif`;
-      ctx.fillStyle = '#1e40af';
-      ctx.textBaseline = 'bottom';
-      ctx.fillText(label, center.x + r + 10 / scale, center.y);
+      renderer.font = `bold ${14 / scale}px sans-serif`;
+      renderer.fillStyle = '#1e40af';
+      renderer.textBaseline = 'bottom';
+      renderer.fillText(label, center.x + r + 10 / scale, center.y);
     }
   };
 
-  const drawGrid = (ctx: CanvasRenderingContext2D, w: number, h: number, coord: CoordinateSystem, showGrid: boolean, showAxes: boolean) => {
+  const drawGrid = (renderer: IRenderer, w: number, h: number, coord: CoordinateSystem, showGrid: boolean, showAxes: boolean) => {
     const startX = coord.screenToWorldX(0);
     const endX = coord.screenToWorldX(w);
     const startY = coord.screenToWorldY(0);
@@ -749,68 +789,68 @@ export const GeometryCanvas: React.FC = () => {
     
     // Draw grid
     if (showGrid) {
-      ctx.strokeStyle = '#e5e7eb';
-      ctx.lineWidth = 1 / coord.xScale;
+      renderer.strokeStyle = '#e5e7eb';
+      renderer.lineWidth = 1 / coord.xScale;
       
       for (let x = firstX; x <= endX; x += step) {
-        ctx.beginPath();
-        ctx.moveTo(x, startY);
-        ctx.lineTo(x, endY);
-        ctx.stroke();
+        renderer.beginPath();
+        renderer.moveTo(x, startY);
+        renderer.lineTo(x, endY);
+        renderer.stroke();
       }
       for (let y = firstY; y <= endY; y += step) {
-        ctx.beginPath();
-        ctx.moveTo(startX, y);
-        ctx.lineTo(endX, y);
-        ctx.stroke();
+        renderer.beginPath();
+        renderer.moveTo(startX, y);
+        renderer.lineTo(endX, y);
+        renderer.stroke();
       }
     }
     
     // Draw axes
     if (showAxes) {
-      ctx.strokeStyle = '#9ca3af';
-      ctx.lineWidth = 2 / coord.xScale;
+      renderer.strokeStyle = '#9ca3af';
+      renderer.lineWidth = 2 / coord.xScale;
       if (0 >= startX && 0 <= endX) {
-        ctx.beginPath();
-        ctx.moveTo(0, startY);
-        ctx.lineTo(0, endY);
-        ctx.stroke();
+        renderer.beginPath();
+        renderer.moveTo(0, startY);
+        renderer.lineTo(0, endY);
+        renderer.stroke();
       }
       if (0 >= startY && 0 <= endY) {
-        ctx.beginPath();
-        ctx.moveTo(startX, 0);
-        ctx.lineTo(endX, 0);
-        ctx.stroke();
+        renderer.beginPath();
+        renderer.moveTo(startX, 0);
+        renderer.lineTo(endX, 0);
+        renderer.stroke();
       }
 
       // Draw numbers
-      ctx.fillStyle = '#6b7280';
-      ctx.font = `${10 / coord.xScale}px sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'top';
+      renderer.fillStyle = '#6b7280';
+      renderer.font = `${10 / coord.xScale}px sans-serif`;
+      renderer.textAlign = 'center';
+      renderer.textBaseline = 'top';
       
       for (let x = firstX; x <= endX; x += step) {
         if (Math.abs(x) > 1e-10) {
-          ctx.fillText(parseFloat(x.toPrecision(4)).toString(), x, 4 / coord.xScale);
+          renderer.fillText(parseFloat(x.toPrecision(4)).toString(), x, 4 / coord.xScale);
         }
       }
       
-      ctx.textAlign = 'right';
-      ctx.textBaseline = 'middle';
+      renderer.textAlign = 'right';
+      renderer.textBaseline = 'middle';
       for (let y = firstY; y <= endY; y += step) {
         if (Math.abs(y) > 1e-10) {
-          ctx.fillText(parseFloat(y.toPrecision(4)).toString(), -4 / coord.xScale, y);
+          renderer.fillText(parseFloat(y.toPrecision(4)).toString(), -4 / coord.xScale, y);
         }
       }
       
       // Origin
-      ctx.textAlign = 'right';
-      ctx.textBaseline = 'top';
-      ctx.fillText('0', -4 / coord.xScale, 4 / coord.xScale);
+      renderer.textAlign = 'right';
+      renderer.textBaseline = 'top';
+      renderer.fillText('0', -4 / coord.xScale, 4 / coord.xScale);
     }
   };
 
-  const drawPoint = (ctx: CanvasRenderingContext2D, p: GeoPoint, selected: boolean, scale: number) => {
+  const drawPoint = (renderer: IRenderer, p: GeoPoint, selected: boolean, scale: number) => {
     if (!p.isDefined()) return;
     const x = p.getX();
     const y = p.getY();
@@ -819,47 +859,47 @@ export const GeometryCanvas: React.FC = () => {
     const pointRadius = baseRadius / scale;
     
     if (selected) {
-      ctx.beginPath();
-      ctx.arc(x, y, (baseRadius + 4) / scale, 0, 2 * Math.PI);
-      ctx.strokeStyle = '#3b82f6';
-      ctx.lineWidth = 2 / scale;
-      ctx.stroke();
+      renderer.beginPath();
+      renderer.arc(x, y, (baseRadius + 4) / scale, 0, 2 * Math.PI);
+      renderer.strokeStyle = '#3b82f6';
+      renderer.lineWidth = 2 / scale;
+      renderer.stroke();
       
-      ctx.beginPath();
-      ctx.arc(x, y, (baseRadius + 8) / scale, 0, 2 * Math.PI);
-      ctx.strokeStyle = 'rgba(59, 130, 246, 0.3)';
-      ctx.lineWidth = 3 / scale;
-      ctx.stroke();
+      renderer.beginPath();
+      renderer.arc(x, y, (baseRadius + 8) / scale, 0, 2 * Math.PI);
+      renderer.strokeStyle = 'rgba(59, 130, 246, 0.3)';
+      renderer.lineWidth = 3 / scale;
+      renderer.stroke();
     }
     
-    ctx.beginPath();
-    ctx.arc(x, y, pointRadius, 0, 2 * Math.PI);
+    renderer.beginPath();
+    renderer.arc(x, y, pointRadius, 0, 2 * Math.PI);
     
     if (p.isIndependent()) {
-      ctx.fillStyle = selected ? '#1e40af' : '#1d4ed8';
+      renderer.fillStyle = selected ? '#1e40af' : '#1d4ed8';
     } else {
-      ctx.fillStyle = selected ? '#374151' : '#6b7280';
+      renderer.fillStyle = selected ? '#374151' : '#6b7280';
     }
-    ctx.fill();
+    renderer.fill();
     
-    ctx.strokeStyle = selected ? '#1e3a8a' : '#374151';
-    ctx.lineWidth = 1 / scale;
-    ctx.stroke();
+    renderer.strokeStyle = selected ? '#1e3a8a' : '#374151';
+    renderer.lineWidth = 1 / scale;
+    renderer.stroke();
     
     const label = p.label || p.id;
-    ctx.font = `bold ${14 / scale}px sans-serif`;
+    renderer.font = `bold ${14 / scale}px sans-serif`;
     
     const labelOffsetX = 15;
     const labelOffsetY = -15;
     const labelX = x + labelOffsetX;
     const labelY = y + labelOffsetY;
     
-    ctx.fillStyle = selected ? '#1e40af' : '#1f2937';
-    ctx.textBaseline = 'bottom';
-    ctx.fillText(label, labelX, labelY);
+    renderer.fillStyle = selected ? '#1e40af' : '#1f2937';
+    renderer.textBaseline = 'bottom';
+    renderer.fillText(label, labelX, labelY);
   };
 
-  const drawLine = (ctx: CanvasRenderingContext2D, l: GeoLine, selected: boolean, coord: CoordinateSystem) => {
+  const drawLine = (renderer: IRenderer, l: GeoLine, selected: boolean, coord: CoordinateSystem) => {
     if (!l.isDefined()) return;
     
     const canvas = canvasRef.current;
@@ -874,64 +914,64 @@ export const GeometryCanvas: React.FC = () => {
     const startY = coord.screenToWorldY(0);
     const endY = coord.screenToWorldY(h);
 
-    ctx.strokeStyle = selected ? '#3b82f6' : '#000';
-    ctx.lineWidth = (selected ? 3 : 1) / coord.xScale;
-    ctx.beginPath();
+    renderer.strokeStyle = selected ? '#3b82f6' : '#000';
+    renderer.lineWidth = (selected ? 3 : 1) / coord.xScale;
+    renderer.beginPath();
 
     if (Math.abs(l.b) > 1e-6) {
       const y1 = (-l.c - l.a * startX) / l.b;
       const y2 = (-l.c - l.a * endX) / l.b;
-      ctx.moveTo(startX, y1);
-      ctx.lineTo(endX, y2);
+      renderer.moveTo(startX, y1);
+      renderer.lineTo(endX, y2);
     } else {
       const x = -l.c / l.a;
-      ctx.moveTo(x, startY);
-      ctx.lineTo(x, endY);
+      renderer.moveTo(x, startY);
+      renderer.lineTo(x, endY);
     }
-    ctx.stroke();
+    renderer.stroke();
   };
 
-  const drawSegment = (ctx: CanvasRenderingContext2D, s: GeoSegment, selected: boolean, scale: number) => {
+  const drawSegment = (renderer: IRenderer, s: GeoSegment, selected: boolean, scale: number) => {
     if (!s.isDefined()) return;
-    ctx.strokeStyle = selected ? '#3b82f6' : '#000';
-    ctx.lineWidth = (selected ? 3 : 2) / scale;
-    ctx.beginPath();
-    ctx.moveTo(s.startPoint.getX(), s.startPoint.getY());
-    ctx.lineTo(s.endPoint.getX(), s.endPoint.getY());
-    ctx.stroke();
+    renderer.strokeStyle = selected ? '#3b82f6' : '#000';
+    renderer.lineWidth = (selected ? 3 : 2) / scale;
+    renderer.beginPath();
+    renderer.moveTo(s.startPoint.getX(), s.startPoint.getY());
+    renderer.lineTo(s.endPoint.getX(), s.endPoint.getY());
+    renderer.stroke();
   };
 
-  const drawPolygon = (ctx: CanvasRenderingContext2D, poly: GeoPolygon, selected: boolean, scale: number) => {
+  const drawPolygon = (renderer: IRenderer, poly: GeoPolygon, selected: boolean, scale: number) => {
     if (!poly.isDefined()) return;
     if (poly.vertices.length < 3) return;
-    ctx.fillStyle = selected ? 'rgba(59, 130, 246, 0.4)' : 'rgba(59, 130, 246, 0.2)'; // blue-500 with opacity
-    ctx.strokeStyle = '#3b82f6';
-    ctx.lineWidth = (selected ? 2 : 1) / scale;
-    ctx.beginPath();
-    ctx.moveTo(poly.vertices[0].getX(), poly.vertices[0].getY());
+    renderer.fillStyle = selected ? 'rgba(59, 130, 246, 0.4)' : 'rgba(59, 130, 246, 0.2)'; // blue-500 with opacity
+    renderer.strokeStyle = '#3b82f6';
+    renderer.lineWidth = (selected ? 2 : 1) / scale;
+    renderer.beginPath();
+    renderer.moveTo(poly.vertices[0].getX(), poly.vertices[0].getY());
     for (let i = 1; i < poly.vertices.length; i++) {
-      ctx.lineTo(poly.vertices[i].getX(), poly.vertices[i].getY());
+      renderer.lineTo(poly.vertices[i].getX(), poly.vertices[i].getY());
     }
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
+    renderer.closePath();
+    renderer.fill();
+    renderer.stroke();
   };
 
-  const drawLocus = (ctx: CanvasRenderingContext2D, locus: GeoLocus, selected: boolean, scale: number) => {
+  const drawLocus = (renderer: IRenderer, locus: GeoLocus, selected: boolean, scale: number) => {
     if (!locus.isDefined()) return;
     const samples = locus.getSamples();
     const segments = locus.getSegments();
     if (samples.length < 2 || segments.length === 0) return;
-    ctx.strokeStyle = selected ? '#3b82f6' : '#8b5cf6';
-    ctx.lineWidth = (selected ? 3 : 2) / scale;
+    renderer.strokeStyle = selected ? '#3b82f6' : '#8b5cf6';
+    renderer.lineWidth = (selected ? 3 : 2) / scale;
     for (const seg of segments) {
       if (seg.end - seg.start < 1) continue;
-      ctx.beginPath();
-      ctx.moveTo(samples[seg.start].x, samples[seg.start].y);
+      renderer.beginPath();
+      renderer.moveTo(samples[seg.start].x, samples[seg.start].y);
       for (let i = seg.start + 1; i <= seg.end; i++) {
-        ctx.lineTo(samples[i].x, samples[i].y);
+        renderer.lineTo(samples[i].x, samples[i].y);
       }
-      ctx.stroke();
+      renderer.stroke();
     }
   };
 
@@ -1613,14 +1653,23 @@ export const GeometryCanvas: React.FC = () => {
     if (cmd.type === 'add') {
       const elements = [...cmd.elements].reverse();
       elements.forEach(el => kernel.getConstruction().removeElement(el));
-      
       setSelectedElements(prev => prev.filter(e => !elements.includes(e as any)));
       setPolygonPoints(prev => prev.filter(e => !elements.includes(e as any)));
-      
-      kernel.getConstruction().updateAllAlgorithms();
+    } else if (cmd.type === 'delete') {
+      [...cmd.elements].reverse().forEach(el => kernel.getConstruction().deleteElementWithDependents(el));
+      setSelectedElements([]);
     } else if (cmd.type === 'move') {
       restoreState(cmd.oldState);
+    } else if (cmd.type === 'numeric') {
+      const el = kernel.getConstruction().getElementById(cmd.element.id);
+      if (el instanceof GeoNumeric) el.setValue(cmd.oldValue);
+    } else if (cmd.type === 'rename') {
+      const el = kernel.getConstruction().getElementById(cmd.element.id);
+      if (el) el.label = cmd.oldLabel;
+    } else if (cmd.type === 'style') {
+      recordStyleChange(cmd.element, cmd.after);
     }
+    kernel.getConstruction().updateAllAlgorithms();
     setRenderRev(r => r + 1);
   };
 
@@ -1631,10 +1680,20 @@ export const GeometryCanvas: React.FC = () => {
 
     if (cmd.type === 'add') {
       cmd.elements.forEach(el => kernel.getConstruction().addElement(el));
-      kernel.getConstruction().updateAllAlgorithms();
+    } else if (cmd.type === 'delete') {
+      cmd.elements.forEach(el => kernel.getConstruction().addElement(el));
     } else if (cmd.type === 'move') {
       restoreState(cmd.newState);
+    } else if (cmd.type === 'numeric') {
+      const el = kernel.getConstruction().getElementById(cmd.element.id);
+      if (el instanceof GeoNumeric) el.setValue(cmd.newValue);
+    } else if (cmd.type === 'rename') {
+      const el = kernel.getConstruction().getElementById(cmd.element.id);
+      if (el) el.label = cmd.newLabel;
+    } else if (cmd.type === 'style') {
+      recordStyleChange(cmd.element, cmd.before);
     }
+    kernel.getConstruction().updateAllAlgorithms();
     setRenderRev(r => r + 1);
   };
 
@@ -2038,7 +2097,7 @@ export const GeometryCanvas: React.FC = () => {
                   {kernel.getConstruction().getElements()
                       .filter(el => el instanceof GeoNumeric && el.isAnimatable())
                       .map(el => (
-                          <SliderControl key={el.id} numeric={el as GeoNumeric} kernel={kernel} />
+                          <SliderControl key={el.id} numeric={el as GeoNumeric} kernel={kernel} onNumericChange={notifyNumericChange} />
                   ))}
               </div>
             </div>

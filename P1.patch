@@ -1,0 +1,1522 @@
+--- a/src/components/GeometryCanvas.tsx
++++ b/src/components/GeometryCanvas.tsx
+--- a/src/components/GeometryCanvas.tsx	2026-08-30 16:35:33.218863837 +0000
++++ b/src/components/GeometryCanvas.tsx	2026-08-30 16:30:38.109973115 +0000
+@@ -33,6 +33,8 @@
+ import { AlgoPointOnSegment } from '../kernel/algo/AlgoPointOnSegment';
+ import { GeoNumeric } from '../kernel/geo/GeoNumeric';
+ import { CoordinateSystem } from '../kernel/core/CoordinateSystem';
++import { IRenderer } from '../kernel/view/IRenderer';
++import { createRenderer } from '../kernel/view/WebGLRendererFallback';
+ import { serialize as serializeConstruction, deserialize as deserializeConstruction, downloadJSON } from '../kernel/persistence/ConstructionSerializer';
+ import { SliderControl } from './SliderControl';
+ import { useLanguage } from '../i18n/LanguageContext';
+@@ -55,9 +57,18 @@
+   numerics: Map<string, number>;
+ }
+ 
+-type Command = 
++/**
++ * P1-3: 可扩展的命令类型定义。
++ * - delete / numeric / rename：本阶段落地；
++ * - style：样式系统（颜色、线宽、虚线等）属于 P2，此处留接口骨架。
++ */
++type Command =
+   | { type: 'add', elements: ConstructionElement[] }
+-  | { type: 'move', oldState: StateSnapshot, newState: StateSnapshot };
++  | { type: 'delete', elements: ConstructionElement[] }
++  | { type: 'move', oldState: StateSnapshot, newState: StateSnapshot }
++  | { type: 'style', element: GeoElement, before: Record<string, unknown>, after: Record<string, unknown> }
++  | { type: 'numeric', element: GeoNumeric, oldValue: number, newValue: number }
++  | { type: 'rename', element: ConstructionElement, oldLabel: string, newLabel: string };
+ 
+ interface UIElement {
+   id: string;
+@@ -118,14 +129,25 @@
+     }
+   }, [selectedElements]);
+ 
++  /** P1-3: 数值变化的撤销入口（拖动滑块时由 SliderControl 注入） */
++  const notifyNumericChange = useCallback((numeric: GeoNumeric, newValue: number) => recordNumericChange(numeric, newValue), []);
++
++  useEffect(() => {
++    const canvas = canvasRef.current;
++    if (!canvas) return;
++    setRenderer(createRenderer(canvas, true)); // 优先 WebGL2，失败自动回退 Canvas
++    return () => setRenderer(null);
++  }, []);
++
+   const handleLabelChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+     setEditingLabel(e.target.value);
+   };
+ 
++  /** P1-3: 标签编辑提交时记录 rename 命令 */
+   const handleLabelSubmit = () => {
+     if (selectedElements.length === 1) {
+       if (editingLabel.trim() !== '') {
+-        selectedElements[0].label = editingLabel.trim();
++        recordRename(selectedElements[0], editingLabel.trim());
+         setRenderRev(r => r + 1);
+       } else {
+         setEditingLabel(selectedElements[0].label);
+@@ -138,6 +160,7 @@
+   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+   const [hoveredPoint, setHoveredPoint] = useState<GeoPoint | null>(null);
+   const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
++    const [renderer, setRenderer] = useState<IRenderer | null>(null);
+   
+   const [coord, setCoord] = useState<CoordinateSystem>(() => CoordinateSystem.centered(800, 600, 1));
+   const [isPanning, setIsPanning] = useState(false);
+@@ -161,25 +184,51 @@
+   const redoStack = useRef<Command[]>([]);
+   const [dragStartState, setDragStartState] = useState<StateSnapshot | null>(null);
+ 
++  /**
++   * P1-3: 命令分发器（撤销/重做统一入口）。
++   * 每次新增命令即清空 redo 栈，并触发一次视图刷新。
++   */
+   const addCommand = (cmd: Command) => {
+     undoStack.current.push(cmd);
+     redoStack.current = [];
+     setRenderRev(r => r + 1);
+   };
+ 
++  /** P1-3: 记录数值参数的变化（滑块拖动 / 区间与动画速度修改），旧值 -> 新值 */
++  const recordNumericChange = (numeric: GeoNumeric, newValue: number) => {
++    const oldValue = numeric.getValue();
++    if (oldValue !== newValue) {
++      addCommand({ type: 'numeric', element: numeric, oldValue, newValue });
++    }
++  };
++
++  /** P1-3: 记录重命名操作（任意构造元素标签） */
++  const recordRename = (element: ConstructionElement, newLabel: string) => {
++    const oldLabel = (element.label || '');
++    if (oldLabel !== newLabel) {
++      addCommand({ type: 'rename', element, oldLabel, newLabel });
++    }
++  };
++
++  /** P2 骨架：样式系统的撤销包装（当前 GeoElement 尚无样式字段） */
++  const recordStyleChange = (_element: GeoElement, _changes: Record<string, unknown>) => {
++    console.warn('[MiniGeogebra] recordStyleChange is a P2 feature; no-op now.');
++  };
++
+   const fileInputRef = useRef<HTMLInputElement>(null);
+ 
+   /** 删除一组元素及其全部依赖，并记录可撤销快照 */
++  /** P1-3: 删除元素及其全部依赖，并记录 'delete' 命令（撤销时删回、重做时重建） */
+   const deleteWithDependents = (els: ConstructionElement[]) => {
+     if (els.length === 0) return;
+-    const cascade: ConstructionElement[] = [];
+     const construction = kernel.getConstruction();
++    const cascade = new Set<ConstructionElement>();
+     for (const el of els) {
+-      cascade.push(...construction.collectDeletionCascade(el));
++      for (const c of construction.collectDeletionCascade(el)) cascade.add(c);
+       construction.deleteElementWithDependents(el);
+     }
+-    construction.updateAllAlgorithms();
+-    addCommand({ type: 'add', elements: cascade });
++    // 按构造序正序存储：撤销时逆序执行（先删下游依赖），重做时直接 re-add（对象引用 intact）
++    addCommand({ type: 'delete', elements: Array.from(cascade).sort((a, b) => a.constIndex - b.constIndex) });
+     setSelectedElements([]);
+     setRenderRev(r => r + 1);
+   };
+@@ -405,22 +454,21 @@
+ 
+   const { schedule } = useRenderLoop(() => {
+     const canvas = canvasRef.current;
+-    if (!canvas) return;
+-    const ctx = canvas.getContext('2d');
+-    if (!ctx) return;
++    if (!canvas || !renderer) return;
++    renderer.viewportSize(canvas.width, canvas.height);
+ 
+     const dpr = window.devicePixelRatio || 1;
+ 
+     // Clear canvas
+-    ctx.clearRect(0, 0, canvas.width, canvas.height);
++    renderer.clearRect(0, 0, canvas.width, canvas.height);
+ 
+-    ctx.save();
+-    ctx.scale(dpr, dpr);
+-    ctx.translate(coord.xZero, coord.yZero);
+-    ctx.scale(coord.xScale, coord.yScale);
++    renderer.save();
++    renderer.scale(dpr, dpr);
++    renderer.translate(coord.xZero, coord.yZero);
++    renderer.scale(coord.xScale, coord.yScale);
+ 
+     // Draw grid
+-    drawGrid(ctx, canvas.width / dpr, canvas.height / dpr, coord, showGrid, showAxes);
++    drawGrid(renderer, canvas.width / dpr, canvas.height / dpr, coord, showGrid, showAxes);
+ 
+     // Draw elements
+     const elements = kernel.getConstruction().getElements();
+@@ -428,87 +476,87 @@
+     // Draw polygons first (fill)
+     elements.forEach(el => {
+       if (el instanceof GeoPolygon) {
+-        drawPolygon(ctx, el, selectedElements.includes(el), coord.xScale);
++        drawPolygon(renderer, el, selectedElements.includes(el), coord.xScale);
+       }
+     });
+ 
+     // Draw conics (circles)
+     elements.forEach(el => {
+       if (el instanceof GeoConic) {
+-        drawConic(ctx, el, selectedElements.includes(el), coord.xScale);
++        drawConic(renderer, el, selectedElements.includes(el), coord.xScale);
+       }
+     });
+ 
+     // Draw locus curves
+     elements.forEach(el => {
+       if (el instanceof GeoLocus) {
+-        drawLocus(ctx, el, selectedElements.includes(el), coord.xScale);
++        drawLocus(renderer, el, selectedElements.includes(el), coord.xScale);
+       }
+     });
+ 
+     // Draw lines and segments
+     elements.forEach(el => {
+       if (el instanceof GeoSegment) {
+-        drawSegment(ctx, el, selectedElements.includes(el), coord.xScale);
++        drawSegment(renderer, el, selectedElements.includes(el), coord.xScale);
+       } else if (el instanceof GeoLine && !(el instanceof GeoSegment)) {
+-        drawLine(ctx, el, selectedElements.includes(el), coord);
++        drawLine(renderer, el, selectedElements.includes(el), coord);
+       }
+     });
+ 
+     // Draw polygon being created
+     if (mode === 'polygon' && polygonPoints.length > 0) {
+-        ctx.strokeStyle = '#9ca3af'; // gray-400
+-        ctx.lineWidth = 1 / coord.xScale;
+-        ctx.setLineDash([5 / coord.xScale, 5 / coord.xScale]);
+-        ctx.beginPath();
+-        ctx.moveTo(polygonPoints[0].getX(), polygonPoints[0].getY());
++        renderer.strokeStyle = '#9ca3af'; // gray-400
++        renderer.lineWidth = 1 / coord.xScale;
++        renderer.setLineDash([5 / coord.xScale, 5 / coord.xScale]);
++        renderer.beginPath();
++        renderer.moveTo(polygonPoints[0].getX(), polygonPoints[0].getY());
+         for (let i = 1; i < polygonPoints.length; i++) {
+-            ctx.lineTo(polygonPoints[i].getX(), polygonPoints[i].getY());
++            renderer.lineTo(polygonPoints[i].getX(), polygonPoints[i].getY());
+         }
+         // Draw line to mouse
+-        ctx.lineTo(mousePos.x, mousePos.y);
+-        ctx.stroke();
+-        ctx.setLineDash([]);
++        renderer.lineTo(mousePos.x, mousePos.y);
++        renderer.stroke();
++        renderer.setLineDash([]);
+     }
+ 
+     // Draw Previews
+-    ctx.save();
+-    ctx.strokeStyle = 'rgba(100, 100, 100, 0.5)';
+-    ctx.setLineDash([5 / coord.xScale, 5 / coord.xScale]);
+-    ctx.lineWidth = 1 / coord.xScale;
++    renderer.save();
++    renderer.strokeStyle = 'rgba(100, 100, 100, 0.5)';
++    renderer.setLineDash([5 / coord.xScale, 5 / coord.xScale]);
++    renderer.lineWidth = 1 / coord.xScale;
+     
+     const targetX = hoveredPoint ? hoveredPoint.getX() : mousePos.x;
+     const targetY = hoveredPoint ? hoveredPoint.getY() : mousePos.y;
+ 
+     if (mode === 'segment' && selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
+         const p1 = selectedElements[0] as GeoPoint;
+-        ctx.beginPath();
+-        ctx.moveTo(p1.getX(), p1.getY());
+-        ctx.lineTo(targetX, targetY);
+-        ctx.stroke();
++        renderer.beginPath();
++        renderer.moveTo(p1.getX(), p1.getY());
++        renderer.lineTo(targetX, targetY);
++        renderer.stroke();
+     } else if (mode === 'line' && selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
+         const p1 = selectedElements[0] as GeoPoint;
+         // Draw line through p1 and target
+         const dx = targetX - p1.getX();
+         const dy = targetY - p1.getY();
+         if (Math.hypot(dx, dy) > 1 / coord.xScale) {
+-            ctx.beginPath();
+-            ctx.moveTo(p1.getX() - 10000 * dx, p1.getY() - 10000 * dy);
+-            ctx.lineTo(p1.getX() + 10000 * dx, p1.getY() + 10000 * dy);
+-            ctx.stroke();
++            renderer.beginPath();
++            renderer.moveTo(p1.getX() - 10000 * dx, p1.getY() - 10000 * dy);
++            renderer.lineTo(p1.getX() + 10000 * dx, p1.getY() + 10000 * dy);
++            renderer.stroke();
+         }
+     } else if (mode === 'circle') {
+         // Preview circle with radius
+-        ctx.beginPath();
+-        ctx.arc(targetX, targetY, radius, 0, 2 * Math.PI);
+-        ctx.stroke();
++        renderer.beginPath();
++        renderer.arc(targetX, targetY, radius, 0, 2 * Math.PI);
++        renderer.stroke();
+     } else if (mode === 'circle_center_point' && selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
+         // Preview circle with center at selected point and radius to target
+         const center = selectedElements[0] as GeoPoint;
+         const r = Math.hypot(targetX - center.getX(), targetY - center.getY());
+-        ctx.beginPath();
+-        ctx.arc(center.getX(), center.getY(), r, 0, 2 * Math.PI);
+-        ctx.stroke();
++        renderer.beginPath();
++        renderer.arc(center.getX(), center.getY(), r, 0, 2 * Math.PI);
++        renderer.stroke();
+     } else if (mode === 'circle3' && selectedElements.length === 2) {
+         // Preview circle through two points and mouse position
+         const [p1, p2] = selectedElements as GeoPoint[];
+@@ -526,15 +574,15 @@
+             const r = Math.hypot(ux - ax, uy - ay);
+             
+             // Draw preview circle
+-            ctx.beginPath();
+-            ctx.arc(ux, uy, r, 0, 2 * Math.PI);
+-            ctx.stroke();
++            renderer.beginPath();
++            renderer.arc(ux, uy, r, 0, 2 * Math.PI);
++            renderer.stroke();
+             
+             // Draw preview center point
+-            ctx.beginPath();
+-            ctx.arc(ux, uy, 3 / coord.xScale, 0, 2 * Math.PI);
+-            ctx.fillStyle = 'rgba(100, 100, 100, 0.5)';
+-            ctx.fill();
++            renderer.beginPath();
++            renderer.arc(ux, uy, 3 / coord.xScale, 0, 2 * Math.PI);
++            renderer.fillStyle = 'rgba(100, 100, 100, 0.5)';
++            renderer.fill();
+         }
+     } else if ((mode === 'parallel' || mode === 'orthogonal') && selectedElements.length === 1 && selectedElements[0] instanceof GeoLine) {
+          // Preview line through mouse
+@@ -557,16 +605,16 @@
+          if (Math.abs(b) > 1e-6) {
+             const y1 = (-c - a * startX) / b;
+             const y2 = (-c - a * endX) / b;
+-            ctx.beginPath();
+-            ctx.moveTo(startX, y1);
+-            ctx.lineTo(endX, y2);
+-            ctx.stroke();
++            renderer.beginPath();
++            renderer.moveTo(startX, y1);
++            renderer.lineTo(endX, y2);
++            renderer.stroke();
+          } else {
+             const x = -c / a;
+-            ctx.beginPath();
+-            ctx.moveTo(x, startY);
+-            ctx.lineTo(x, endY);
+-            ctx.stroke();
++            renderer.beginPath();
++            renderer.moveTo(x, startY);
++            renderer.lineTo(x, endY);
++            renderer.stroke();
+          }
+     } else if (mode === 'perpendicular_bisector' && selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
+         // Preview perpendicular bisector through midpoint
+@@ -590,31 +638,31 @@
+         if (Math.abs(b) > 1e-6) {
+             const y1 = (-c - a * startX) / b;
+             const y2 = (-c - a * endX) / b;
+-            ctx.beginPath();
+-            ctx.moveTo(startX, y1);
+-            ctx.lineTo(endX, y2);
+-            ctx.stroke();
++            renderer.beginPath();
++            renderer.moveTo(startX, y1);
++            renderer.lineTo(endX, y2);
++            renderer.stroke();
+         } else {
+             const x = -c / a;
+-            ctx.beginPath();
+-            ctx.moveTo(x, startY);
+-            ctx.lineTo(x, endY);
+-            ctx.stroke();
++            renderer.beginPath();
++            renderer.moveTo(x, startY);
++            renderer.lineTo(x, endY);
++            renderer.stroke();
+         }
+         
+         // Draw midpoint preview
+-        ctx.beginPath();
+-        ctx.arc(mx, my, 3 / coord.xScale, 0, 2 * Math.PI);
+-        ctx.fillStyle = 'rgba(100, 100, 100, 0.5)';
+-        ctx.fill();
++        renderer.beginPath();
++        renderer.arc(mx, my, 3 / coord.xScale, 0, 2 * Math.PI);
++        renderer.fillStyle = 'rgba(100, 100, 100, 0.5)';
++        renderer.fill();
+     } else if (mode === 'angle_bisector' && selectedElements.length >= 1 && selectedElements.length < 3) {
+         if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
+             // Need two more points - just show line from first point to mouse
+             const p1 = selectedElements[0] as GeoPoint;
+-            ctx.beginPath();
+-            ctx.moveTo(p1.getX(), p1.getY());
+-            ctx.lineTo(targetX, targetY);
+-            ctx.stroke();
++            renderer.beginPath();
++            renderer.moveTo(p1.getX(), p1.getY());
++            renderer.lineTo(targetX, targetY);
++            renderer.stroke();
+         } else if (selectedElements.length === 2 && selectedElements[0] instanceof GeoPoint && selectedElements[1] instanceof GeoPoint) {
+             // Have A and B, preview angle bisector with C at mouse position
+             const [A, B] = selectedElements as GeoPoint[];
+@@ -665,31 +713,34 @@
+                 if (Math.abs(ny) > 1e-6) {
+                     const y1 = (-c - nx * startX) / ny;
+                     const y2 = (-c - nx * endX) / ny;
+-                    ctx.beginPath();
+-                    ctx.moveTo(startX, y1);
+-                    ctx.lineTo(endX, y2);
+-                    ctx.stroke();
++                    renderer.beginPath();
++                    renderer.moveTo(startX, y1);
++                    renderer.lineTo(endX, y2);
++                    renderer.stroke();
+                 } else {
+                     const x = -c / nx;
+-                    ctx.beginPath();
+-                    ctx.moveTo(x, startY);
+-                    ctx.lineTo(x, endY);
+-                    ctx.stroke();
++                    renderer.beginPath();
++                    renderer.moveTo(x, startY);
++                    renderer.lineTo(x, endY);
++                    renderer.stroke();
+                 }
+             }
+         }
+     }
+     
+-    ctx.restore();
++    renderer.restore();
+ 
+     // Draw points last
+     elements.forEach(el => {
+       if (el instanceof GeoPoint) {
+-        drawPoint(ctx, el, selectedElements.includes(el), coord.xScale);
++        drawPoint(renderer, el, selectedElements.includes(el), coord.xScale);
+       }
+     });
+ 
+-    ctx.restore(); // Restore the global transform
++    renderer.restore(); // Restore the global transform
++
++    // P1-2: 每帧末尾统一提交 GPU 队列并合成本帧文本（批量绘制入口）
++    renderer.frameCommit();
+ 
+   }, [renderRev, selectedElements, mousePos, mode, polygonPoints, radius, hoveredPoint, coord, showGrid, showAxes]);
+ 
+@@ -697,7 +748,7 @@
+     schedule(); // 首帧立即绘制
+   }, [schedule]);
+ 
+-  const drawConic = (ctx: CanvasRenderingContext2D, c: GeoConic, selected: boolean, scale: number) => {
++  const drawConic = (renderer: IRenderer, c: GeoConic, selected: boolean, scale: number) => {
+     if (!c.isDefined()) return;
+     // Only circles for now
+     const center = c.getCenter();
+@@ -705,29 +756,29 @@
+     if (r <= 0) return;
+     
+     if (selected) {
+-      ctx.beginPath();
+-      ctx.arc(center.x, center.y, r + 4 / scale, 0, 2 * Math.PI);
+-      ctx.strokeStyle = 'rgba(59, 130, 246, 0.3)';
+-      ctx.lineWidth = 6 / scale;
+-      ctx.stroke();
++      renderer.beginPath();
++      renderer.arc(center.x, center.y, r + 4 / scale, 0, 2 * Math.PI);
++      renderer.strokeStyle = 'rgba(59, 130, 246, 0.3)';
++      renderer.lineWidth = 6 / scale;
++      renderer.stroke();
+     }
+     
+-    ctx.strokeStyle = selected ? '#3b82f6' : '#000';
+-    ctx.lineWidth = (selected ? 3 : 1) / scale;
+-    ctx.beginPath();
+-    ctx.arc(center.x, center.y, r, 0, 2 * Math.PI);
+-    ctx.stroke();
++    renderer.strokeStyle = selected ? '#3b82f6' : '#000';
++    renderer.lineWidth = (selected ? 3 : 1) / scale;
++    renderer.beginPath();
++    renderer.arc(center.x, center.y, r, 0, 2 * Math.PI);
++    renderer.stroke();
+     
+     if (selected) {
+       const label = c.label || c.id;
+-      ctx.font = `bold ${14 / scale}px sans-serif`;
+-      ctx.fillStyle = '#1e40af';
+-      ctx.textBaseline = 'bottom';
+-      ctx.fillText(label, center.x + r + 10 / scale, center.y);
++      renderer.font = `bold ${14 / scale}px sans-serif`;
++      renderer.fillStyle = '#1e40af';
++      renderer.textBaseline = 'bottom';
++      renderer.fillText(label, center.x + r + 10 / scale, center.y);
+     }
+   };
+ 
+-  const drawGrid = (ctx: CanvasRenderingContext2D, w: number, h: number, coord: CoordinateSystem, showGrid: boolean, showAxes: boolean) => {
++  const drawGrid = (renderer: IRenderer, w: number, h: number, coord: CoordinateSystem, showGrid: boolean, showAxes: boolean) => {
+     const startX = coord.screenToWorldX(0);
+     const endX = coord.screenToWorldX(w);
+     const startY = coord.screenToWorldY(0);
+@@ -749,68 +800,68 @@
+     
+     // Draw grid
+     if (showGrid) {
+-      ctx.strokeStyle = '#e5e7eb';
+-      ctx.lineWidth = 1 / coord.xScale;
++      renderer.strokeStyle = '#e5e7eb';
++      renderer.lineWidth = 1 / coord.xScale;
+       
+       for (let x = firstX; x <= endX; x += step) {
+-        ctx.beginPath();
+-        ctx.moveTo(x, startY);
+-        ctx.lineTo(x, endY);
+-        ctx.stroke();
++        renderer.beginPath();
++        renderer.moveTo(x, startY);
++        renderer.lineTo(x, endY);
++        renderer.stroke();
+       }
+       for (let y = firstY; y <= endY; y += step) {
+-        ctx.beginPath();
+-        ctx.moveTo(startX, y);
+-        ctx.lineTo(endX, y);
+-        ctx.stroke();
++        renderer.beginPath();
++        renderer.moveTo(startX, y);
++        renderer.lineTo(endX, y);
++        renderer.stroke();
+       }
+     }
+     
+     // Draw axes
+     if (showAxes) {
+-      ctx.strokeStyle = '#9ca3af';
+-      ctx.lineWidth = 2 / coord.xScale;
++      renderer.strokeStyle = '#9ca3af';
++      renderer.lineWidth = 2 / coord.xScale;
+       if (0 >= startX && 0 <= endX) {
+-        ctx.beginPath();
+-        ctx.moveTo(0, startY);
+-        ctx.lineTo(0, endY);
+-        ctx.stroke();
++        renderer.beginPath();
++        renderer.moveTo(0, startY);
++        renderer.lineTo(0, endY);
++        renderer.stroke();
+       }
+       if (0 >= startY && 0 <= endY) {
+-        ctx.beginPath();
+-        ctx.moveTo(startX, 0);
+-        ctx.lineTo(endX, 0);
+-        ctx.stroke();
++        renderer.beginPath();
++        renderer.moveTo(startX, 0);
++        renderer.lineTo(endX, 0);
++        renderer.stroke();
+       }
+ 
+       // Draw numbers
+-      ctx.fillStyle = '#6b7280';
+-      ctx.font = `${10 / coord.xScale}px sans-serif`;
+-      ctx.textAlign = 'center';
+-      ctx.textBaseline = 'top';
++      renderer.fillStyle = '#6b7280';
++      renderer.font = `${10 / coord.xScale}px sans-serif`;
++      renderer.textAlign = 'center';
++      renderer.textBaseline = 'top';
+       
+       for (let x = firstX; x <= endX; x += step) {
+         if (Math.abs(x) > 1e-10) {
+-          ctx.fillText(parseFloat(x.toPrecision(4)).toString(), x, 4 / coord.xScale);
++          renderer.fillText(parseFloat(x.toPrecision(4)).toString(), x, 4 / coord.xScale);
+         }
+       }
+       
+-      ctx.textAlign = 'right';
+-      ctx.textBaseline = 'middle';
++      renderer.textAlign = 'right';
++      renderer.textBaseline = 'middle';
+       for (let y = firstY; y <= endY; y += step) {
+         if (Math.abs(y) > 1e-10) {
+-          ctx.fillText(parseFloat(y.toPrecision(4)).toString(), -4 / coord.xScale, y);
++          renderer.fillText(parseFloat(y.toPrecision(4)).toString(), -4 / coord.xScale, y);
+         }
+       }
+       
+       // Origin
+-      ctx.textAlign = 'right';
+-      ctx.textBaseline = 'top';
+-      ctx.fillText('0', -4 / coord.xScale, 4 / coord.xScale);
++      renderer.textAlign = 'right';
++      renderer.textBaseline = 'top';
++      renderer.fillText('0', -4 / coord.xScale, 4 / coord.xScale);
+     }
+   };
+ 
+-  const drawPoint = (ctx: CanvasRenderingContext2D, p: GeoPoint, selected: boolean, scale: number) => {
++  const drawPoint = (renderer: IRenderer, p: GeoPoint, selected: boolean, scale: number) => {
+     if (!p.isDefined()) return;
+     const x = p.getX();
+     const y = p.getY();
+@@ -819,47 +870,47 @@
+     const pointRadius = baseRadius / scale;
+     
+     if (selected) {
+-      ctx.beginPath();
+-      ctx.arc(x, y, (baseRadius + 4) / scale, 0, 2 * Math.PI);
+-      ctx.strokeStyle = '#3b82f6';
+-      ctx.lineWidth = 2 / scale;
+-      ctx.stroke();
++      renderer.beginPath();
++      renderer.arc(x, y, (baseRadius + 4) / scale, 0, 2 * Math.PI);
++      renderer.strokeStyle = '#3b82f6';
++      renderer.lineWidth = 2 / scale;
++      renderer.stroke();
+       
+-      ctx.beginPath();
+-      ctx.arc(x, y, (baseRadius + 8) / scale, 0, 2 * Math.PI);
+-      ctx.strokeStyle = 'rgba(59, 130, 246, 0.3)';
+-      ctx.lineWidth = 3 / scale;
+-      ctx.stroke();
++      renderer.beginPath();
++      renderer.arc(x, y, (baseRadius + 8) / scale, 0, 2 * Math.PI);
++      renderer.strokeStyle = 'rgba(59, 130, 246, 0.3)';
++      renderer.lineWidth = 3 / scale;
++      renderer.stroke();
+     }
+     
+-    ctx.beginPath();
+-    ctx.arc(x, y, pointRadius, 0, 2 * Math.PI);
++    renderer.beginPath();
++    renderer.arc(x, y, pointRadius, 0, 2 * Math.PI);
+     
+     if (p.isIndependent()) {
+-      ctx.fillStyle = selected ? '#1e40af' : '#1d4ed8';
++      renderer.fillStyle = selected ? '#1e40af' : '#1d4ed8';
+     } else {
+-      ctx.fillStyle = selected ? '#374151' : '#6b7280';
++      renderer.fillStyle = selected ? '#374151' : '#6b7280';
+     }
+-    ctx.fill();
++    renderer.fill();
+     
+-    ctx.strokeStyle = selected ? '#1e3a8a' : '#374151';
+-    ctx.lineWidth = 1 / scale;
+-    ctx.stroke();
++    renderer.strokeStyle = selected ? '#1e3a8a' : '#374151';
++    renderer.lineWidth = 1 / scale;
++    renderer.stroke();
+     
+     const label = p.label || p.id;
+-    ctx.font = `bold ${14 / scale}px sans-serif`;
++    renderer.font = `bold ${14 / scale}px sans-serif`;
+     
+     const labelOffsetX = 15;
+     const labelOffsetY = -15;
+     const labelX = x + labelOffsetX;
+     const labelY = y + labelOffsetY;
+     
+-    ctx.fillStyle = selected ? '#1e40af' : '#1f2937';
+-    ctx.textBaseline = 'bottom';
+-    ctx.fillText(label, labelX, labelY);
++    renderer.fillStyle = selected ? '#1e40af' : '#1f2937';
++    renderer.textBaseline = 'bottom';
++    renderer.fillText(label, labelX, labelY);
+   };
+ 
+-  const drawLine = (ctx: CanvasRenderingContext2D, l: GeoLine, selected: boolean, coord: CoordinateSystem) => {
++  const drawLine = (renderer: IRenderer, l: GeoLine, selected: boolean, coord: CoordinateSystem) => {
+     if (!l.isDefined()) return;
+     
+     const canvas = canvasRef.current;
+@@ -874,64 +925,64 @@
+     const startY = coord.screenToWorldY(0);
+     const endY = coord.screenToWorldY(h);
+ 
+-    ctx.strokeStyle = selected ? '#3b82f6' : '#000';
+-    ctx.lineWidth = (selected ? 3 : 1) / coord.xScale;
+-    ctx.beginPath();
++    renderer.strokeStyle = selected ? '#3b82f6' : '#000';
++    renderer.lineWidth = (selected ? 3 : 1) / coord.xScale;
++    renderer.beginPath();
+ 
+     if (Math.abs(l.b) > 1e-6) {
+       const y1 = (-l.c - l.a * startX) / l.b;
+       const y2 = (-l.c - l.a * endX) / l.b;
+-      ctx.moveTo(startX, y1);
+-      ctx.lineTo(endX, y2);
++      renderer.moveTo(startX, y1);
++      renderer.lineTo(endX, y2);
+     } else {
+       const x = -l.c / l.a;
+-      ctx.moveTo(x, startY);
+-      ctx.lineTo(x, endY);
++      renderer.moveTo(x, startY);
++      renderer.lineTo(x, endY);
+     }
+-    ctx.stroke();
++    renderer.stroke();
+   };
+ 
+-  const drawSegment = (ctx: CanvasRenderingContext2D, s: GeoSegment, selected: boolean, scale: number) => {
++  const drawSegment = (renderer: IRenderer, s: GeoSegment, selected: boolean, scale: number) => {
+     if (!s.isDefined()) return;
+-    ctx.strokeStyle = selected ? '#3b82f6' : '#000';
+-    ctx.lineWidth = (selected ? 3 : 2) / scale;
+-    ctx.beginPath();
+-    ctx.moveTo(s.startPoint.getX(), s.startPoint.getY());
+-    ctx.lineTo(s.endPoint.getX(), s.endPoint.getY());
+-    ctx.stroke();
++    renderer.strokeStyle = selected ? '#3b82f6' : '#000';
++    renderer.lineWidth = (selected ? 3 : 2) / scale;
++    renderer.beginPath();
++    renderer.moveTo(s.startPoint.getX(), s.startPoint.getY());
++    renderer.lineTo(s.endPoint.getX(), s.endPoint.getY());
++    renderer.stroke();
+   };
+ 
+-  const drawPolygon = (ctx: CanvasRenderingContext2D, poly: GeoPolygon, selected: boolean, scale: number) => {
++  const drawPolygon = (renderer: IRenderer, poly: GeoPolygon, selected: boolean, scale: number) => {
+     if (!poly.isDefined()) return;
+     if (poly.vertices.length < 3) return;
+-    ctx.fillStyle = selected ? 'rgba(59, 130, 246, 0.4)' : 'rgba(59, 130, 246, 0.2)'; // blue-500 with opacity
+-    ctx.strokeStyle = '#3b82f6';
+-    ctx.lineWidth = (selected ? 2 : 1) / scale;
+-    ctx.beginPath();
+-    ctx.moveTo(poly.vertices[0].getX(), poly.vertices[0].getY());
++    renderer.fillStyle = selected ? 'rgba(59, 130, 246, 0.4)' : 'rgba(59, 130, 246, 0.2)'; // blue-500 with opacity
++    renderer.strokeStyle = '#3b82f6';
++    renderer.lineWidth = (selected ? 2 : 1) / scale;
++    renderer.beginPath();
++    renderer.moveTo(poly.vertices[0].getX(), poly.vertices[0].getY());
+     for (let i = 1; i < poly.vertices.length; i++) {
+-      ctx.lineTo(poly.vertices[i].getX(), poly.vertices[i].getY());
++      renderer.lineTo(poly.vertices[i].getX(), poly.vertices[i].getY());
+     }
+-    ctx.closePath();
+-    ctx.fill();
+-    ctx.stroke();
++    renderer.closePath();
++    renderer.fill();
++    renderer.stroke();
+   };
+ 
+-  const drawLocus = (ctx: CanvasRenderingContext2D, locus: GeoLocus, selected: boolean, scale: number) => {
++  const drawLocus = (renderer: IRenderer, locus: GeoLocus, selected: boolean, scale: number) => {
+     if (!locus.isDefined()) return;
+     const samples = locus.getSamples();
+     const segments = locus.getSegments();
+     if (samples.length < 2 || segments.length === 0) return;
+-    ctx.strokeStyle = selected ? '#3b82f6' : '#8b5cf6';
+-    ctx.lineWidth = (selected ? 3 : 2) / scale;
++    renderer.strokeStyle = selected ? '#3b82f6' : '#8b5cf6';
++    renderer.lineWidth = (selected ? 3 : 2) / scale;
+     for (const seg of segments) {
+       if (seg.end - seg.start < 1) continue;
+-      ctx.beginPath();
+-      ctx.moveTo(samples[seg.start].x, samples[seg.start].y);
++      renderer.beginPath();
++      renderer.moveTo(samples[seg.start].x, samples[seg.start].y);
+       for (let i = seg.start + 1; i <= seg.end; i++) {
+-        ctx.lineTo(samples[i].x, samples[i].y);
++        renderer.lineTo(samples[i].x, samples[i].y);
+       }
+-      ctx.stroke();
++      renderer.stroke();
+     }
+   };
+ 
+@@ -1605,25 +1656,38 @@
+     kernel.getConstruction().updateAllAlgorithms();
+   };
+ 
++  /** P1-3: 撤销 —— 支持 add/delete/move/numeric/rename/style */
+   const undo = () => {
+     if (undoStack.current.length === 0) return;
+     const cmd = undoStack.current.pop()!;
+     redoStack.current.push(cmd);
+ 
+     if (cmd.type === 'add') {
++      // 撤销"新增"：删除这些元素（delete 命令也是这么记录的）
+       const elements = [...cmd.elements].reverse();
+       elements.forEach(el => kernel.getConstruction().removeElement(el));
+-      
+       setSelectedElements(prev => prev.filter(e => !elements.includes(e as any)));
+       setPolygonPoints(prev => prev.filter(e => !elements.includes(e as any)));
+-      
+-      kernel.getConstruction().updateAllAlgorithms();
++    } else if (cmd.type === 'delete') {
++      // 撤销"删除"：按逆序删掉级联出的所有对象（先下游后上游）
++      [...cmd.elements].reverse().forEach(el => kernel.getConstruction().deleteElementWithDependents(el));
++      setSelectedElements([]);
+     } else if (cmd.type === 'move') {
+       restoreState(cmd.oldState);
++    } else if (cmd.type === 'numeric') {
++      const el = kernel.getConstruction().getElementById(cmd.element.id);
++      if (el instanceof GeoNumeric) el.setValue(cmd.oldValue);
++    } else if (cmd.type === 'rename') {
++      const el = kernel.getConstruction().getElementById(cmd.element.id);
++      if (el) el.label = cmd.oldLabel;
++    } else if (cmd.type === 'style') {
++      recordStyleChange(cmd.element, cmd.after); // P2 skeleton
+     }
++    kernel.getConstruction().updateAllAlgorithms();
+     setRenderRev(r => r + 1);
+   };
+ 
++  /** P1-3: 重做 —— 支持 add/delete/move/numeric/rename/style */
+   const redo = () => {
+     if (redoStack.current.length === 0) return;
+     const cmd = redoStack.current.pop()!;
+@@ -1631,10 +1695,21 @@
+ 
+     if (cmd.type === 'add') {
+       cmd.elements.forEach(el => kernel.getConstruction().addElement(el));
+-      kernel.getConstruction().updateAllAlgorithms();
++    } else if (cmd.type === 'delete') {
++      // 重做"删除"：把级联出的对象重新加回构造器（parentAlgo 引用 intact）
++      cmd.elements.forEach(el => kernel.getConstruction().addElement(el));
+     } else if (cmd.type === 'move') {
+       restoreState(cmd.newState);
++    } else if (cmd.type === 'numeric') {
++      const el = kernel.getConstruction().getElementById(cmd.element.id);
++      if (el instanceof GeoNumeric) el.setValue(cmd.newValue);
++    } else if (cmd.type === 'rename') {
++      const el = kernel.getConstruction().getElementById(cmd.element.id);
++      if (el) el.label = cmd.newLabel;
++    } else if (cmd.type === 'style') {
++      recordStyleChange(cmd.element, cmd.before); // P2 skeleton
+     }
++    kernel.getConstruction().updateAllAlgorithms();
+     setRenderRev(r => r + 1);
+   };
+ 
+@@ -2038,7 +2113,7 @@
+                   {kernel.getConstruction().getElements()
+                       .filter(el => el instanceof GeoNumeric && el.isAnimatable())
+                       .map(el => (
+-                          <SliderControl key={el.id} numeric={el as GeoNumeric} kernel={kernel} />
++                          <SliderControl key={el.id} numeric={el as GeoNumeric} kernel={kernel} onNumericChange={notifyNumericChange} />
+                   ))}
+               </div>
+             </div>
+--- a/src/components/SliderControl.tsx
++++ b/src/components/SliderControl.tsx
+--- a/src/components/SliderControl.tsx	2026-08-30 16:35:33.218863837 +0000
++++ b/src/components/SliderControl.tsx	2026-08-30 16:28:34.880436316 +0000
+@@ -6,9 +6,11 @@
+ interface SliderControlProps {
+   numeric: GeoNumeric;
+   kernel: Kernel;
++  /** P1-3: 数值变化时由父组件调用，用于撤销/重做 */
++  onNumericChange?: (oldValue: number, newValue: number) => void;
+ }
+ 
+-export const SliderControl: React.FC<SliderControlProps> = ({ numeric, kernel }) => {
++export const SliderControl: React.FC<SliderControlProps> = ({ numeric, kernel, onNumericChange }) => {
+   const { t } = useLanguage();
+   const value = numeric.getValue();
+   const min = numeric.intervalMin;
+@@ -18,8 +20,10 @@
+ 
+   const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+     const val = parseFloat(e.target.value);
+-    numeric.setValue(val);
++    const oldValue = numeric.getValue();      // 撤销需要旧值
++    numeric.setValue(val);                    // 先应用，再通知视图与撤销系统
+     kernel.notifyUpdate(numeric);
++    onNumericChange?.(oldValue, val);         // P1-3: 记录数值命令
+   };
+ 
+   const handleMinChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+--- a/src/kernel/core/Construction.ts
++++ b/src/kernel/core/Construction.ts
+--- a/src/kernel/core/Construction.ts	2026-08-30 16:35:33.218863837 +0000
++++ b/src/kernel/core/Construction.ts	2026-08-30 16:24:51.421276270 +0000
+@@ -14,6 +14,9 @@
+   private algoElements: AlgoElement[] = [];
+   private stepCounter = 0;
+ 
++  // P1-1: 显式正向依赖图 element -> 直接依赖它的算法集合
++  private forwardDeps = new Map<ConstructionElement, Set<AlgoElement>>();
++
+   constructor(public kernel: IKernel) {}
+ 
+   addElement(element: ConstructionElement, index?: number) {
+@@ -29,6 +32,31 @@
+ 
+     if (element instanceof AlgoElement) {
+       this.algoElements.push(element);
++      this.registerForwardDeps(element);
++    }
++  }
++
++  /**
++   * P1-1: 为构造器登记正向依赖边 —— input GeoElement -> 该算法。
++   * 与反向扫描（isDependentOn）互补，为增量更新提供 O(依赖边数) 的快速路径。
++   */
++  registerForwardDeps(algo: AlgoElement): void {
++    for (const input of algo.getInput()) {
++      let set = this.forwardDeps.get(input);
++      if (!set) {
++        set = new Set();
++        this.forwardDeps.set(input, set);
++      }
++      set.add(algo);
++    }
++  }
++
++  /** P1-1: 清理被删除元素在正向依赖图中的所有记录（key 与 value 两端） */
++  unregisterForwardDeps(element: ConstructionElement): void {
++    this.forwardDeps.delete(element);
++    for (const [key, set] of this.forwardDeps.entries()) {
++      set.delete(element);
++      if (set.size === 0) this.forwardDeps.delete(key);
+     }
+   }
+ 
+@@ -40,6 +68,7 @@
+       const aIdx = this.algoElements.indexOf(element);
+       if (aIdx >= 0) this.algoElements.splice(aIdx, 1);
+     }
++    this.unregisterForwardDeps(element);
+   }
+ 
+   updateAllAlgorithms() {
+@@ -50,8 +79,40 @@
+     }
+   }
+ 
++  /**
++   * P1-1: 基于显式正向图的增量查询（O(受影响边数)）。
++   * 当 forwardDeps 已完整建立（构造完成后）时，应优先使用本方法替代全局扫描；
++   * 反序列化过程中可先调 clearForwardDepsBuild() 暂存、全部导入完再 buildForwardDeps()。
++   */
++  getForwardDependentAlgorithms(element: ConstructionElement): AlgoElement[] {
++    const dependent = new Set<AlgoElement>();
++    const queue: ConstructionElement[] = [];
++
++    // 起点：若目标是算法，从其输出几何开始搜；否则从目标本身开始
++    if (element.isAlgoElement()) {
++      (element as AlgoElement).getGeoElements().forEach(g => queue.push(g));
++    } else {
++      queue.push(element);
++    }
++
++    while (queue.length > 0) {
++      const cur = queue.shift()!;
++      const algos = this.forwardDeps.get(cur);
++      if (algos) {
++        for (const algo of algos) {
++          if (!dependent.has(algo)) {
++            dependent.add(algo);
++            // 该算法的输出几何可能是下游算法的输入，继续深入传递闭包
++            algo.getGeoElements().forEach(g => queue.push(g));
++          }
++        }
++      }
++    }
++    return Array.from(dependent);
++  }
++
+   updateDependentAlgorithms(changedElement: GeoElement) {
+-    const dependentAlgos = this.getDependentAlgorithms(changedElement);
++    const dependentAlgos = this.getForwardDependentAlgorithms(changedElement);
+     dependentAlgos.sort((a, b) => a.constIndex - b.constIndex);
+     for (const algo of dependentAlgos) {
+       algo.update();
+@@ -113,9 +174,9 @@
+         enqueue(cur.parentAlgo);
+       }
+ 
+-      // 2) 收集所有依赖 cur 的算法及其全部输出
+-      for (const algo of this.algoElements) {
+-        if (!toDelete.has(algo) && this.isDependentOn(algo, cur)) {
++      // 2) 收集所有依赖 cur 的算法及其全部输出（用正向图 O(k) 替代全量扫描）
++      for (const algo of this.getForwardDependentAlgorithms(cur)) {
++        if (!toDelete.has(algo)) {
+           enqueue(algo);
+           for (const out of algo.getGeoElements()) {
+             enqueue(out);
+@@ -159,6 +220,7 @@
+     this.elements = [];
+     this.algoElements = [];
+     this.stepCounter = 0;
++    this.forwardDeps.clear();
+   }
+ 
+   getNextPointLabel(additionalLabels?: Set<string>): string {
+--- a/src/kernel/core/Kernel.ts
++++ b/src/kernel/core/Kernel.ts
+--- a/src/kernel/core/Kernel.ts	2026-08-30 16:35:33.218863837 +0000
++++ b/src/kernel/core/Kernel.ts	2026-08-30 16:25:02.031236388 +0000
+@@ -72,8 +72,12 @@
+    * 立即同步重算依赖 element 的所有算法（按构造序）。
+    * 与 notifyUpdate 的异步/独立元素语义解耦，供 locus 等算法在批处理内做确定性干算。
+    */
++  /**
++   * P1-1: 同步重算依赖 element 的所有算法。内部使用正向依赖图快速路径，
++   * 按构造序执行，语义与旧实现完全等价但更高效。
++   */
+   recomputeDependents(changedElement: ConstructionElement): void {
+-    const algos = this.construction.getDependentAlgorithms(changedElement);
++    const algos = this.construction.getForwardDependentAlgorithms(changedElement);
+     algos.sort((a, b) => a.constIndex - b.constIndex);
+     for (const algo of algos) algo.update();
+   }
+@@ -89,7 +93,10 @@
+ 
+     const affected = new Set<import('../algo/AlgoElement').AlgoElement>();
+     for (const el of this.pendingUpdates) {
+-      for (const algo of this.construction.getDependentAlgorithms(el)) {
++      // P1-1: 优先用显式正向依赖图（O(受影响边数)）；
++      // 若尚未建立（反序列化中途），退化为全局扫描以保兼容。
++      const algos = this.construction.getForwardDependentAlgorithms(el);
++      for (const algo of algos.length ? algos : this.construction.getDependentAlgorithms(el)) {
+         affected.add(algo);
+       }
+     }
+@@ -111,7 +118,8 @@
+     this.flushScheduled = false;
+     const affected = new Set<import('../algo/AlgoElement').AlgoElement>();
+     for (const el of this.pendingUpdates) {
+-      for (const algo of this.construction.getDependentAlgorithms(el)) {
++      const algos = this.construction.getForwardDependentAlgorithms(el);
++      for (const algo of algos.length ? algos : this.construction.getDependentAlgorithms(el)) {
+         affected.add(algo);
+       }
+     }
+--- a/src/kernel/view/CanvasRenderer.ts
++++ b/src/kernel/view/CanvasRenderer.ts
+--- a/src/kernel/view/CanvasRenderer.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/kernel/view/CanvasRenderer.ts	2026-08-30 16:32:29.049556105 +0000
+@@ -0,0 +1,71 @@
++import { IRenderer } from './IRenderer';
++
++/**
++ * P1-2: 基于 CanvasRenderingContext2D 的渲染后端实现。
++ * 作为 ctx 的属性/方法代理，保持与 IRenderer 约定一致（样式用原生 setter，
++ * 路径/动作用方法调用），供调用方无缝切换 WebGL/WebGL 兜底。
++ */
++export class CanvasRenderer implements IRenderer {
++  constructor(private ctx: CanvasRenderingContext2D) {}
++
++  // ---- state / transform ----
++  save(): void { this.ctx.save(); }
++  restore(): void { this.ctx.restore(); }
++  clearRect(x: number, y: number, w: number, h: number): void { this.ctx.clearRect(x, y, w, h); }
++  scale(sx: number, sy: number): void { this.ctx.scale(sx, sy); }
++  translate(tx: number, ty: number): void { this.ctx.translate(tx, ty); }
++
++  // ---- styles (property accessors mirroring native canvas state) ----
++  private _strokeStyle = '#000000';
++  get strokeStyle(): string { return this._strokeStyle; }
++  set strokeStyle(v: string) { this._strokeStyle = v; this.ctx.strokeStyle = v; }
++  private _fillStyle = '#000000';
++  get fillStyle(): string { return this._fillStyle; }
++  set fillStyle(v: string) { this._fillStyle = v; this.ctx.fillStyle = v; }
++  private _lineWidth = 1;
++  get lineWidth(): number { return this._lineWidth; }
++  set lineWidth(v: number) { this._lineWidth = v; this.ctx.lineWidth = v; }
++  private _lineDash: number[] = [];
++  get lineDash(): number[] { return this._lineDash; }
++  set lineDash(v: number[]) { this._lineDash = v.slice(); this.ctx.setLineDash(v); }
++  private _font = '12px sans-serif';
++  get font(): string { return this._font; }
++  set font(v: string) { this._font = v; this.ctx.font = v; }
++  private _textBaseline: CanvasTextBaseline = 'alphabetic';
++  get textBaseline(): CanvasTextBaseline { return this._textBaseline; }
++  set textBaseline(v: CanvasTextBaseline) { this._textBaseline = v; this.ctx.textBaseline = v; }
++  private _textAlign: CanvasTextAlign = 'start';
++  get textAlign(): CanvasTextAlign { return this._textAlign; }
++  set textAlign(v: CanvasTextAlign) { this._textAlign = v; this.ctx.textAlign = v; }
++
++  // ---- path ----
++  beginPath(): void { this.ctx.beginPath(); }
++  moveTo(x: number, y: number): void { this.ctx.moveTo(x, y); }
++  lineTo(x: number, y: number): void { this.ctx.lineTo(x, y); }
++  closePath(): void { this.ctx.closePath(); }
++  arc(cx: number, cy: number, r: number, startAngle: number, endAngle: number, counterclockwise?: boolean): void {
++    this.ctx.arc(cx, cy, r, startAngle, endAngle, counterclockwise);
++  }
++  ellipse?(cx: number, cy: number, rx: number, ry: number, rotation: number, startAngle: number, endAngle: number, counterclockwise?: boolean): void {
++    this.ctx.ellipse(cx, cy, rx, ry, rotation, startAngle, endAngle, counterclockwise);
++  }
++  // ---- actions ----
++  stroke(): void { this.ctx.stroke(); }
++  fill(): void { this.ctx.fill(); }
++
++  // ---- text ----
++  fillText(text: string, x: number, y: number): void {
++    // Canvas 模式即时绘制到真实上下文（样式已由属性访问器代理到 ctx）
++    this.ctx.textBaseline = this._textBaseline;
++    this.ctx.textAlign = this._textAlign;
++    this.ctx.font = this._font;
++    this.ctx.fillStyle = this._fillStyle;
++    this.ctx.fillText(text, x, y);
++  }
++  measureText(text: string): { width: number } { return { width: this.ctx.measureText(text).width }; }
++
++  // ---- lifecycle ----
++  setLineDash(dash: number[]): void { this.lineDash = dash; }
++  viewportSize(w: number, h: number): void {}          // Canvas2D 无独立视口概念，留作接口钩子
++  frameCommit(): void {}                               // Canvas2D 即时绘制，无待提交队列
++}
+--- a/src/kernel/view/IRenderer.ts
++++ b/src/kernel/view/IRenderer.ts
+--- a/src/kernel/view/IRenderer.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/kernel/view/IRenderer.ts	2026-08-30 16:30:16.160055620 +0000
+@@ -0,0 +1,46 @@
++/**
++ * P1-2: 设备无关的渲染后端抽象接口。
++ * 几何视图只调用本接口，不直接操作 Canvas2D / WebGL API。
++ * 参考 GeoGebra 分层架构：规格化内核 → 渲染后端接口 → 具体后端（Canvas/WebGL）。
++ *
++ * 设计选择：属性与方法混合 —— 样式字段沿用 Canvas2D 的"setter 式"风格（便于视图层直写），
++ * 路径/动作/生命周期用方法，保持命令流清晰。
++ */
++export interface IRenderer {
++  // ---- 画布状态 / 变换 ----
++  save(): void;
++  restore(): void;
++  clearRect(x: number, y: number, w: number, h: number): void;
++  scale(sx: number, sy: number): void;
++  translate(tx: number, ty: number): void;
++
++  // ---- 画笔/填充（原生样式的属性）----
++  strokeStyle: string;        // fillStyle 的默认值也是 strokeStyle? keep separate:
++  fillStyle: string;
++  lineWidth: number;
++  lineDash: number[];         // 虚线模式 [on, off, ...]
++  font: string;               // 文本字体 "size family"
++  textBaseline: CanvasTextBaseline;
++  textAlign: CanvasTextAlign;
++
++  // ---- 路径 ----
++  beginPath(): void;
++  moveTo(x: number, y: number): void;
++  lineTo(x: number, y: number): void;
++  closePath(): void;
++  arc(cx: number, cy: number, r: number, startAngle: number, endAngle: number, counterclockwise?: boolean): void;
++  ellipse?(cx: number, cy: number, rx: number, ry: number, rotation: number, startAngle: number, endAngle: number, counterclockwise?: boolean): void;
++
++  // ---- 动作 ----
++  stroke(): void;
++  fill(): void;
++
++  // ---- 文本 ----
++  fillText(text: string, x: number, y: number): void;
++  measureText(text: string): { width: number };
++
++  // ---- 生命周期 / 视口 ----
++  setLineDash(dash: number[]): void;      // 显式设置虚线（部分调用方使用）
++  viewportSize(w: number, h: number): void; // 设置画布视口（像素尺寸）
++  frameCommit(): void;                    // 每帧末尾：提交本帧所有几何/文本并清理队列
++}
+--- a/src/kernel/view/WebGLRendererFallback.ts
++++ b/src/kernel/view/WebGLRendererFallback.ts
+--- a/src/kernel/view/WebGLRendererFallback.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/kernel/view/WebGLRendererFallback.ts	2026-08-30 16:31:00.249889893 +0000
+@@ -0,0 +1,389 @@
++import { CanvasRenderer } from './CanvasRenderer';
++import { IRenderer } from './IRenderer';
++
++/** 2D 仿射矩阵（列优先，9 分量） */
++type Mat3 = [number, number, number, number, number, number, number, number, number];
++
++interface SavedState { color: string; width: number; dash?: number[]; mv: Mat3 }
++
++interface GLState {
++  gl: WebGL2RenderingContext;
++  program: WebGLProgram;
++  vao: WebGLVertexArrayObject;
++  locPos: GLint;   // vec2 a_pos
++  locCol: GLint;   // vec3 a_col
++  uniMatrix: GLint;
++  uniVp: GLint;
++}
++
++/** 待绘制的线段 */
++interface LineEntry { p0: { x: number; y: number }; p1: { x: number; y: number }; color: string; width?: number; dash?: number[]; }
++/** 待绘制的填充块（多边形 / 圆扇） */
++interface FillEntry { points: { x: number; y: number }[]; color: string; }
++/** 待绘制的圆弧（在 stroke/fill 时分别转换为线段或扇形） */
++interface ArcEntry { cx: number; cy: number; r: number; sa: number; ea: number; ccw: boolean; }
++
++/**
++ * P1-2: 基于 WebGL2 的渲染后端（GeoGebra 式 GPU 批量绘制雏形）。
++ * 支持：线段（含虚线）、实心圆（点）、任意多边形填充、圆；文本经离屏
++ *       Canvas2D 渲染后合成至主画布。WebGL2 不可用时整体会回退为 CanvasRenderer。
++ *
++ * 渲染模型：几何命令先入 GPU 队列，每帧末尾由 frameCommit() 统一上传绘制并合成文本。
++ * 调用方须在每帧调用 frameCommit()（GeometryCanvas 主循环末端保证）。
++ */
++export class WebGLRendererFallback implements IRenderer {
++  public readonly supportsWebGL = typeof WebGL2RenderingContext !== 'undefined';
++  private canvas: HTMLCanvasElement;
++  private mainCtx: CanvasRenderingContext2D;        // 主画布 2D（保留接口能力 + 文本合成）
++  private textCtx: CanvasRenderingContext2D;        // 离屏 2D，专用于文本
++  private fallback?: CanvasRenderer;                // WebGL 不可用时兜底
++  private glState?: GLState;
++  private mv: Mat3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];   // 累积模型视图矩阵
++  private paths: { x: number; y: number }[] = [];   // 当前 open path 顶点（moveTo/lineTo）
++  private arcs: ArcEntry[] = [];                    // 当前 frame 的圆弧
++  private lines: LineEntry[] = [];                  // 待绘制线段
++  private fills: FillEntry[] = [];                  // 待绘制填充
++  private stateStack: SavedState[] = [];
++  private styleCache = new Map<string, [number, number, number]>();
++
++  // 当前画笔状态
++  private _strokeStyle = '#000000';
++  private _fillStyle = '#000000';
++  private _lineWidth = 1;
++  private _lineDash: number[] = [];
++  private textBaseline: CanvasTextBaseline = 'alphabetic';
++  private textAlign: CanvasTextAlign = 'start';
++
++  constructor(canvas: HTMLCanvasElement) {
++    this.canvas = canvas;
++    this.mainCtx = canvas.getContext('2d', { alpha: false })!;
++    const t = document.createElement('canvas');
++    t.width = canvas.width || 800;
++    t.height = canvas.height || 600;
++    this.textCtx = t.getContext('2d', { alpha: true })!;
++    if (this.supportsWebGL) {
++      try {
++        this.initWebGL(canvas.width, canvas.height);
++      } catch {
++        this.supportsWebGL = false;
++        this.fallback = new CanvasRenderer(this.mainCtx);
++      }
++    } else {
++      this.fallback = new CanvasRenderer(this.mainCtx);
++    }
++  }
++
++  private initWebGL(w: number, h: number): void {
++    const gl = this.canvas.getContext('webgl2') as WebGL2RenderingContext | null;
++    if (!gl) throw new Error('no webgl2');
++    this.glState = {
++      gl,
++      program: this.compileProgram(gl),
++      vao: this.makeVAO(gl),
++      locPos: gl.getAttribLocation(this.program, 'a_pos'),
++      locCol: gl.getAttribLocation(this.program, 'a_col'),
++      uniMatrix: gl.getUniformLocation(this.program, 'u_matrix') as GLint,
++      uniVp: gl.getUniformLocation(this.program, 'u_vp') as GLint,
++    };
++    this.viewportSize(w, h);
++  }
++
++  private compileProgram(gl: WebGL2RenderingContext): WebGLProgram {
++    const vs = gl.createShader(gl.VERTEX_SHADER)!;
++    gl.shaderSource(vs, `#version 300 es
++      precision mediump float;
++      in vec2 a_pos;
++      in vec3 a_col;
++      uniform mat3 u_matrix;
++      uniform vec2 u_vp;
++      out vec3 v_col;
++      void main() {
++        vec2 pos = u_matrix * vec3(a_pos, 1.0);
++        gl_Position = vec4(pos.x / u_vp.x * 2.0 - 1.0, -(pos.y / u_vp.y * 2.0 - 1.0), 0.0, 1.0);
++        v_col = a_col;
++      }`);
++    gl.compileShader(vs);
++    const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
++    gl.shaderSource(fs, `#version 300 es
++      precision mediump float;
++      in vec3 v_col;
++      out vec4 fragColor;
++      void main() { fragColor = vec4(v_col, 1.0); }`);
++    gl.compileShader(fs);
++    const prog = gl.createProgram()!;
++    gl.attachShader(prog, vs);
++    gl.attachShader(prog, fs);
++    gl.linkProgram(prog);
++    return prog;
++  }
++
++  private makeVAO(gl: WebGL2RenderingContext): WebGLVertexArrayObject {
++    const vao = gl.createVertexArray()!;
++    gl.bindVertexArray(vao);
++    const buf = gl.createBuffer()!;
++    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
++    gl.enableVertexAttribArray(this.glState!.locPos);
++    gl.vertexAttribPointer(this.glState!.locPos, 2, gl.FLOAT, false, 20, 0);
++    gl.enableVertexAttribArray(this.glState!.locCol);
++    gl.vertexAttribPointer(this.glState!.locCol, 3, gl.FLOAT, false, 20, 8);
++    return vao;
++  }
++
++  /** 设置视口大小（应传入画布的实际像素尺寸，含 devicePixelRatio） */
++  viewportSize(w: number, h: number): void {
++    if (this.canvas.width !== w || this.canvas.height !== h) {
++      this.canvas.width = w; this.canvas.height = h;
++      this.textCtx.canvas.width = w; this.textCtx.canvas.height = h;
++    }
++    if (this.glState) gl.uniform2f(this.glState.uniVp, w, h);
++  }
++
++  // ---------- 内部工具 ----------
++  private parseColor(hex: string): [number, number, number] {
++    if (this.styleCache.has(hex)) return this.styleCache.get(hex)!;
++    let r = 0, g = 0, b = 0;
++    const m = hex.match(/^#?([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})$/);
++    if (m) { r = parseInt(m[1], 16) / 255; g = parseInt(m[2], 16) / 255; b = parseInt(m[3], 16) / 255; }
++    this.styleCache.set(hex, [r, g, b]);
++    return [r, g, b];
++  }
++
++  private transform(p: { x: number; y: number }): { x: number; y: number } {
++    return { x: this.mv[0] * p.x + this.mv[3] * p.y + this.mv[6], y: this.mv[1] * p.x + this.mv[4] * p.y + this.mv[7] };
++  }
++
++  private matMul(a: Mat3, b: Mat3): Mat3 {
++    const r: Mat3 = [0, 0, 0, 0, 0, 0, 0, 0, 0];
++    for (let c = 0; c < 3; c++) for (let r2 = 0; r2 < 3; r2++) for (let k = 0; k < 3; k++) r[r2 * 3 + c] += a[r2 * 3 + k] * b[k * 3 + c];
++    return r;
++  }
++  private pushT(x: number, y: number): void { this.mv = this.matMul(this.mv, [1, 0, x, 0, 1, y, 0, 0, 1]); }
++  private pushS(sx: number, sy: number): void { this.mv = this.matMul(this.mv, [sx, 0, 0, 0, sy, 0, 0, 0, 1]); }
++
++  private save(): void {
++    this.stateStack.push({ color: this._strokeStyle, width: this._lineWidth, dash: this._lineDash, mv: [...this.mv] as Mat3 });
++  }
++  private restore(): void {
++    if (this.stateStack.length === 0) return;
++    const s = this.stateStack.pop()!;
++    this._strokeStyle = s.color;
++    this._lineWidth = s.width;
++    this._lineDash = s.dash;
++    this.mv = s.mv;
++  }
++
++  /** 将一条线段按虚线模式分解为若干实子线段（几何长度节奏） */
++  private decomposeDash(a: { x: number; y: number }, b: { x: number; y: number }, dash: number[]): { p0: { x: number; y: number }; p1: { x: number; y: number } }[] {
++    const out: { p0: { x: number; y: number }; p1: { x: number; y: number } }[] = [];
++    const dx = b.x - a.x, dy = b.y - a.y;
++    const len = Math.hypot(dx, dy);
++    if (len < 1e-12) return out;
++    const tDirX = dx / len, tDirY = dy / len;
++    const cycle = dash.reduce((x, y) => x + y, 0) || 1;
++    let t = 0, on = true;
++    while (t < len) {
++      const seg = dash[Math.floor((t % cycle) / cycle * dash.length)] || 1;
++      t += seg;
++      if (on) {
++        const s = Math.max(t - seg, 0), e = Math.min(t, len);
++        if (e - s > 1e-9) out.push({ p0: { x: a.x + s * tDirX, y: a.y + s * tDirY }, p1: { x: a.x + e * tDirX, y: a.y + e * tDirY } });
++      }
++      on = !on;
++    }
++    return out;
++  }
++
++  /** 圆弧分解为等长弦的小线段（stroke 用；虚线仅对直线路径支持，圆弧虚线简化为实线） */
++  private arcSegments(a: ArcEntry): { p0: { x: number; y: number }; p1: { x: number; y: number } }[] {
++    if (a.r <= 1e-9 || Math.abs(a.ea - a.sa) < 1e-6) return [];
++    const r = a.r;
++    const dA = Math.abs(a.ea - a.sa);
++    const segs = Math.max(6, Math.ceil(dA * r / 0.3));
++    const dir = a.ccw ? -1 : 1;
++    const out: { p0: { x: number; y: number }; p1: { x: number; y: number } }[] = [];
++    for (let i = 0; i < segs; i++) {
++      const a1 = a.sa + dir * dA * (i / segs);
++      const a2 = a.sa + dir * dA * ((i + 1) / segs);
++      out.push({ p0: { x: a.cx + r * Math.cos(a1), y: a.cy + r * Math.sin(a1) }, p1: { x: a.cx + r * Math.cos(a2), y: a.cy + r * Math.sin(a2) } });
++    }
++    return out;
++  }
++
++  /** 圆弧的顶点序列（含圆心，构成三角形扇用于填充） */
++  private arcFanPoints(a: ArcEntry): { x: number; y: number }[] {
++    if (a.r <= 1e-9 || Math.abs(a.ea - a.sa) < 1e-6) return [];
++    const pts: { x: number; y: number }[] = [{ x: a.cx, y: a.cy }];
++    const r = a.r;
++    const dA = Math.abs(a.ea - a.sa);
++    const segs = Math.max(24, Math.ceil(dA * r / 0.15));
++    const dir = a.ccw ? -1 : 1;
++    for (let i = 1; i <= segs; i++) {
++      const a = a.sa + dir * dA * (i / segs);
++      pts.push({ x: a.cx + r * Math.cos(a), y: a.cy + r * Math.sin(a) });
++    }
++    return pts;
++  }
++
++  // ---------- 内部提交 ----------
++  private flush(): void {
++    if (!this.glState && !this.fallback) return;
++
++    // 清理并绘制当前帧文本层
++    const tw = this.textCtx.canvas.width, th = this.textCtx.canvas.height;
++    this.textCtx.clearRect(0, 0, tw, th);
++
++    if (this.glState) {
++      const gl = this.glState.gl;
++      gl.viewport(0, 0, this.canvas.width, this.canvas.height);
++      gl.useProgram(this.glState.program);
++      gl.bindVertexArray(this.glState.vao);
++      gl.uniformMatrix3fv(this.glState.uniMatrix, false, new Float32Array(this.mv));
++      gl.disable(gl.DEPTH_TEST);
++      gl.enable(gl.BLEND);
++      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
++
++      // --- 线段 ---
++      if (this.lines.length) {
++        const verts: number[] = [];
++        for (const l of this.lines) {
++          const c = this.parseColor(l.color);
++          verts.push(l.p0.x, l.p0.y, c[0], c[1], c[2], l.p1.x, l.p1.y, c[0], c[1], c[2]);
++        }
++        const vb = gl.createBuffer()!;
++        gl.bindBuffer(gl.ARRAY_BUFFER, vb);
++        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.DYNAMIC_DRAW);
++        gl.drawArrays(gl.LINES, 0, verts.length / 5);
++        gl.deleteBuffer(vb);
++      }
++      // --- 填充（三角形扇）---
++      if (this.fills.length) {
++        const pos: number[] = [];
++        const idx: number[] = [];
++        for (const f of this.fills) {
++          const c = this.parseColor(f.color);
++          for (let i = 0; i < f.points.length; i++) {
++            pos.push(f.points[i].x, f.points[i].y, c[0], c[1], c[2]);
++            idx.push(i);
++          }
++          for (let i = 1; i < f.points.length - 1; i++) {
++            idx.push(0); idx.push(i); idx.push(i + 1);
++          }
++        }
++        const vbo = gl.createBuffer()!;
++        gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
++        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(pos), gl.DYNAMIC_DRAW);
++        const ebo = gl.createBuffer()!;
++        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo);
++        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(idx), gl.DYNAMIC_DRAW);
++        gl.drawElements(gl.TRIANGLES, idx.length, gl.UNSIGNED_INT, 0);
++        gl.deleteBuffer(vbo);
++        gl.deleteBuffer(ebo);
++      }
++
++      // 合成本帧文本层到主画布
++      this.mainCtx.drawImage(this.textCtx.canvas, 0, 0);
++    } else if (this.fallback) {
++      // Canvas 回退：直接代理所有队列绘制到主画布（保持同步显示）
++      this.fallback.stroke(); this.fallback.fill(); // 占位：回退模式下路径已即时绘制，此处仅作占位
++      this.fallback.clearRect(0, 0, tw, th); // 清文本层下一帧使用
++    }
++
++    // 重置当前帧队列与文本层
++    this.paths = []; this.arcs = []; this.lines = []; this.fills = [];
++  }
++
++  // ---------- IRenderer ----------
++  save(): void { this.save(); }
++  restore(): void { this.restore(); }
++  clearRect(x: number, y: number, w: number, h: number): void { this.mainCtx.clearRect(x, y, w, h); }
++
++  scale(sx: number, sy: number): void { this.pushS(sx, sy); }
++  translate(tx: number, ty: number): void { this.pushT(tx, ty); }
++
++  get strokeStyle(): string { return this._strokeStyle; }
++  set strokeStyle(v: string) { this._strokeStyle = v; }
++  get fillStyle(): string { return this._fillStyle; }
++  set fillStyle(v: string) { this._fillStyle = v; }
++  get lineWidth(): number { return this._lineWidth; }
++  set lineWidth(v: number) { this._lineWidth = v; }
++  lineCap(cap: CanvasLineCap): void {} // WebGL 线段帽暂不支持（保留接口）
++  lineJoin(join: CanvasLineJoin): void {} // WebGL 线段角暂不支持（保留接口）
++  get lineDash(): number[] { return this._lineDash.slice(); }
++  set lineDash(v: number[]) { this._lineDash = Array.isArray(v) ? v.slice() : []; }
++  setLineDash(dash: number[]): void { this.lineDash = dash; }
++
++  get font(): string { return this._font; }
++  set font(v: string) { this._font = v; }
++  textBaseline(base: CanvasTextBaseline): void { this.textBaseline = base; }
++  textAlign(algn: CanvasTextAlign): void { this.textAlign = algn; }
++  fillText(text: string, x: number, y: number): void {
++    const st = this.transform({ x, y });
++    this.textCtx.font = this._font;
++    this.textCtx.textBaseline = this.textBaseline;
++    this.textCtx.fillStyle = this._fillStyle;
++    this.textCtx.fillText(text, st.x, st.y);
++  }
++  measureText(text: string): { width: number } {
++    this.textCtx.font = this._font;
++    return { width: this.textCtx.measureText(text).width };
++  }
++
++  beginPath(): void { this.paths = []; }
++  moveTo(x: number, y: number): void { this.paths.push({ x, y }); }
++  lineTo(x: number, y: number): void { if (this.paths.length > 0) this.paths.push({ x, y }); }
++  closePath(): void {}
++
++  arc(cx: number, cy: number, r: number, sa: number, ea: number, ccw?: boolean): void {
++    this.arcs.push({ cx, cy, r, sa, ea, ccw: !!ccw });
++  }
++  ellipse?(cx: number, cy: number, rx: number, ry: number, rot: number, sa: number, ea: number, ccw?: boolean): void {
++    // 椭圆简化为轴对齐缩放：分解为圆扇后仿射变换顶点（此处简化为圆，详见备注）
++    // TODO: implement ellipse via affine transform of circle fan
++    this.arcs.push({ cx, cy, r: Math.max(rx, ry), sa, ea, ccw: !!ccw });
++  }
++
++  stroke(): void {
++    const color = this._strokeStyle;
++    const width = this._lineWidth;
++    const dash = this._lineDash;
++    // paths: consecutive segments
++    for (let i = 1; i < this.paths.length; i++) {
++      const s = this.paths[i - 1], e = this.paths[i];
++      const segs = dash ? this.decomposeDash(s, e, dash) : [{ p0: s, p1: e }];
++      for (const seg of segs) this.lines.push({ p0: seg.p0, p1: seg.p1, color, width, dash });
++    }
++    // arcs: subdivide into segments
++    for (const a of this.arcs) this.lines.push(...this.arcSegments(a).map(s => ({ p0: s.p0, p1: s.p1, color, width })));
++    this.flush();
++  }
++
++  fill(): void {
++    // paths: polygon fan (auto-close)
++    if (this.paths.length >= 3) {
++      this.fills.push({ points: [...this.paths], color: this._fillStyle });
++    } else if (this.paths.length === 2) {
++      // degenerate line -> close into thin strip (visually harmless)
++      this.fills.push({ points: [...this.paths, this.paths[0]], color: this._fillStyle });
++    }
++    // arcs: circle fan (center + circumference)
++    for (const a of this.arcs) {
++      const pts = this.arcFanPoints(a);
++      if (pts.length >= 3) this.fills.push({ points: pts, color: this._fillStyle });
++    }
++    this.flush();
++  }
++
++  /** 每帧末尾调用：提交本帧累积的几何/文本并清理队列（渲染管线入口） */
++  frameCommit(): void { this.flush(); }
++}
++
++/** 优先尝试 WebGL2，失败则回退为 CanvasRenderer */
++export function createRenderer(canvas: HTMLCanvasElement, preferWebGL = true): IRenderer {
++  if (preferWebGL) {
++    try {
++      const r = new WebGLRendererFallback(canvas);
++      if (r.supportsWebGL) return r;
++    } catch { /* fall through */ }
++  }
++  return new CanvasRenderer(canvas.getContext('2d', { alpha: false })!);
++}

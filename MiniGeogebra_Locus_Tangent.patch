@@ -1,0 +1,551 @@
+diff --git a/src/components/GeometryCanvas.tsx b/src/components/GeometryCanvas.tsx
+--- a/src/components/GeometryCanvas.tsx	2026-08-30 11:40:03.877607928 +0000
++++ b/src/components/GeometryCanvas.tsx	2026-08-30 11:40:03.877607928 +0000
+@@ -21,6 +21,9 @@
+ import { AlgoDistance } from '../kernel/algo/AlgoDistance';
+ import { AlgoAngle } from '../kernel/algo/AlgoAngle';
+ import { AlgoArea } from '../kernel/algo/AlgoArea';
++import { AlgoTangent } from '../kernel/algo/AlgoTangent';
++import { AlgoLocus } from '../kernel/algo/AlgoLocus';
++import { GeoLocus } from '../kernel/geo/GeoLocus';
+ import { AlgoAngleBisector } from '../kernel/algo/AlgoAngleBisector';
+ import { ConstructionElement } from '../kernel/core/ConstructionElement';
+ import { GeoElement } from '../kernel/geo/GeoElement';
+@@ -40,6 +43,8 @@
+   Play, Pause, ZoomIn, ZoomOut, Home, Globe, Menu, ChevronDown,
+   Grid3X3, Axis3D, ChevronUp, Type, Sliders, ToggleLeft, CheckSquare,
+   Ruler,
++  Activity,
++  CornerDownRight,
+   Triangle,
+   Square
+ } from 'lucide-react';
+@@ -83,7 +88,7 @@
+   const { t, language, setLanguage } = useLanguage();
+   const canvasRef = useRef<HTMLCanvasElement>(null);
+   const [kernel] = useState(() => new Kernel());
+-  const [mode, setMode] = useState<'move' | 'point' | 'line' | 'segment' | 'midpoint' | 'circle' | 'circle_center_point' | 'circle3' | 'intersect' | 'parallel' | 'orthogonal' | 'perpendicular_bisector' | 'angle_bisector' | 'polygon' | 'text' | 'slider' | 'button' | 'checkbox' | 'distance' | 'angle' | 'area'>('move');
++  const [mode, setMode] = useState<'move' | 'point' | 'line' | 'segment' | 'midpoint' | 'circle' | 'circle_center_point' | 'circle3' | 'intersect' | 'parallel' | 'orthogonal' | 'perpendicular_bisector' | 'angle_bisector' | 'polygon' | 'text' | 'slider' | 'button' | 'checkbox' | 'distance' | 'angle' | 'area' | 'tangent' | 'locus'>('move');
+   const [polygonPoints, setPolygonPoints] = useState<GeoPoint[]>([]);
+   const [radius, setRadius] = useState<number>(50);
+   const [selectedElements, setSelectedElements] = useState<GeoElement[]>([]);
+@@ -443,6 +448,13 @@
+       }
+     });
+ 
++    // Draw loci (traces): amber dashed curves, after lines, before points
++    elements.forEach(el => {
++      if (el instanceof GeoLocus) {
++        drawLocus(ctx, el, selectedElements.includes(el), coord.xScale);
++      }
++    });
++
+     // Draw polygon being created
+     if (mode === 'polygon' && polygonPoints.length > 0) {
+         ctx.strokeStyle = '#9ca3af'; // gray-400
+@@ -883,6 +895,27 @@
+     ctx.stroke();
+   };
+ 
++  const drawLocus = (ctx: CanvasRenderingContext2D, locus: GeoLocus, selected: boolean, scale: number) => {
++    const samples = locus.getSamples();
++    const segments = locus.getSegments();
++    if (samples.length < 2 || segments.length === 0) return;
++
++    ctx.strokeStyle = selected ? '#b45309' : '#d97706';
++    ctx.lineWidth = (selected ? 3 : 2) / scale;
++    ctx.setLineDash([4 / scale, 4 / scale]);
++
++    for (const seg of segments) {
++      ctx.beginPath();
++      const s0 = samples[seg.start];
++      ctx.moveTo(s0.x, s0.y);
++      for (let i = seg.start + 1; i <= seg.end; i++) {
++        ctx.lineTo(samples[i].x, samples[i].y);
++      }
++      ctx.stroke();
++    }
++    ctx.setLineDash([]);
++  };
++
+   const drawSegment = (ctx: CanvasRenderingContext2D, s: GeoSegment, selected: boolean, scale: number) => {
+     if (!s.isDefined()) return;
+     ctx.strokeStyle = selected ? '#3b82f6' : '#000';
+@@ -1332,7 +1365,59 @@
+                 setSelectedElements(currentSelected);
+             }
+         }
+-      } else if (mode === 'distance') {
++      } else if (mode === 'tangent') {
++      // 选择一个圆 + 一个点：过该点作圆的切线（对标 GeoGebra Tangent[Point, Circle]）
++      const clickedObj = elements.slice().reverse().find(el => {
++        if (el instanceof GeoPoint && Math.hypot(el.getX() - x, el.getY() - y) < 10 / coord.xScale) return true;
++        if (el instanceof GeoConic) {
++          const r = el.getRadius();
++          const center = el.getCenter();
++          return Math.abs(Math.hypot(x - center.x, y - center.y) - r) < 8 / coord.xScale;
++        }
++        return false;
++      }) as GeoElement | undefined;
++
++      if (clickedObj) {
++        const currentSelected = [...selectedElements, clickedObj];
++        if (currentSelected.length >= 2) {
++          const conic = currentSelected.find(e => e instanceof GeoConic) as GeoConic | undefined;
++          const pt = currentSelected.find(e => e instanceof GeoPoint) as GeoPoint | undefined;
++          if (conic && pt) {
++            const algo = new AlgoTangent(kernel, conic, pt);
++            kernel.getConstruction().addElement(algo);
++            algo.getOutput().forEach(o => kernel.getConstruction().addElement(o));
++            algo.update();
++            setSelectedElements([]);
++            kernel.notifyUpdate(algo);
++          } else {
++            setSelectedElements(currentSelected.slice(0, -1));
++          }
++        } else {
++          setSelectedElements(currentSelected);
++        }
++      }
++    } else if (mode === 'locus') {
++      // 选择依赖点 Q + 驱动点 P：P 必须在某条路径上运动，轨迹为 Q 扫过的曲线（对标 GeoGebra Locus[Q, P]）
++      const clickedPoint = elements.slice().reverse().find(el =>
++        el instanceof GeoPoint && Math.hypot(el.getX() - x, el.getY() - y) < 10 / coord.xScale
++      ) as GeoPoint | undefined;
++
++      if (clickedPoint) {
++        const currentSelected = [...selectedElements, clickedPoint];
++        if (currentSelected.length >= 2) {
++          const tracer = currentSelected[0];
++          const driver = currentSelected[1];
++          const algo = new AlgoLocus(kernel, tracer, driver);
++          kernel.getConstruction().addElement(algo);
++          algo.getOutput().forEach(o => kernel.getConstruction().addElement(o));
++          algo.update();
++          setSelectedElements([]);
++          kernel.notifyUpdate(algo);
++        } else {
++          setSelectedElements(currentSelected);
++        }
++      }
++    } else if (mode === 'distance') {
+       if (clickedPoint) {
+         if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
+           const p1 = selectedElements[0] as GeoPoint;
+@@ -1763,6 +1848,9 @@
+         
+         <ToolButton icon={<X size={22} />} label={t('intersect')} active={mode === 'intersect'} onClick={() => setMode('intersect')} />
+         <ToolButton icon={<Crosshair size={22} />} label={t('midpoint')} active={mode === 'midpoint'} onClick={() => setMode('midpoint')} />
++        <ToolButton icon={<CornerDownRight size={22} />} label={t('tangent')} active={mode === 'tangent'} onClick={() => setMode('tangent')} />
++        <ToolButton icon={<Activity size={22} />} label={t('locus')} active={mode === 'locus'} onClick={() => setMode('locus')} />
++        <div className="w-px h-8 bg-gray-200 mx-1"></div>
+         <div className="w-px h-8 bg-gray-200 mx-1"></div>
+         
+         <ToolButton icon={<Equal size={22} />} label={t('parallel')} active={mode === 'parallel'} onClick={() => setMode('parallel')} />
+@@ -1953,6 +2041,7 @@
+                 else if (typeName === 'GeoSegment') typeName = t('typeSegment');
+                 else if (typeName === 'GeoConic') typeName = t('typeCircle');
+                 else if (typeName === 'GeoPolygon') typeName = t('typePolygon');
++                else if (typeName === 'GeoLocus') typeName = t('typeLocus');
+                 else if (typeName === 'GeoNumeric') typeName = t('typeNumeric');
+ 
+                 return (
+diff --git a/src/i18n/LanguageContext.tsx b/src/i18n/LanguageContext.tsx
+--- a/src/i18n/LanguageContext.tsx	2026-08-30 11:40:03.877607928 +0000
++++ b/src/i18n/LanguageContext.tsx	2026-08-30 11:40:03.877607928 +0000
+@@ -47,7 +47,10 @@
+     insertText: '插入文本',
+     insertSlider: '插入滑块',
+     insertButton: '插入按钮',
+-    insertCheckbox: '插入复选框'
++    insertCheckbox: '插入复选框',
++    tangent: '切线',
++    locus: '轨迹',
++    typeLocus: '轨迹'
+   },
+   en: {
+     title: 'Mini GeoGebra',
+@@ -93,7 +96,10 @@
+     insertText: 'Insert Text',
+     insertSlider: 'Insert Slider',
+     insertButton: 'Insert Button',
+-    insertCheckbox: 'Insert Checkbox'
++    insertCheckbox: 'Insert Checkbox',
++    tangent: 'Tangent',
++    locus: 'Locus',
++    typeLocus: 'Locus'
+   }
+ };
+ 
+diff --git a/src/kernel/algo/AlgoLocus.ts b/src/kernel/algo/AlgoLocus.ts
+--- /dev/null
++++ b/src/kernel/algo/AlgoLocus.ts	2026-08-30 11:40:03.877607928 +0000
+@@ -0,0 +1,136 @@
++import { IKernel } from '../core/Interfaces';
++import { AlgoElement } from './AlgoElement';
++import { GeoPoint } from '../geo/GeoPoint';
++import { GeoNumeric } from '../geo/GeoNumeric';
++import { GeoLocus } from '../geo/GeoLocus';
++
++/**
++ * 数值轨迹算法 ——对标 GeoGebra `Locus[Tracer, Driver]`。
++ *
++ * 输入：driver（由“参数化路径约束”产生的动点，如圆上点/线段上点）、tracer（依赖 driver 的派生点）
++ * 过程：找到 driver 背后的参数滑块 param（t ∈ [tMin, tMax]），均匀采样 N=120 份；
++ *       每份把 param 设为采样值并干算依赖链，记录 tracer 当前位置；
++ *       最后把 param 与 driver 恢复到原位。全程在批处理中进行，避免闪烁。
++ * 输出：[GeoLocus 曲线]（相邻采样点距离突变的“跳跃”处会自动断开）。
++ *
++ * 适用情形：driver 是“圆上点 / 线段上点 / 直线上点”等受参数约束的点。
++ * 自由点没有可调参数，不能作为驱动点。
++ */
++export class AlgoLocus extends AlgoElement {
++  private outputLocus: GeoLocus;
++  private readonly samplesPerPeriod = 120;
++  private readonly jumpFactor = 2.5;
++
++  constructor(kernel: IKernel, private tracer: GeoPoint, private driver: GeoPoint) {
++    super(kernel);
++    this.outputLocus = new GeoLocus(kernel, [], []);
++    this.setInputOutput();
++  }
++
++  setInputOutput(): void {
++    this.input = [this.driver, this.tracer];
++    this.setOutput([this.outputLocus]);
++  }
++
++  compute(): void {
++    this.outputLocus.setUndefined();
++    this.outputLocus.samples = [];
++    this.outputLocus.segments = [];
++
++    if (!this.driver.isDefined() || !this.tracer.isDefined()) {
++      return;
++    }
++
++    const source = this.getDriverParameterSource();
++    if (!source) {
++      // driver 没有可调参数（例如自由点），无法生成轨迹
++      return;
++    }
++
++    const { algo, param } = source;
++    const tMin = typeof param.intervalMin === 'number' ? param.intervalMin : 0;
++    const tMax = typeof param.intervalMax === 'number' ? param.intervalMax : 2 * Math.PI;
++    if (!Number.isFinite(tMin) || !Number.isFinite(tMax) || tMax <= tMin) {
++      return;
++    }
++
++    const originalT = param.getValue();
++    const samples: Array<{ x: number; y: number }> = [];
++
++    this.kernel.withBatchedUpdates(() => {
++      for (let i = 0; i < this.samplesPerPeriod; i++) {
++        const t = tMin + (i / (this.samplesPerPeriod - 1)) * (tMax - tMin);
++        param.setValue(t);
++        algo.compute();                       // 重算约束算法 -> driver 位置更新
++        this.kernel.recomputeDependents(this.driver); // 重算依赖链 -> tracer 位置更新
++        if (this.tracer.isDefined()) {
++          samples.push({ x: this.tracer.getX(), y: this.tracer.getY() });
++        } else {
++          samples.push({ x: NaN, y: NaN });
++        }
++      }
++      // 恢复 driver 原位：回拨 param 并重新计算整条链
++      param.setValue(originalT);
++      algo.compute();
++      this.kernel.recomputeDependents(this.driver);
++    });
++
++    if (samples.length < 2) {
++      return;
++    }
++
++    // 剔除无效样本
++    const valid = samples.filter(s => Number.isFinite(s.x) && Number.isFinite(s.y));
++    if (valid.length < 2) {
++      return;
++    }
++
++    const stepEst = this.estimateStep(valid);
++    const segments: Array<{ start: number; end: number }> = [];
++    let segStart = 0;
++    for (let i = 1; i < valid.length; i++) {
++      const dist = Math.hypot(valid[i].x - valid[i - 1].x, valid[i].y - valid[i - 1].y);
++      if (dist > stepEst * this.jumpFactor) {
++        segments.push({ start: segStart, end: i - 1 });
++        segStart = i;
++      }
++    }
++    segments.push({ start: segStart, end: valid.length - 1 });
++
++    this.outputLocus.samples = valid;
++    this.outputLocus.segments = segments;
++    this.outputLocus.setDefined();
++  }
++
++  /** 沿 driver 的 parentAlgo 链向上追溯，找到提供参数的“路径约束算法”。 */
++  private getDriverParameterSource(): { algo: AlgoElement; param: GeoNumeric } | null {
++    let algo: AlgoElement | null = this.driver.parentAlgo;
++    const seen = new Set<AlgoElement>();
++    while (algo && !seen.has(algo)) {
++      seen.add(algo);
++      for (const inp of algo.getInput()) {
++        if (inp instanceof GeoNumeric) {
++          return { algo, param: inp };
++        }
++      }
++      algo = algo.parentAlgo;
++    }
++    return null;
++  }
++
++  /** 估计相邻采样点的典型距离（中位数），用于判断“跳跃” */
++  private estimateStep(pts: Array<{ x: number; y: number }>): number {
++    const dists: number[] = [];
++    for (let i = 1; i < pts.length; i++) {
++      dists.push(Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
++    }
++    if (dists.length === 0) return 1;
++    dists.sort((a, b) => a - b);
++    const mid = Math.floor(dists.length / 2);
++    return dists[mid] || 1;
++  }
++
++  getOutputLocus(): GeoLocus {
++    return this.outputLocus;
++  }
++}
+diff --git a/src/kernel/algo/AlgoTangent.ts b/src/kernel/algo/AlgoTangent.ts
+--- /dev/null
++++ b/src/kernel/algo/AlgoTangent.ts	2026-08-30 11:40:03.877607928 +0000
+@@ -0,0 +1,119 @@
++import { IKernel } from '../core/Interfaces';
++import { AlgoElement } from './AlgoElement';
++import { GeoPoint } from '../geo/GeoPoint';
++import { GeoLine } from '../geo/GeoLine';
++import { GeoConic } from '../geo/GeoConic';
++import { GeoVec3D } from '../core/GeoVec3D';
++
++/**
++ * 过定点作已知圆的切线 ——对标 GeoGebra `Tangent[Point, Circle]`。
++ *
++ * 输入：conic（圆，非一般圆锥）、pointP（圆外或圆上的点）
++ * 输出：[切线 l1, 切线 l2, 切点 T1, 切点 T2]
++ *   - 点在圆内：无实切线，全部置为 undefined；
++ *   - 点在圆上：退化为一条切线（两输出重合为一个有效对），与尺规作图语义一致。
++ *
++ * 几何推导（标准结果）：
++ *   d^2 = |P - C|^2；切点弦中点 M = C + (r^2/d^2)(P - C)；
++ *   半弦长 h = r*sqrt(d^2-r^2)/d；垂直单位向量 v = (-(py-cy), px-cx)/d；
++ *   切点 T = M +/- h*v。由相似三角形 ~ 保证 |CT|=r 且 CT ⟂ PT。
++ */
++export class AlgoTangent extends AlgoElement {
++  private readonly outputLines: GeoLine[] = [];
++  private readonly outputPoints: GeoPoint[] = [];
++
++  constructor(kernel: IKernel, private conic: GeoConic, private pointP: GeoPoint) {
++    super(kernel);
++    const usedLabelsL = new Set<string>();
++    const usedLabelsP = new Set<string>();
++    for (let i = 0; i < 2; i++) {
++      const l = new GeoLine(kernel, 0, 0, 0);
++      l.label = kernel.getConstruction().getNextLineLabel(usedLabelsL);
++      this.outputLines.push(l);
++      const p = new GeoPoint(kernel, new GeoVec3D(0, 0, 1));
++      p.label = kernel.getConstruction().getNextPointLabel(usedLabelsP);
++      this.outputPoints.push(p);
++    }
++    this.setInputOutput();
++  }
++
++  setInputOutput(): void {
++    this.input = [this.conic, this.pointP];
++    this.setOutput([...this.outputLines, ...this.outputPoints]);
++  }
++
++  compute(): void {
++    this.outputLines.forEach(l => l.setUndefined());
++    this.outputPoints.forEach(p => p.setUndefined());
++
++    if (!this.conic.isDefined() || !this.pointP.isDefined()) {
++      return;
++    }
++
++    const [A, B, C, D, E, F] = this.conic.coeffs;
++    // 仅处理“圆”：B=0 且 A=C≠0
++    if (Math.abs(B) > 1e-9 || Math.abs(A - C) > 1e-9 || Math.abs(A) < 1e-9) {
++      return;
++    }
++
++    const cx = -D / (2 * A);
++    const cy = -E / (2 * A);
++    const r2 = cx * cx + cy * cy - F / A;
++    if (r2 <= 0) return;
++    const r = Math.sqrt(r2);
++
++    const px = this.pointP.getX();
++    const py = this.pointP.getY();
++    const dx = px - cx;
++    const dy = py - cy;
++    const d2 = dx * dx + dy * dy;
++    const d = Math.sqrt(d2);
++
++    if (d < r - 1e-9) {
++      return; // 点在圆内，无实切线
++    }
++
++    // 切点弦中点 M = C + (r^2/d^2)(P - C)
++    const factor = r2 / d2;
++    const mx = cx + factor * dx;
++    const my = cy + factor * dy;
++
++    // 半弦长 h = r*sqrt(d^2 - r^2)/d ；点在圆上时 h -> 0（退化）
++    const h = d <= 1e-12 ? 0 : (r * Math.sqrt(Math.max(0, d2 - r2))) / d;
++
++    // 垂直单位向量 v = (-dy/d, dx/d)
++    const vx = -dy / d;
++    const vy = dx / d;
++
++    const t1x = mx + h * vx;
++    const t1y = my + h * vy;
++    const t2x = mx - h * vx;
++    const t2y = my - h * vy;
++
++    const degenerate = h < 1e-9;
++
++    const setLineThrough = (l: GeoLine, x1: number, y1: number, x2: number, y2: number) => {
++      const a = y1 - y2;
++      const b = x2 - x1;
++      const c = -(a * x1 + b * y1);
++      l.a = a; l.b = b; l.c = c;
++      l.setDefined();
++    };
++
++    setLineThrough(this.outputLines[0], px, py, t1x, t1y);
++    this.outputPoints[0].setCoords(t1x, t1y, 1);
++
++    if (!degenerate) {
++      setLineThrough(this.outputLines[1], px, py, t2x, t2y);
++      this.outputPoints[1].setCoords(t2x, t2y, 1);
++    }
++  }
++
++  getOutputLines(): GeoLine[] {
++    return this.outputLines;
++  }
++
++  getOutputPoints(): GeoPoint[] {
++    return this.outputPoints;
++  }
++}
+diff --git a/src/kernel/core/Kernel.ts b/src/kernel/core/Kernel.ts
+--- a/src/kernel/core/Kernel.ts	2026-08-30 11:40:03.877607928 +0000
++++ b/src/kernel/core/Kernel.ts	2026-08-30 11:40:03.877607928 +0000
+@@ -36,20 +36,50 @@
+    *   flush 时只对真正依赖它的算法做增量重算（按 constIndex 拓扑序），不再全场更新。
+    * - 最终调用 updateCallback 通知视图刷新（由视图层做 RAF/revision 节流）。
+    */
++  private inBatch = false;
++
+   notifyUpdate(element: ConstructionElement): void {
+     if (element.isIndependent()) {
+       this.pendingUpdates.add(element);
+-      if (!this.flushScheduled) {
++      if (!this.flushScheduled && !this.inBatch) {
+         this.flushScheduled = true;
+         Promise.resolve().then(() => this.flushPendingUpdates());
+       }
+     }
+-    if (this.updateCallback) {
++    if (this.updateCallback && !this.inBatch) {
+       this.updateCallback();
+     }
+   }
+ 
+   /**
++   * 批处理更新：闭区间内的所有变动与回调被累积，结束时统一触发一次视图刷新。
++   * 供算法内部“干算”使用（如轨迹采样：反复挪动驱动点、重算依赖链、读数），
++   * 避免每次采样都触发渲染回调造成闪烁。
++   */
++  withBatchedUpdates<T>(fn: () => T): T {
++    const prev = this.inBatch;
++    this.inBatch = true;
++    try {
++      return fn();
++    } finally {
++      this.inBatch = prev;
++      if (!prev && this.updateCallback) {
++        this.updateCallback();
++      }
++    }
++  }
++
++  /**
++   * 立即同步重算依赖 element 的所有算法（按构造序）。
++   * 与 notifyUpdate 的异步/独立元素语义解耦，供 locus 等算法在批处理内做确定性干算。
++   */
++  recomputeDependents(changedElement: ConstructionElement): void {
++    const algos = this.construction.getDependentAlgorithms(changedElement);
++    algos.sort((a, b) => a.constIndex - b.constIndex);
++    for (const algo of algos) algo.update();
++  }
++
++  /**
+    * Flush 受影响的算法。只收集依赖任一 pending 元素的算法并按构造序执行；
+    * 被 Algo 内部 compute() 再次 setCoords 的输出元素不会再触发新的 flush（它们不独立），
+    * 从而避免重入与重复计算。
+diff --git a/src/kernel/geo/GeoLocus.ts b/src/kernel/geo/GeoLocus.ts
+--- /dev/null
++++ b/src/kernel/geo/GeoLocus.ts	2026-08-30 11:40:03.877607928 +0000
+@@ -0,0 +1,28 @@
++import { IKernel } from '../core/Interfaces';
++import { GeoElement } from './GeoElement';
++import { GeoVec3D } from '../core/GeoVec3D';
++
++/**
++ * 轨迹对象（数值型）——对标 GeoGebra `Locus[Q, P]`。
++ * 由一系列采样点按顺序连接而成；segments 记录因“跳跃”而断开的折线段区间，
++ * 避免把不连续的两段误连成一条穿越线。
++ */
++export class GeoLocus extends GeoElement {
++  constructor(
++    kernel: IKernel,
++    public samples: Array<{ x: number; y: number }>,
++    public segments: Array<{ start: number; end: number }>
++  ) {
++    super(kernel, new GeoVec3D(0, 0, 0));
++  }
++
++  getClassName() { return 'GeoLocus'; }
++
++  getSamples(): Array<{ x: number; y: number }> { return this.samples; }
++  getSegments(): Array<{ start: number; end: number }> { return this.segments; }
++
++  getAlgebraDescription(): string {
++    if (!this.isDefined()) return `${this.label}（未定义）`;
++    return `${this.label} : 轨迹（${this.samples.length} 个采样点）`;
++  }
++}
+diff --git a/src/kernel/persistence/ConstructionSerializer.ts b/src/kernel/persistence/ConstructionSerializer.ts
+--- a/src/kernel/persistence/ConstructionSerializer.ts	2026-08-30 11:40:03.877607928 +0000
++++ b/src/kernel/persistence/ConstructionSerializer.ts	2026-08-30 11:40:03.877607928 +0000
+@@ -24,6 +24,8 @@
+ import { AlgoDistance } from '../algo/AlgoDistance';
+ import { AlgoAngle } from '../algo/AlgoAngle';
+ import { AlgoArea } from '../algo/AlgoArea';
++import { AlgoTangent } from '../algo/AlgoTangent';
++import { AlgoLocus } from '../algo/AlgoLocus';
+ import { CoordinateSystem } from '../core/CoordinateSystem';
+ 
+ /**
+@@ -96,6 +98,8 @@
+     case 'AlgoDistance':             return new AlgoDistance(kernel, inputs[0], inputs[1]);
+     case 'AlgoAngle':                return new AlgoAngle(kernel, ...asPoints(3));
+     case 'AlgoArea':                 return new AlgoArea(kernel, inputs[0]);
++    case 'AlgoTangent':              return new AlgoTangent(kernel, inputs[0], inputs[1]);
++    case 'AlgoLocus':                return new AlgoLocus(kernel, inputs[1], inputs[0]);
+     default:
+       throw new Error(`[ConstructionSerializer] unknown algorithm type: ${type}`);
+   }
