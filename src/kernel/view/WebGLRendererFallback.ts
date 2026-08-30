@@ -49,7 +49,7 @@ export class WebGLRendererFallback implements IRenderer {
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
-    this.mainCtx = canvas.getContext('2d', { alpha: false })!;
+    this.mainCtx = canvas.getContext('2d')!;
     const t = document.createElement('canvas');
     t.width = canvas.width || 800;
     t.height = canvas.height || 600;
@@ -364,5 +364,5 @@ export function createRenderer(canvas: HTMLCanvasElement, preferWebGL = true): I
       if (r.supportsWebGL) return r;
     } catch { /* fall through */ }
   }
-  return new CanvasRenderer(canvas.getContext('2d', { alpha: false })!);
+  return new CanvasRenderer(canvas.getContext('2d')!);
 }
