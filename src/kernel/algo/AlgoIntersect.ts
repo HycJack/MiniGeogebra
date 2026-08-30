@@ -67,6 +67,7 @@ export class AlgoIntersect extends AlgoElement {
     
     const p = this.outputPoints[0];
     p.setCoords(x, y, 1);
+    p.setDefined();
 
     // Check if it's on the segments
     if (l1.getClassName() === 'GeoSegment' && !(l1 as any).isOnPath(p)) {
@@ -119,6 +120,7 @@ export class AlgoIntersect extends AlgoElement {
       if (i < this.outputPoints.length) {
         const p = this.outputPoints[i];
         p.setCoords(pt.x, pt.y, 1);
+        p.setDefined();
         if (line.getClassName() === 'GeoSegment' && !(line as any).isOnPath(p)) {
           p.setUndefined();
         }

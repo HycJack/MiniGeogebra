@@ -50,6 +50,7 @@ export class AlgoPointOnLine extends AlgoElement {
     const y = py + t * uy;
     
     this.outputPoint.setCoords(x, y, 1);
+    this.outputPoint.setDefined();
   }
 
   getOutput(): GeoPoint {

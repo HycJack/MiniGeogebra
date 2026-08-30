@@ -36,6 +36,7 @@ export class AlgoParallelLine extends AlgoElement {
     this.outputLine.a = a;
     this.outputLine.b = b;
     this.outputLine.c = c;
+    this.outputLine.setDefined();
   }
 
   getOutput(): GeoLine {

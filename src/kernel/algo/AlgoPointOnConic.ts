@@ -33,6 +33,7 @@ export class AlgoPointOnConic extends AlgoElement {
     const y = center.y + r * Math.sin(t);
     
     this.outputPoint.setCoords(x, y, 1);
+    this.outputPoint.setDefined();
   }
 
   getOutput(): GeoPoint {

@@ -73,6 +73,7 @@ export class AlgoAngleBisector extends AlgoElement {
     this.outputLine.a = nx;
     this.outputLine.b = ny;
     this.outputLine.c = c;
+    this.outputLine.setDefined();
   }
 
   getOutput(): GeoLine {

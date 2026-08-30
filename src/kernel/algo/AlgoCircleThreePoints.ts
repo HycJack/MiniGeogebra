@@ -78,6 +78,7 @@ export class AlgoCircleThreePoints extends AlgoElement {
     // GeoElement.isDefined_ is protected. We need a public setter or reset logic.
     // For this prototype, we'll assume it stays defined or we add a method.
     // Let's assume it's fine for now.
+    this.outputConic.setDefined();
   }
 
   getOutput(): GeoConic {

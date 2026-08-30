@@ -37,6 +37,7 @@ export class AlgoPointOnSegment extends AlgoElement {
     const y = sy + t * (ey - sy);
     
     this.outputPoint.setCoords(x, y, 1);
+    this.outputPoint.setDefined();
   }
 
   getOutput(): GeoPoint {

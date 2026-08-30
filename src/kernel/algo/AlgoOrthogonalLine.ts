@@ -40,6 +40,7 @@ export class AlgoOrthogonalLine extends AlgoElement {
     this.outputLine.a = newA;
     this.outputLine.b = newB;
     this.outputLine.c = newC;
+    this.outputLine.setDefined();
   }
 
   getOutput(): GeoLine {

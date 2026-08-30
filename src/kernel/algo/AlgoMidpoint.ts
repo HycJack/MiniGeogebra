@@ -26,6 +26,7 @@ export class AlgoMidpoint extends AlgoElement {
     const x = (this.p1.getX() + this.p2.getX()) / 2;
     const y = (this.p1.getY() + this.p2.getY()) / 2;
     this.outputPoint.setCoords(x, y);
+    this.outputPoint.setDefined();
   }
 
   getOutput(): GeoPoint {

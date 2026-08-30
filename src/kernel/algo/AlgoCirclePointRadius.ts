@@ -39,6 +39,7 @@ export class AlgoCirclePointRadius extends AlgoElement {
       -2 * k,     // E
       h * h + k * k - r * r // F
     ];
+    this.outputConic.setDefined();
   }
 
   getOutput(): GeoConic {

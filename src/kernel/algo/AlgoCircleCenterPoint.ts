@@ -43,6 +43,7 @@ export class AlgoCircleCenterPoint extends AlgoElement {
       -2 * k,     // E
       h * h + k * k - r2 // F
     ];
+    this.outputConic.setDefined();
   }
 
   getOutput(): GeoConic {

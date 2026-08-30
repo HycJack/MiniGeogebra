@@ -30,6 +30,7 @@ export class AlgoCircleCenter extends AlgoElement {
     
     const center = this.circle.getCenter();
     this.outputPoint.setCoords(center.x, center.y);
+    this.outputPoint.setDefined();
   }
 
   getOutput(): GeoPoint {
