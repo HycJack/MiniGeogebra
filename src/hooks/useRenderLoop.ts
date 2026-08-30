@@ -27,15 +27,10 @@ export function useRenderLoop(draw: () => void, deps: DependencyList) {
   }, []);
 
   // 依赖变化 → 调度一帧
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     schedule();
-  }, [schedule]);
-
-  // 首次挂载立即绘制一帧（deps 可能尚未稳定）
-  useEffect(() => {
-    schedule();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, deps);
 
   // 卸载时取消未完成的帧
   useEffect(
