@@ -14,7 +14,7 @@ import { AlgoCircleThreePoints } from '../algo/AlgoCircleThreePoints';
 import { AlgoCircleCenter } from '../algo/AlgoCircleCenter';
 import { AlgoIntersect } from '../algo/AlgoIntersect';
 import { AlgoParallelLine } from '../algo/AlgoParallelLine';
-import { AlgoOrthogonalLine } from '../algo/OrthogonalLine';
+import { AlgoOrthogonalLine } from '../algo/AlgoOrthogonalLine';
 import { AlgoPerpendicularBisector } from '../algo/AlgoPerpendicularBisector';
 import { AlgoAngleBisector } from '../algo/AlgoAngleBisector';
 import { AlgoPointOnLine } from '../algo/AlgoPointOnLine';
