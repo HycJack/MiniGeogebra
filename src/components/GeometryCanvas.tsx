@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { useRenderLoop } from '../hooks/useRenderLoop';
 import { Kernel } from '../kernel/core/Kernel';
 import { GeoPoint } from '../kernel/geo/GeoPoint';
 import { GeoLine } from '../kernel/geo/GeoLine';
@@ -17,6 +18,9 @@ import { AlgoIntersect } from '../kernel/algo/AlgoIntersect';
 import { AlgoParallelLine } from '../kernel/algo/AlgoParallelLine';
 import { AlgoOrthogonalLine } from '../kernel/algo/AlgoOrthogonalLine';
 import { AlgoPerpendicularBisector } from '../kernel/algo/AlgoPerpendicularBisector';
+import { AlgoDistance } from '../kernel/algo/AlgoDistance';
+import { AlgoAngle } from '../kernel/algo/AlgoAngle';
+import { AlgoArea } from '../kernel/algo/AlgoArea';
 import { AlgoAngleBisector } from '../kernel/algo/AlgoAngleBisector';
 import { ConstructionElement } from '../kernel/core/ConstructionElement';
 import { GeoElement } from '../kernel/geo/GeoElement';
@@ -25,6 +29,8 @@ import { AlgoPointOnConic } from '../kernel/algo/AlgoPointOnConic';
 import { AlgoPointOnLine } from '../kernel/algo/AlgoPointOnLine';
 import { AlgoPointOnSegment } from '../kernel/algo/AlgoPointOnSegment';
 import { GeoNumeric } from '../kernel/geo/GeoNumeric';
+import { CoordinateSystem } from '../kernel/core/CoordinateSystem';
+import { serialize as serializeConstruction, deserialize as deserializeConstruction, downloadJSON } from '../kernel/persistence/ConstructionSerializer';
 import { SliderControl } from './SliderControl';
 import { useLanguage } from '../i18n/LanguageContext';
 import { 
@@ -32,7 +38,10 @@ import {
   CircleDashed, Target, X, Crosshair, Equal, Baseline, 
   SplitSquareVertical, Scissors, Hexagon, Undo2, Redo2, 
   Play, Pause, ZoomIn, ZoomOut, Home, Globe, Menu, ChevronDown,
-  Grid3X3, Axis3D, ChevronUp, Type, Sliders, ToggleLeft, CheckSquare, Plus
+  Grid3X3, Axis3D, ChevronUp, Type, Sliders, ToggleLeft, CheckSquare,
+  Ruler,
+  Triangle,
+  Square
 } from 'lucide-react';
 
 interface StateSnapshot {
@@ -74,7 +83,7 @@ export const GeometryCanvas: React.FC = () => {
   const { t, language, setLanguage } = useLanguage();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [kernel] = useState(() => new Kernel());
-  const [mode, setMode] = useState<'move' | 'point' | 'line' | 'segment' | 'midpoint' | 'circle' | 'circle_center_point' | 'circle3' | 'intersect' | 'parallel' | 'orthogonal' | 'perpendicular_bisector' | 'angle_bisector' | 'polygon' | 'text' | 'slider' | 'button' | 'checkbox'>('move');
+  const [mode, setMode] = useState<'move' | 'point' | 'line' | 'segment' | 'midpoint' | 'circle' | 'circle_center_point' | 'circle3' | 'intersect' | 'parallel' | 'orthogonal' | 'perpendicular_bisector' | 'angle_bisector' | 'polygon' | 'text' | 'slider' | 'button' | 'checkbox' | 'distance' | 'angle' | 'area'>('move');
   const [polygonPoints, setPolygonPoints] = useState<GeoPoint[]>([]);
   const [radius, setRadius] = useState<number>(50);
   const [selectedElements, setSelectedElements] = useState<GeoElement[]>([]);
@@ -88,7 +97,7 @@ export const GeometryCanvas: React.FC = () => {
         kernel.getConstruction().removeElement(point);
       });
       kernel.getConstruction().updateAllAlgorithms();
-      setRefresh(r => r + 1);
+      setRenderRev(r => r + 1);
     }
     
     setSelectedElements([]);
@@ -111,7 +120,7 @@ export const GeometryCanvas: React.FC = () => {
     if (selectedElements.length === 1) {
       if (editingLabel.trim() !== '') {
         selectedElements[0].label = editingLabel.trim();
-        setRefresh(r => r + 1);
+        setRenderRev(r => r + 1);
       } else {
         setEditingLabel(selectedElements[0].label);
       }
@@ -120,14 +129,14 @@ export const GeometryCanvas: React.FC = () => {
 
   const [draggedElement, setDraggedElement] = useState<GeoElement | null>(null);
   const [refresh, setRefresh] = useState(0);
+  const [renderRev, setRenderRev] = useState(0); // RAF 渲染节流信号
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [hoveredPoint, setHoveredPoint] = useState<GeoPoint | null>(null);
   const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
   
-  const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
+  const [coord, setCoord] = useState<CoordinateSystem>(() => CoordinateSystem.centered(800, 600, 1));
   const [isPanning, setIsPanning] = useState(false);
   const [lastPanPos, setLastPanPos] = useState({ x: 0, y: 0 });
-  const [initialTransformSet, setInitialTransformSet] = useState(false);
   
   const [showAxes, setShowAxes] = useState(true);
   const [showGrid, setShowGrid] = useState(true);
@@ -150,7 +159,56 @@ export const GeometryCanvas: React.FC = () => {
   const addCommand = (cmd: Command) => {
     undoStack.current.push(cmd);
     redoStack.current = [];
-    setRefresh(r => r + 1);
+    setRenderRev(r => r + 1);
+  };
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  /** 删除一组元素及其全部依赖，并记录可撤销快照 */
+  const deleteWithDependents = (els: ConstructionElement[]) => {
+    if (els.length === 0) return;
+    const cascade: ConstructionElement[] = [];
+    const construction = kernel.getConstruction();
+    for (const el of els) {
+      cascade.push(...construction.collectDeletionCascade(el));
+      construction.deleteElementWithDependents(el);
+    }
+    construction.updateAllAlgorithms();
+    addCommand({ type: 'add', elements: cascade });
+    setSelectedElements([]);
+    setRenderRev(r => r + 1);
+  };
+
+  const handleExport = () => {
+    try {
+      downloadJSON('minigeogebra-construction.json', serializeConstruction(kernel, coord));
+    } catch (err) {
+      console.error('[export failed]', err);
+      alert('导出失败，请查看控制台');
+    }
+  };
+
+  const handleImportPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const text = typeof ev.target?.result === 'string' ? ev.target.result : '';
+        if (!text.trim()) return;
+        const { coord: restored } = deserializeConstruction(kernel, text);
+        if (restored) setCoord(restored);
+        setSelectedElements([]);
+        setPolygonPoints([]);
+        setRenderRev(r => r + 1);
+      } catch (err) {
+        console.error('[import failed]', err);
+        alert('导入失败：文件格式不正确');
+      } finally {
+        if (fileInputRef.current) fileInputRef.current.value = '';
+      }
+    };
+    reader.readAsText(file);
   };
 
   const isAnimating = kernel.getAnimationManager().isRunning();
@@ -160,40 +218,32 @@ export const GeometryCanvas: React.FC = () => {
 
   useEffect(() => {
     const updateSize = () => {
-      if (containerRef.current) {
-        const dpr = window.devicePixelRatio || 1;
-        const width = containerRef.current.clientWidth;
-        const height = containerRef.current.clientHeight;
-        
-        setCanvasSize({
-          width: width * dpr,
-          height: height * dpr
-        });
-        
-        const canvas = canvasRef.current;
-        if (canvas) {
-          canvas.style.width = `${width}px`;
-          canvas.style.height = `${height}px`;
-        }
-        
-        if (!initialTransformSet) {
-          setTransform({
-            x: width / 2,
-            y: height / 2,
-            scale: 1
-          });
-          setInitialTransformSet(true);
-        }
-        
-        setRefresh(r => r + 1);
+      if (!containerRef.current) return;
+      const dpr = window.devicePixelRatio || 1;
+      const width = containerRef.current.clientWidth;
+      const height = containerRef.current.clientHeight;
+
+      setCanvasSize({
+        width: width * dpr,
+        height: height * dpr
+      });
+
+      const canvas = canvasRef.current;
+      if (canvas) {
+        canvas.style.width = `${width}px`;
+        canvas.style.height = `${height}px`;
       }
+
+      // 画布尺寸改变时，让可见世界范围保持稳定
+      setCoord(c => c.setSize(width, height));
+      setRenderRev(r => r + 1);
     };
 
     window.addEventListener('resize', updateSize);
     updateSize();
 
     return () => window.removeEventListener('resize', updateSize);
-  }, [initialTransformSet]);
+  }, []);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -256,17 +306,12 @@ export const GeometryCanvas: React.FC = () => {
           setMode('move');
           setSelectedElements([]);
           setPolygonPoints([]);
-          setRefresh(r => r + 1);
+          setRenderRev(r => r + 1);
         }
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         if (selectedElements.length > 0 && document.activeElement?.tagName !== 'INPUT') {
           e.preventDefault();
-          selectedElements.forEach(el => {
-            kernel.getConstruction().removeElement(el);
-          });
-          kernel.getConstruction().updateAllAlgorithms();
-          setSelectedElements([]);
-          setRefresh(r => r + 1);
+          deleteWithDependents(selectedElements);
         }
       }
     };
@@ -339,7 +384,7 @@ export const GeometryCanvas: React.FC = () => {
     }
 
     kernel.setUpdateCallback(() => {
-      setRefresh(r => r + 1);
+      setRenderRev(r => r + 1);
     });
   }, [kernel]);
 
@@ -350,10 +395,10 @@ export const GeometryCanvas: React.FC = () => {
     } else {
       am.startAnimation();
     }
-    setRefresh(r => r + 1);
+    setRenderRev(r => r + 1);
   };
 
-  useEffect(() => {
+  const { schedule } = useRenderLoop(() => {  useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -366,8 +411,8 @@ export const GeometryCanvas: React.FC = () => {
 
     ctx.save();
     ctx.scale(dpr, dpr);
-    ctx.translate(transform.x, transform.y);
-    ctx.scale(transform.scale, transform.scale);
+    ctx.translate(coord.xZero, coord.yZero);
+    ctx.scale(coord.xScale, coord.yScale);
 
     // Draw grid
     drawGrid(ctx, canvas.width / dpr, canvas.height / dpr, transform, showGrid, showAxes);
@@ -378,21 +423,21 @@ export const GeometryCanvas: React.FC = () => {
     // Draw polygons first (fill)
     elements.forEach(el => {
       if (el instanceof GeoPolygon) {
-        drawPolygon(ctx, el, selectedElements.includes(el), transform.scale);
+        drawPolygon(ctx, el, selectedElements.includes(el), coord.xScale);
       }
     });
 
     // Draw conics (circles)
     elements.forEach(el => {
       if (el instanceof GeoConic) {
-        drawConic(ctx, el, selectedElements.includes(el), transform.scale);
+        drawConic(ctx, el, selectedElements.includes(el), coord.xScale);
       }
     });
 
     // Draw lines and segments
     elements.forEach(el => {
       if (el instanceof GeoSegment) {
-        drawSegment(ctx, el, selectedElements.includes(el), transform.scale);
+        drawSegment(ctx, el, selectedElements.includes(el), coord.xScale);
       } else if (el instanceof GeoLine && !(el instanceof GeoSegment)) {
         drawLine(ctx, el, selectedElements.includes(el), transform);
       }
@@ -401,8 +446,8 @@ export const GeometryCanvas: React.FC = () => {
     // Draw polygon being created
     if (mode === 'polygon' && polygonPoints.length > 0) {
         ctx.strokeStyle = '#9ca3af'; // gray-400
-        ctx.lineWidth = 1 / transform.scale;
-        ctx.setLineDash([5 / transform.scale, 5 / transform.scale]);
+        ctx.lineWidth = 1 / coord.xScale;
+        ctx.setLineDash([5 / coord.xScale, 5 / coord.xScale]);
         ctx.beginPath();
         ctx.moveTo(polygonPoints[0].getX(), polygonPoints[0].getY());
         for (let i = 1; i < polygonPoints.length; i++) {
@@ -417,8 +462,8 @@ export const GeometryCanvas: React.FC = () => {
     // Draw Previews
     ctx.save();
     ctx.strokeStyle = 'rgba(100, 100, 100, 0.5)';
-    ctx.setLineDash([5 / transform.scale, 5 / transform.scale]);
-    ctx.lineWidth = 1 / transform.scale;
+    ctx.setLineDash([5 / coord.xScale, 5 / coord.xScale]);
+    ctx.lineWidth = 1 / coord.xScale;
     
     const targetX = hoveredPoint ? hoveredPoint.getX() : mousePos.x;
     const targetY = hoveredPoint ? hoveredPoint.getY() : mousePos.y;
@@ -434,7 +479,7 @@ export const GeometryCanvas: React.FC = () => {
         // Draw line through p1 and target
         const dx = targetX - p1.getX();
         const dy = targetY - p1.getY();
-        if (Math.hypot(dx, dy) > 1 / transform.scale) {
+        if (Math.hypot(dx, dy) > 1 / coord.xScale) {
             // Extend to screen bounds
             const slope = dy / dx;
             // Simple drawing: just a long segment for preview
@@ -478,7 +523,7 @@ export const GeometryCanvas: React.FC = () => {
             
             // Draw preview center point
             ctx.beginPath();
-            ctx.arc(ux, uy, 3 / transform.scale, 0, 2 * Math.PI);
+            ctx.arc(ux, uy, 3 / coord.xScale, 0, 2 * Math.PI);
             ctx.fillStyle = 'rgba(100, 100, 100, 0.5)';
             ctx.fill();
         }
@@ -493,10 +538,11 @@ export const GeometryCanvas: React.FC = () => {
          // a(x - mx) + b(y - my) = 0 => ax + by = a*mx + b*my
          const c = -(a * targetX + b * targetY);
          
-         const startX = -transform.x / transform.scale;
-         const endX = ((canvas.width / dpr) - transform.x) / transform.scale;
-         const startY = -transform.y / transform.scale;
-         const endY = ((canvas.height / dpr) - transform.y) / transform.scale;
+         const bounds = coord.visibleWorldBounds();
+         const startX = bounds.minX;
+         const endX = bounds.maxX;
+         const startY = bounds.minY;
+         const endY = bounds.maxY;
 
          // Draw this line
          if (Math.abs(b) > 1e-6) {
@@ -526,10 +572,11 @@ export const GeometryCanvas: React.FC = () => {
         // Line through M with normal (a, b)
         const c = -(a * mx + b * my);
         
-        const startX = -transform.x / transform.scale;
-        const endX = ((canvas.width / dpr) - transform.x) / transform.scale;
-        const startY = -transform.y / transform.scale;
-        const endY = ((canvas.height / dpr) - transform.y) / transform.scale;
+        const bounds = coord.visibleWorldBounds();
+        const startX = bounds.minX;
+        const endX = bounds.maxX;
+        const startY = bounds.minY;
+        const endY = bounds.maxY;
 
         if (Math.abs(b) > 1e-6) {
             const y1 = (-c - a * startX) / b;
@@ -548,7 +595,7 @@ export const GeometryCanvas: React.FC = () => {
         
         // Draw midpoint preview
         ctx.beginPath();
-        ctx.arc(mx, my, 3 / transform.scale, 0, 2 * Math.PI);
+        ctx.arc(mx, my, 3 / coord.xScale, 0, 2 * Math.PI);
         ctx.fillStyle = 'rgba(100, 100, 100, 0.5)';
         ctx.fill();
     } else if (mode === 'angle_bisector' && selectedElements.length >= 1 && selectedElements.length < 3) {
@@ -600,10 +647,11 @@ export const GeometryCanvas: React.FC = () => {
                 
                 const c = -(nx * bx + ny * by);
                 
-                const startX = -transform.x / transform.scale;
-                const endX = ((canvas.width / dpr) - transform.x) / transform.scale;
-                const startY = -transform.y / transform.scale;
-                const endY = ((canvas.height / dpr) - transform.y) / transform.scale;
+                const bounds = coord.visibleWorldBounds();
+                const startX = bounds.minX;
+                const endX = bounds.maxX;
+                const startY = bounds.minY;
+                const endY = bounds.maxY;
                 
                 if (Math.abs(ny) > 1e-6) {
                     const y1 = (-c - nx * startX) / ny;
@@ -628,13 +676,18 @@ export const GeometryCanvas: React.FC = () => {
     // Draw points last
     elements.forEach(el => {
       if (el instanceof GeoPoint) {
-        drawPoint(ctx, el, selectedElements.includes(el), transform.scale);
+        drawPoint(ctx, el, selectedElements.includes(el), coord.xScale);
       }
     });
 
     ctx.restore(); // Restore the global transform
 
   }, [kernel, refresh, selectedElements, mousePos, mode, polygonPoints, radius, hoveredPoint, transform, showGrid, showAxes]);
+  }, [renderRev, selectedElements, mousePos, mode, polygonPoints, radius, hoveredPoint, coord, showGrid, showAxes]);
+
+  useEffect(() => {
+    schedule(); // 首帧立即绘制
+  }, [schedule]);
 
   const drawConic = (ctx: CanvasRenderingContext2D, c: GeoConic, selected: boolean, scale: number) => {
     if (!c.isDefined()) return;
@@ -666,15 +719,15 @@ export const GeometryCanvas: React.FC = () => {
     }
   };
 
-  const drawGrid = (ctx: CanvasRenderingContext2D, w: number, h: number, transform: {x: number, y: number, scale: number}, showGrid: boolean, showAxes: boolean) => {
-    const startX = -transform.x / transform.scale;
-    const endX = (w - transform.x) / transform.scale;
-    const startY = -transform.y / transform.scale;
-    const endY = (h - transform.y) / transform.scale;
+  const drawGrid = (ctx: CanvasRenderingContext2D, w: number, h: number, coord: CoordinateSystem, showGrid: boolean, showAxes: boolean) => {
+    const startX = coord.screenToWorldX(0);
+    const endX = coord.screenToWorldX(w);
+    const startY = coord.screenToWorldY(0);
+    const endY = coord.screenToWorldY(h);
     
     // Calculate a nice step size
     const targetStepScreen = 50;
-    const targetStepWorld = targetStepScreen / transform.scale;
+    const targetStepWorld = targetStepScreen / coord.xScale;
     const magnitude = Math.pow(10, Math.floor(Math.log10(targetStepWorld)));
     const residual = targetStepWorld / magnitude;
     
@@ -689,7 +742,7 @@ export const GeometryCanvas: React.FC = () => {
     // Draw grid
     if (showGrid) {
       ctx.strokeStyle = '#e5e7eb';
-      ctx.lineWidth = 1 / transform.scale;
+      ctx.lineWidth = 1 / coord.xScale;
       
       for (let x = firstX; x <= endX; x += step) {
         ctx.beginPath();
@@ -708,7 +761,7 @@ export const GeometryCanvas: React.FC = () => {
     // Draw axes
     if (showAxes) {
       ctx.strokeStyle = '#9ca3af';
-      ctx.lineWidth = 2 / transform.scale;
+      ctx.lineWidth = 2 / coord.xScale;
       if (0 >= startX && 0 <= endX) {
         ctx.beginPath();
         ctx.moveTo(0, startY);
@@ -724,13 +777,13 @@ export const GeometryCanvas: React.FC = () => {
 
       // Draw numbers
       ctx.fillStyle = '#6b7280';
-      ctx.font = `${10 / transform.scale}px sans-serif`;
+      ctx.font = `${10 / coord.xScale}px sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
       
       for (let x = firstX; x <= endX; x += step) {
         if (Math.abs(x) > 1e-10) {
-          ctx.fillText(parseFloat(x.toPrecision(4)).toString(), x, 4 / transform.scale);
+          ctx.fillText(parseFloat(x.toPrecision(4)).toString(), x, 4 / coord.xScale);
         }
       }
       
@@ -738,14 +791,14 @@ export const GeometryCanvas: React.FC = () => {
       ctx.textBaseline = 'middle';
       for (let y = firstY; y <= endY; y += step) {
         if (Math.abs(y) > 1e-10) {
-          ctx.fillText(parseFloat(y.toPrecision(4)).toString(), -4 / transform.scale, y);
+          ctx.fillText(parseFloat(y.toPrecision(4)).toString(), -4 / coord.xScale, y);
         }
       }
       
       // Origin
       ctx.textAlign = 'right';
       ctx.textBaseline = 'top';
-      ctx.fillText('0', -4 / transform.scale, 4 / transform.scale);
+      ctx.fillText('0', -4 / coord.xScale, 4 / coord.xScale);
     }
   };
 
@@ -798,7 +851,7 @@ export const GeometryCanvas: React.FC = () => {
     ctx.fillText(label, labelX, labelY);
   };
 
-  const drawLine = (ctx: CanvasRenderingContext2D, l: GeoLine, selected: boolean, transform: {x: number, y: number, scale: number}) => {
+  const drawLine = (ctx: CanvasRenderingContext2D, l: GeoLine, selected: boolean, coord: CoordinateSystem) => {
     if (!l.isDefined()) return;
     
     const canvas = canvasRef.current;
@@ -808,13 +861,13 @@ export const GeometryCanvas: React.FC = () => {
     const w = canvas.width / dpr;
     const h = canvas.height / dpr;
     
-    const startX = -transform.x / transform.scale;
-    const endX = (w - transform.x) / transform.scale;
-    const startY = -transform.y / transform.scale;
-    const endY = (h - transform.y) / transform.scale;
+    const startX = coord.screenToWorldX(0);
+    const endX = coord.screenToWorldX(w);
+    const startY = coord.screenToWorldY(0);
+    const endY = coord.screenToWorldY(h);
 
     ctx.strokeStyle = selected ? '#3b82f6' : '#000';
-    ctx.lineWidth = (selected ? 3 : 1) / transform.scale;
+    ctx.lineWidth = (selected ? 3 : 1) / coord.xScale;
     ctx.beginPath();
 
     if (Math.abs(l.b) > 1e-6) {
@@ -860,12 +913,8 @@ export const GeometryCanvas: React.FC = () => {
     const rect = canvasRef.current!.getBoundingClientRect();
     const screenX = e.clientX - rect.left;
     const screenY = e.clientY - rect.top;
-    return {
-      screenX,
-      screenY,
-      x: (screenX - transform.x) / transform.scale,
-      y: (screenY - transform.y) / transform.scale
-    };
+    const world = coord.screenToWorld(screenX, screenY);
+    return { screenX, screenY, x: world.x, y: world.y };
   };
 
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -887,7 +936,7 @@ export const GeometryCanvas: React.FC = () => {
     // Find clicked point
     // Reverse order to pick top-most
     const clickedPoint = elements.slice().reverse().find(el => 
-      el instanceof GeoPoint && Math.hypot(el.getX() - x, el.getY() - y) < 10 / transform.scale
+      el instanceof GeoPoint && Math.hypot(el.getX() - x, el.getY() - y) < 10 / coord.xScale
     ) as GeoPoint | undefined;
 
     if (mode === 'move') {
@@ -898,17 +947,17 @@ export const GeometryCanvas: React.FC = () => {
         // Check for other elements
         const clickedObj = elements.slice().reverse().find(el => {
             if (el instanceof GeoSegment) {
-                return (el as any).isOnPath({ getX: () => x, getY: () => y }, 5 / transform.scale);
+                return (el as any).isOnPath({ getX: () => x, getY: () => y }, 5 / coord.xScale);
             } else if (el instanceof GeoLine) {
                 const len = Math.hypot(el.a, el.b);
                 if (len === 0) return false;
                 const d = Math.abs(el.a * x + el.b * y + el.c) / len;
-                return d < 5 / transform.scale;
+                return d < 5 / coord.xScale;
             } else if (el instanceof GeoConic) {
                 const r = el.getRadius();
                 const center = el.getCenter();
                 const d = Math.abs(Math.hypot(x - center.x, y - center.y) - r);
-                return d < 5 / transform.scale;
+                return d < 5 / coord.xScale;
             } else if (el instanceof GeoPolygon) {
                 return (el as any).isInRegionXY(x, y);
             }
@@ -925,17 +974,17 @@ export const GeometryCanvas: React.FC = () => {
     } else if (mode === 'point') {
       const clickedObj = elements.slice().reverse().find(el => {
           if (el instanceof GeoSegment) {
-              return (el as any).isOnPath({ getX: () => x, getY: () => y }, 5 / transform.scale);
+              return (el as any).isOnPath({ getX: () => x, getY: () => y }, 5 / coord.xScale);
           } else if (el instanceof GeoLine) {
               const len = Math.hypot(el.a, el.b);
               if (len === 0) return false;
               const d = Math.abs(el.a * x + el.b * y + el.c) / len;
-              return d < 5 / transform.scale;
+              return d < 5 / coord.xScale;
           } else if (el instanceof GeoConic) {
               const r = el.getRadius();
               const center = el.getCenter();
               const d = Math.abs(Math.hypot(x - center.x, y - center.y) - r);
-              return d < 5 / transform.scale;
+              return d < 5 / coord.xScale;
           }
           return false;
       });
@@ -1283,7 +1332,55 @@ export const GeometryCanvas: React.FC = () => {
                 setSelectedElements(currentSelected);
             }
         }
-    } else if (mode === 'polygon') {
+      } else if (mode === 'distance') {
+      if (clickedPoint) {
+        if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
+          const p1 = selectedElements[0] as GeoPoint;
+          if (p1 !== clickedPoint) {
+            const algo = new AlgoDistance(kernel, p1, clickedPoint);
+            const c = kernel.getConstruction();
+            algo.getOutput().label = `d${c.getElements().filter(e => e instanceof GeoNumeric).length + 1}`;
+            c.addElement(algo);
+            c.addElement(algo.getOutput());
+            algo.compute();
+            setSelectedElements([]);
+            setRenderRev(r => r + 1);
+          }
+        } else {
+          setSelectedElements([clickedPoint]);
+        }
+      }
+    } else if (mode === 'angle') {
+      if (clickedPoint) {
+        if (selectedElements.length === 2 && selectedElements.every(e => e instanceof GeoPoint)) {
+          const [p1, p2] = selectedElements as GeoPoint[];
+          const algo = new AlgoAngle(kernel, p1, clickedPoint, p2);
+          algo.getOutput().label = '∠';
+          const c = kernel.getConstruction();
+          c.addElement(algo);
+          c.addElement(algo.getOutput());
+          algo.compute();
+          setSelectedElements([]);
+          setRenderRev(r => r + 1);
+        } else {
+          setSelectedElements([...selectedElements, clickedPoint].slice(-3));
+        }
+      }
+    } else if (mode === 'area') {
+      // 选中一个现有多边形即可测量面积
+      const target = elements.slice().reverse().find(el => el instanceof GeoPolygon) as GeoPolygon | undefined;
+      if (target) {
+        const algo = new AlgoArea(kernel, target);
+        algo.getOutput().label = 'S';
+        const c = kernel.getConstruction();
+        c.addElement(algo);
+        c.addElement(algo.getOutput());
+        algo.compute();
+        setSelectedElements([]);
+        setRenderRev(r => r + 1);
+      }
+    }
+  } else if (mode === 'polygon') {
         if (clickedPoint) {
             // If clicked start point, close polygon
             if (polygonPoints.length > 2 && clickedPoint === polygonPoints[0]) {
@@ -1349,12 +1446,9 @@ export const GeometryCanvas: React.FC = () => {
     setMousePos({ x, y });
 
     if (isPanning) {
-      setTransform(prev => ({
-        ...prev,
-        x: prev.x + (screenX - lastPanPos.x),
-        y: prev.y + (screenY - lastPanPos.y)
-      }));
+      setCoord(prev => prev.panBy(screenX - lastPanPos.x, screenY - lastPanPos.y));
       setLastPanPos({ x: screenX, y: screenY });
+      setRenderRev(r => r + 1);
       return;
     }
 
@@ -1368,7 +1462,7 @@ export const GeometryCanvas: React.FC = () => {
     // Check for hover
     const elements = kernel.getConstruction().getElements();
     const hovered = elements.slice().reverse().find(el => 
-      el instanceof GeoPoint && Math.hypot(el.getX() - x, el.getY() - y) < 10 / transform.scale
+      el instanceof GeoPoint && Math.hypot(el.getX() - x, el.getY() - y) < 10 / coord.xScale
     ) as GeoPoint | undefined;
     setHoveredPoint(hovered || null);
 
@@ -1400,9 +1494,8 @@ export const GeometryCanvas: React.FC = () => {
           }
           setLastMousePos({ x, y });
       }
-      // Update dependencies
-      kernel.getConstruction().updateAllAlgorithms();
-      setRefresh(r => r + 1);
+      // 增量更新已随 setCoords 触发；flushNow 同步执行 pending，保证本帧可见性
+      kernel.flushNow();
     }
   };
 
@@ -1470,7 +1563,7 @@ export const GeometryCanvas: React.FC = () => {
     } else if (cmd.type === 'move') {
       restoreState(cmd.oldState);
     }
-    setRefresh(r => r + 1);
+    setRenderRev(r => r + 1);
   };
 
   const redo = () => {
@@ -1484,46 +1577,30 @@ export const GeometryCanvas: React.FC = () => {
     } else if (cmd.type === 'move') {
       restoreState(cmd.newState);
     }
-    setRefresh(r => r + 1);
+    setRenderRev(r => r + 1);
   };
 
   const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault();
-    
+
     if (!containerRef.current) return;
-    
+
     const rect = containerRef.current.getBoundingClientRect();
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
-    
-    const x = (mouseX - transform.x) / transform.scale;
-    const y = (mouseY - transform.y) / transform.scale;
-    
-    const zoomFactor = 1.1;
-    const direction = e.deltaY < 0 ? 1 : -1;
-    const scaleChange = direction > 0 ? zoomFactor : 1 / zoomFactor;
-    
-    setTransform(prev => {
-      const newScale = prev.scale * scaleChange;
-      if (newScale < 0.1 || newScale > 10) return prev;
-      
-      return {
-        scale: newScale,
-        x: mouseX - x * newScale,
-        y: mouseY - y * newScale
-      };
+
+  const zoom = (factor: number) => {
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const sx = rect.width / 2;
+    const sy = rect.height / 2;
+    setCoord(prev => {
+      let next = prev.zoom(factor, sx, sy);
+      if (next.xScale < 0.1) next = prev.zoom(0.1 / prev.xScale, sx, sy);
+      else if (next.xScale > 10) next = prev.zoom(10 / prev.xScale, sx, sy);
+      return next;
     });
-  }, [transform]);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    canvas.addEventListener('wheel', handleWheel, { passive: false });
-    
-    return () => {
-      canvas.removeEventListener('wheel', handleWheel);
-    };
+  };
   }, [handleWheel]);
 
   const handleContextMenu = (e: React.MouseEvent) => {
@@ -1802,6 +1879,47 @@ export const GeometryCanvas: React.FC = () => {
           )}
         </div>
 
+        <div className="w-px h-6 bg-gray-300 mx-1"></div>
+        <button
+          className={`px-2 py-1.5 rounded-md text-sm font-medium flex items-center gap-1 transition-colors ${
+            mode === 'distance' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
+          }`}
+          onClick={() => setMode(mode === 'distance' ? 'move' : 'distance')}
+          title="两点距离">
+          <Ruler size={18} /> 距离
+        </button>
+        <button
+          className={`px-2 py-1.5 rounded-md text-sm font-medium flex items-center gap-1 transition-colors ${
+            mode === 'angle' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
+          }`}
+          onClick={() => setMode(mode === 'angle' ? 'move' : 'angle')}
+          title="三点夹角">
+          <Triangle size={18} /> 角度
+        </button>
+        <button
+          className={`px-2 py-1.5 rounded-md text-sm font-medium flex items-center gap-1 transition-colors ${
+            mode === 'area' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
+          }`}
+          onClick={() => setMode(mode === 'area' ? 'move' : 'area')}
+          title="多边形面积">
+          <Square size={18} /> 面积
+        </button>
+
+        <div className="w-px h-6 bg-gray-300 mx-1"></div>
+        <button
+          className="px-2 py-1.5 rounded-md text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
+          onClick={handleExport}
+          title="导出为 JSON">
+          导出
+        </button>
+        <button
+          className="px-2 py-1.5 rounded-md text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
+          onClick={() => fileInputRef.current?.click()}
+          title="从 JSON 导入">
+          导入
+        </button>
+        <input ref={fileInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleImportPick} />
+
         <div className="flex-1"></div>
         <button 
             className={`flex items-center gap-2 px-3 py-1.5 rounded-md font-medium transition-colors ${isAnimating ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
@@ -1844,7 +1962,7 @@ export const GeometryCanvas: React.FC = () => {
                           <span className="font-semibold text-gray-800">{el.getNameDescription()}</span>
                         </div>
                         <div className="text-sm text-gray-500 ml-5 font-mono mt-0.5">
-                            {el instanceof GeoPoint ? `(${el.getX().toFixed(2)}, ${el.getY().toFixed(2)})` : typeName}
+                            {'getAlgebraDescription' in el ? el.getAlgebraDescription() : typeName}
                         </div>
                     </div>
                 );
@@ -1890,8 +2008,8 @@ export const GeometryCanvas: React.FC = () => {
           
           {/* UI Elements */}
           {uiElements.map(element => {
-            const screenX = element.x * transform.scale + transform.x;
-            const screenY = element.y * transform.scale + transform.y;
+            const screenX = element.x * coord.xScale + transform.x;
+            const screenY = element.y * coord.xScale + transform.y;
             
             const handleUIDragStart = (e: React.MouseEvent) => {
               e.stopPropagation();
@@ -2048,7 +2166,7 @@ export const GeometryCanvas: React.FC = () => {
                     const dpr = window.devicePixelRatio || 1;
                     const width = canvasSize.width / dpr;
                     const height = canvasSize.height / dpr;
-                    setTransform({ x: width / 2, y: height / 2, scale: 1 });
+                    setCoord(CoordinateSystem.centered(width, height, 1));
                   }}
                   title={t('resetView')}
               >

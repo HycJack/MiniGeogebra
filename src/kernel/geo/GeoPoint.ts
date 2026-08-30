@@ -13,6 +13,12 @@ export class GeoPoint extends GeoElement {
   getY(): number { return this.coords.y / this.coords.z; }
   getZ(): number { return this.coords.z; }
 
+  /** 代数描述：坐标形式 (x, y)，保留 2 位小数 */
+  getAlgebraDescription(): string {
+    if (!this.isDefined()) return `${this.label}（未定义）`;
+    return `${this.label} = (${this.getX().toFixed(2)} | ${this.getY().toFixed(2)})`;
+  }
+
   isOnPath(PI: GeoPoint, eps = 1e-6): boolean {
     const dx = this.getX() - PI.getX();
     const dy = this.getY() - PI.getY();

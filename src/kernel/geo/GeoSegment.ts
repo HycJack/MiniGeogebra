@@ -18,6 +18,16 @@ export class GeoSegment extends GeoLine implements LimitedPath {
 
   getClassName() { return 'GeoSegment'; }
 
+  /** 代数描述：线段 AB 及其长度 */
+  getAlgebraDescription(): string {
+    if (!this.isDefined()) return `${this.label}（未定义）`;
+    const len = Math.hypot(
+      this.endPoint.getX() - this.startPoint.getX(),
+      this.endPoint.getY() - this.startPoint.getY()
+    );
+    return `${this.label} = 线段 ${this.startPoint.label || '?'}${this.endPoint.label || '?'}（长度 ${len.toFixed(2)}）`;
+  }
+
   isOnPath(PI: GeoPoint, eps = 1e-6): boolean {
     if (!super.isOnPath(PI, eps)) return false;
     const t = this.getParameterForPoint(PI);
@@ -34,7 +44,6 @@ export class GeoSegment extends GeoLine implements LimitedPath {
     const sy = this.startPoint.getY();
     const ex = this.endPoint.getX();
     const ey = this.endPoint.getY();
-
     const dx = ex - sx;
     const dy = ey - sy;
     const dot = (PI.getX() - sx) * dx + (PI.getY() - sy) * dy;

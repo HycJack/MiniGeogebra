@@ -15,6 +15,14 @@ export class GeoVector extends GeoElement {
 
   getClassName() { return 'GeoVector'; }
 
+  /** 代数描述：向量分量与模长 */
+  getAlgebraDescription(): string {
+    const dx = this.endX - this.startX;
+    const dy = this.endY - this.startY;
+    const len = Math.hypot(dx, dy);
+    return `${this.label} = (${dx.toFixed(2)} | ${dy.toFixed(2)})，模长 ${len.toFixed(2)}`;
+  }
+
   getVector(): GeoVec3D {
     return this.getCoords();
   }
