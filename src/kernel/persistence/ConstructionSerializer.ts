@@ -47,6 +47,7 @@ interface SerializedElement {
   intervalMax?: number;
   animationSpeed?: number;
   animationIncrement?: number;
+  style?: Record<string, unknown>;        // P2-1: 对象的样式属性
 }
 
 interface SerializedAlgorithm {
@@ -122,6 +123,14 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
           constIndex: el.constIndex,
           label: el.label,
           coords: [el.getX(), el.getY(), el.getZ()] as [number, number, number],
+          style: {
+            strokeColor: el.strokeColor,
+            strokeWidth: el.strokeWidth,
+            strokeDash: el.strokeDash ? [...el.strokeDash] : [],
+            fillColor: el.fillColor,
+            labelVisible: el.labelVisible,
+            labelMode: el.labelMode,
+          },
         };
       }
       if (el instanceof GeoNumeric) {
@@ -134,10 +143,30 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
           intervalMax: el.intervalMax,
           animationSpeed: el.animationSpeed,
           animationIncrement: el.animationIncrement,
+          style: {
+            strokeColor: el.strokeColor,
+            strokeWidth: el.strokeWidth,
+            strokeDash: el.strokeDash ? [...el.strokeDash] : [],
+            fillColor: el.fillColor,
+            labelVisible: el.labelVisible,
+            labelMode: el.labelMode,
+          },
         };
       }
       // 其他独立元素（如自由向量/多边形）按需扩展
-      return { type: el.getClassName(), constIndex: el.constIndex, label: el.label };
+      return {
+        type: el.getClassName(),
+        constIndex: el.constIndex,
+        label: el.label,
+        style: {
+          strokeColor: el.strokeColor,
+          strokeWidth: el.strokeWidth,
+          strokeDash: el.strokeDash ? [...el.strokeDash] : [],
+          fillColor: el.fillColor,
+          labelVisible: el.labelVisible,
+          labelMode: el.labelMode,
+        },
+      };
     });
 
   const algorithms: SerializedAlgorithm[] = construction.getElements()
@@ -200,6 +229,19 @@ export function deserialize(kernel: Kernel, json: string): { coord?: CoordinateS
       throw new Error(`[ConstructionSerializer] unsupported independent element type: ${el.type}`);
     }
     instance.label = el.label;
+    // P2-1: 恢复对象的样式属性
+    if (el.style) {
+      if ('strokeColor' in el.style) instance.strokeColor = el.style.strokeColor as string | null;
+      if ('strokeWidth' in el.style) instance.strokeWidth = el.style.strokeWidth as number | null;
+      if ('strokeDash' in el.style && Array.isArray(el.style.strokeDash)) {
+        instance.strokeDash = [...(el.style.strokeDash as number[])];
+      } else if (!('strokeDash' in el.style)) {
+        instance.strokeDash = null;
+      }
+      if ('fillColor' in el.style) instance.fillColor = el.style.fillColor as string | null;
+      if ('labelVisible' in el.style) instance.labelVisible = el.style.labelVisible as boolean;
+      if ('labelMode' in el.style) instance.labelMode = el.style.labelMode as 'always' | 'mouse' | 'never';
+    }
     construction.addElement(instance);
     index.set(el.constIndex, instance);
   }

@@ -9,6 +9,9 @@ export class GeoPoint extends GeoElement {
 
   getClassName() { return 'GeoPoint'; }
 
+  // ---- P2-1: 默认样式（绘制层 fallback）----
+  public get defaultStrokeColor(): string { return '#1d4ed8'; }
+
   getX(): number { return this.coords.x / this.coords.z; }
   getY(): number { return this.coords.y / this.coords.z; }
   getZ(): number { return this.coords.z; }

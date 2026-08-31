@@ -22,6 +22,18 @@ export abstract class GeoElement extends ConstructionElement
   public parentAlgo: AlgoElement | null = null;
   protected animating: boolean = false;
 
+  // ---- P2-1: 对象样式属性（对标 GeoGebra）----
+  public strokeColor: string | null = null;     // null → 使用类型默认色
+  public strokeWidth: number | null = null;     // null → 使用类型默认线宽
+  public strokeDash: number[] | null = null;    // null → 实线；非空为 Canvas2D setLineDash 数组
+  public fillColor: string | null = null;       // null → 不填充（对可填充对象）
+  public labelVisible = true;                   // 是否显示标签
+  public labelMode: 'always' | 'mouse' | 'never' = 'always';
+
+  // 各子类型可覆写的默认样式（绘制层 fallback 用）
+  public get defaultStrokeColor(): string { return '#000000'; }
+  public get defaultLineWidth(): number { return 1; }
+
   constructor(kernel: IKernel, coords: GeoVec3D) {
     super(kernel);
     this.coords = coords;
@@ -34,6 +46,9 @@ export abstract class GeoElement extends ConstructionElement
   isGeoElement(): boolean { return true; }
   isAlgoElement(): boolean { return false; }
   getGeoElements(): GeoElement[] { return [this]; }
+
+  /** 派生对象的默认填充色 */
+  public get defaultFillColor(): string | null { return null; }
 
   isAnimatable(): boolean { return false; }
   isAnimating(): boolean { return this.animating; }

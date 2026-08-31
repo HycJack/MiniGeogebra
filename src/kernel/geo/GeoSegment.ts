@@ -18,6 +18,10 @@ export class GeoSegment extends GeoLine implements LimitedPath {
 
   getClassName() { return 'GeoSegment'; }
 
+  // ---- P2-1: 默认样式（绘制层 fallback）----
+  public get defaultStrokeColor(): string { return '#000000'; }
+  public get defaultLineWidth(): number { return 1; }
+
   /** 代数描述：线段 AB 及其长度 */
   getAlgebraDescription(): string {
     if (!this.isDefined()) return `${this.label}（未定义）`;

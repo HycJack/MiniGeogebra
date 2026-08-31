@@ -10,6 +10,11 @@ export class GeoPolygon extends GeoElement implements Region {
 
   getClassName() { return 'GeoPolygon'; }
 
+  // ---- P2-1: 默认样式（绘制层 fallback）----
+  public get defaultStrokeColor(): string { return '#3b82f6'; }
+  public get defaultLineWidth(): number { return 1; }
+  public get defaultFillColor(): string { return 'rgba(59, 130, 246, 0.2)'; }
+
   /** 代数描述：顶点序列 + 周长 + 面积 */
   getAlgebraDescription(): string {
     if (!this.isDefined() || this.vertices.length === 0) return `${this.label}（未定义）`;

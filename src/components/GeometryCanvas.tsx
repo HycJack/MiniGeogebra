@@ -51,6 +51,7 @@ import {
   Triangle,
   Square,
   CornerDownRight,
+  Download,
   Activity,
   Plus
 } from 'lucide-react';
@@ -204,6 +205,7 @@ export const GeometryCanvas: React.FC = () => {
   const [snapEnabled, setSnapEnabled] = useState(true);
   const [snapToGrid, setSnapToGrid] = useState(true);
   const [snapToPoint, setSnapToPoint] = useState(true);
+  const [panelTab, setPanelTab] = useState<'algebra' | 'properties'>('algebra');
 
   const undoStack = useRef<Command[]>([]);
   const redoStack = useRef<Command[]>([]);
@@ -232,9 +234,30 @@ export const GeometryCanvas: React.FC = () => {
     }
   };
 
-  /** P2 骨架：样式系统的撤销包装 */
-  const recordStyleChange = (_element: GeoElement, _changes: Record<string, unknown>) => {
-    console.warn('[MiniGeogebra] recordStyleChange is a P2 feature; no-op now.');
+  /** P2-1: 将样式字段快照为 plain object */
+  const snapshotStyle = (el: GeoElement): Record<string, unknown> => ({
+    strokeColor: el.strokeColor,
+    strokeWidth: el.strokeWidth,
+    strokeDash: el.strokeDash ? [...el.strokeDash] : [],
+    fillColor: el.fillColor,
+    labelVisible: el.labelVisible,
+    labelMode: el.labelMode,
+  });
+
+  /** P2-1: 把变化直接写回元素（undo/redo 专用，不走 addCommand） */
+  const applyStyleDirectly = (el: GeoElement, changes: Record<string, unknown>) => {
+    if ('strokeColor' in changes) el.strokeColor = changes.strokeColor as string | null;
+    if ('strokeWidth' in changes) el.strokeWidth = changes.strokeWidth as number | null;
+    if ('strokeDash' in changes) el.strokeDash = changes.strokeDash ? [...(changes.strokeDash as number[])] : null;
+    if ('fillColor' in changes) el.fillColor = changes.fillColor as string | null;
+    if ('labelVisible' in changes) el.labelVisible = changes.labelVisible as boolean;
+    if ('labelMode' in changes) el.labelMode = changes.labelMode as 'always' | 'mouse' | 'never';
+  };
+
+  /** P2-1: 记录样式修改命令（供 undo/redo）*/
+  const recordStyleChange = (element: GeoElement, changes: Record<string, unknown>) => {
+    applyStyleDirectly(element, changes);
+    addCommand({ type: 'style', element, before: snapshotStyle(element), after: { ...changes } });
   };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -300,7 +323,7 @@ export const GeometryCanvas: React.FC = () => {
   const _renderToSvg = (renderer: IRenderer, bounds: { minX: number; maxX: number; minY: number; maxY: number }) => {
     const viewBoxW = (bounds.maxX - bounds.minX) * coord.xScale;
     const viewBoxH = (bounds.maxY - bounds.minY) * coord.xScale;
-    drawGrid(renderer, viewBoxW, viewBoxH, coord, true, true);
+    drawGrid(renderer, viewBoxW, viewBoxH, coord, showGrid, showAxes);
     const elements = kernel.getConstruction().getElements();
     elements.forEach(el => { if (el instanceof GeoPolygon) drawPolygon(renderer, el, false, coord.xScale); });
     elements.forEach(el => { if (el instanceof GeoConic) drawConic(renderer, el, false, coord.xScale); });
@@ -836,13 +859,16 @@ export const GeometryCanvas: React.FC = () => {
       renderer.stroke();
     }
     
-    renderer.strokeStyle = selected ? '#3b82f6' : '#000';
-    renderer.lineWidth = (selected ? 3 : 1) / scale;
+    // P2-1: 读取用户自定义颜色/线宽，未设置则回退到类型默认值
+    const stroke = c.strokeColor ?? c.defaultStrokeColor;
+    const baseWidth = c.strokeWidth ?? c.defaultLineWidth;
+    renderer.strokeStyle = selected ? '#3b82f6' : stroke;
+    renderer.lineWidth = (selected ? baseWidth * 2 : baseWidth) / scale;
     renderer.beginPath();
     renderer.arc(center.x, center.y, r, 0, 2 * Math.PI);
     renderer.stroke();
     
-    if (selected) {
+    if (selected && c.labelVisible && c.labelMode === 'always') {
       const label = c.label || c.id;
       renderer.font = `bold ${14 / scale}px sans-serif`;
       renderer.fillStyle = '#1e40af';
@@ -959,17 +985,17 @@ export const GeometryCanvas: React.FC = () => {
     renderer.beginPath();
     renderer.arc(x, y, pointRadius, 0, 2 * Math.PI);
     
-    if (p.isIndependent()) {
-      renderer.fillStyle = selected ? '#1e40af' : '#1d4ed8';
-    } else {
-      renderer.fillStyle = selected ? '#374151' : '#6b7280';
-    }
+    // P2-1: 本体色优先用用户设置（未设置：独立点蓝、派生点灰）
+    renderer.fillStyle = p.strokeColor ?? (p.isIndependent() ? '#1d4ed8' : '#6b7280');
     renderer.fill();
     
-    renderer.strokeStyle = selected ? '#1e3a8a' : '#374151';
-    renderer.lineWidth = 1 / scale;
+    const ptStroke = selected ? '#1e3a8a' : '#374151';
+    const ptWidth = (p.strokeWidth ?? p.defaultLineWidth) / scale;
+    renderer.strokeStyle = ptStroke;
+    renderer.lineWidth = selected ? ptWidth * 2 : ptWidth;
     renderer.stroke();
     
+    if (!p.labelVisible || p.labelMode !== 'always') return;
     const label = p.label || p.id;
     renderer.font = `bold ${14 / scale}px sans-serif`;
     
@@ -998,8 +1024,11 @@ export const GeometryCanvas: React.FC = () => {
     const startY = coord.screenToWorldY(0);
     const endY = coord.screenToWorldY(h);
 
-    renderer.strokeStyle = selected ? '#3b82f6' : '#000';
-    renderer.lineWidth = (selected ? 3 : 1) / coord.xScale;
+    // P2-1: 直线样式可从元素读取（默认 #000）
+    const stroke = l.strokeColor ?? l.defaultStrokeColor;
+    const baseWidth = l.strokeWidth ?? l.defaultLineWidth;
+    renderer.strokeStyle = selected ? '#3b82f6' : stroke;
+    renderer.lineWidth = (selected ? baseWidth * 2 : baseWidth) / coord.xScale;
     renderer.beginPath();
 
     if (Math.abs(l.b) > 1e-6) {
@@ -1017,8 +1046,11 @@ export const GeometryCanvas: React.FC = () => {
 
   const drawSegment = (renderer: IRenderer, s: GeoSegment, selected: boolean, scale: number) => {
     if (!s.isDefined()) return;
-    renderer.strokeStyle = selected ? '#3b82f6' : '#000';
-    renderer.lineWidth = (selected ? 3 : 2) / scale;
+    // P2-1: 线段样式可从元素读取
+    const stroke = s.strokeColor ?? s.defaultStrokeColor;
+    const baseWidth = s.strokeWidth ?? s.defaultLineWidth;
+    renderer.strokeStyle = selected ? '#3b82f6' : stroke;
+    renderer.lineWidth = (selected ? baseWidth * 2 : baseWidth) / scale;
     renderer.beginPath();
     renderer.moveTo(s.startPoint.getX(), s.startPoint.getY());
     renderer.lineTo(s.endPoint.getX(), s.endPoint.getY());
@@ -1028,9 +1060,13 @@ export const GeometryCanvas: React.FC = () => {
   const drawPolygon = (renderer: IRenderer, poly: GeoPolygon, selected: boolean, scale: number) => {
     if (!poly.isDefined()) return;
     if (poly.vertices.length < 3) return;
-    renderer.fillStyle = selected ? 'rgba(59, 130, 246, 0.4)' : 'rgba(59, 130, 246, 0.2)'; // blue-500 with opacity
-    renderer.strokeStyle = '#3b82f6';
-    renderer.lineWidth = (selected ? 2 : 1) / scale;
+    // P2-1: 填充优先读 fillColor（未设置则用默认蓝半透明），描边读 strokeColor
+    const fill = poly.fillColor ?? poly.defaultFillColor ?? (selected ? 'rgba(59, 130, 246, 0.4)' : 'rgba(59, 130, 246, 0.2)');
+    const stroke = poly.strokeColor ?? poly.defaultStrokeColor;
+    const baseWidth = poly.strokeWidth ?? poly.defaultLineWidth;
+    renderer.fillStyle = fill;
+    renderer.strokeStyle = selected ? '#3b82f6' : stroke;
+    renderer.lineWidth = (selected ? baseWidth * 2 : baseWidth) / scale;
     renderer.beginPath();
     renderer.moveTo(poly.vertices[0].getX(), poly.vertices[0].getY());
     for (let i = 1; i < poly.vertices.length; i++) {
@@ -1046,7 +1082,9 @@ export const GeometryCanvas: React.FC = () => {
     const samples = locus.getSamples();
     const segments = locus.getSegments();
     if (samples.length < 2 || segments.length === 0) return;
-    renderer.strokeStyle = selected ? '#3b82f6' : '#8b5cf6';
+    // P2-1: 轨迹颜色可从元素读取（默认 #8b5cf6）
+    const stroke = locus.strokeColor ?? locus.defaultStrokeColor;
+    renderer.strokeStyle = selected ? '#3b82f6' : stroke;
     renderer.lineWidth = (selected ? 3 : 2) / scale;
     for (const seg of segments) {
       if (seg.end - seg.start < 1) continue;
@@ -1842,7 +1880,7 @@ export const GeometryCanvas: React.FC = () => {
       const el = kernel.getConstruction().getElementById(cmd.element.id);
       if (el) el.label = cmd.oldLabel;
     } else if (cmd.type === 'style') {
-      recordStyleChange(cmd.element, cmd.after);
+      applyStyleDirectly(cmd.element, cmd.after);
     }
     kernel.getConstruction().updateAllAlgorithms();
     setRenderRev(r => r + 1);
@@ -1866,7 +1904,7 @@ export const GeometryCanvas: React.FC = () => {
       const el = kernel.getConstruction().getElementById(cmd.element.id);
       if (el) el.label = cmd.newLabel;
     } else if (cmd.type === 'style') {
-      recordStyleChange(cmd.element, cmd.before);
+      applyStyleDirectly(cmd.element, cmd.before);
     }
     kernel.getConstruction().updateAllAlgorithms();
     setRenderRev(r => r + 1);
@@ -2217,16 +2255,18 @@ export const GeometryCanvas: React.FC = () => {
           <span className="text-xs">吸附</span>
         </button>
         <button
-          className="px-2 py-1.5 rounded-md text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
+          className="px-2 py-1.5 rounded-md text-sm font-medium flex items-center gap-1 transition-colors text-gray-600 hover:bg-gray-100"
           onClick={handleExportPNG}
-          title="导出为 PNG">
-          导出 PNG
+          title="导出当前画面为 PNG 图片">
+          <Download size={16} />
+          <span>导出 PNG</span>
         </button>
         <button
-          className="px-2 py-1.5 rounded-md text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
+          className="px-2 py-1.5 rounded-md text-sm font-medium flex items-center gap-1 transition-colors text-gray-600 hover:bg-gray-100"
           onClick={handleExportSVG}
-          title="导出为 SVG">
-          导出 SVG
+          title="导出当前构造为 SVG 矢量图">
+          <Download size={16} />
+          <span>导出 SVG</span>
         </button>
         <div className="flex-1"></div>
         <button 
@@ -2241,61 +2281,206 @@ export const GeometryCanvas: React.FC = () => {
       {/* Main Content Area */}
       <div className="flex flex-1 overflow-hidden relative">
         
-        {/* Left Sidebar - Algebra View */}
+        {/* Left Sidebar - Algebra View / Properties */}
         <div className="w-80 bg-white border-r border-gray-200 flex flex-col shadow-sm z-10">
-          <div className="p-3 bg-gray-50 border-b border-gray-200 flex justify-between items-center">
-            <h3 className="font-semibold text-gray-700 flex items-center gap-2">
-              <Menu size={18} />
-              {t('algebraView')}
-            </h3>
-            <span className="text-xs bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full font-medium">
-              {kernel.getConstruction().getElements().length} {t('objects')}
-            </span>
+          <div className="flex items-stretch border-b border-gray-200 bg-gray-50">
+            <button
+              className={`px-3 py-2 text-sm font-medium flex-1 flex items-center justify-center gap-2 ${
+                panelTab === 'algebra' ? 'bg-white border-b-2 border-blue-600 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
+              }`}
+              onClick={() => setPanelTab('algebra')}>
+              <Menu size={14} />
+              <span>代数视图</span>
+            </button>
+            <button
+              className={`px-3 py-2 text-sm font-medium flex-1 flex items-center justify-center gap-2 ${
+                panelTab === 'properties' ? 'bg-white border-b-2 border-blue-600 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
+              }`}
+              onClick={() => setPanelTab('properties')}>
+              <Sliders size={14} />
+              <span>属性</span>
+            </button>
           </div>
-          
-          <div className="flex-1 overflow-y-auto p-2 space-y-1">
-            {kernel.getConstruction().getElements().map(el => {
-                let typeName = el.getClassName();
-                if (typeName === 'GeoPoint') typeName = t('typePoint');
-                else if (typeName === 'GeoLine') typeName = t('typeLine');
-                else if (typeName === 'GeoSegment') typeName = t('typeSegment');
-                else if (typeName === 'GeoConic') typeName = t('typeCircle');
-                else if (typeName === 'GeoPolygon') typeName = t('typePolygon');
-                else if (typeName === 'GeoNumeric') typeName = t('typeNumeric');
-                else if (typeName === 'GeoLocus') typeName = t('typeLocus');
 
-                return (
-                    <div key={el.id} className="group flex flex-col p-2 rounded-lg hover:bg-gray-50 border border-transparent hover:border-gray-100 transition-colors">
-                        <div className="flex items-center gap-2">
-                          <div className="w-3 h-3 rounded-full bg-blue-500 shadow-sm"></div>
-                          <span className="font-semibold text-gray-800">{el.getNameDescription()}</span>
+          {panelTab === 'algebra' && (
+            <>
+              <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                {kernel.getConstruction().getElements().map(el => {
+                    let typeName = el.getClassName();
+                    if (typeName === 'GeoPoint') typeName = t('typePoint');
+                    else if (typeName === 'GeoLine') typeName = t('typeLine');
+                    else if (typeName === 'GeoSegment') typeName = t('typeSegment');
+                    else if (typeName === 'GeoConic') typeName = t('typeCircle');
+                    else if (typeName === 'GeoPolygon') typeName = t('typePolygon');
+                    else if (typeName === 'GeoNumeric') typeName = t('typeNumeric');
+                    else if (typeName === 'GeoLocus') typeName = t('typeLocus');
+
+                    return (
+                        <div key={el.id} className="group flex flex-col p-2 rounded-lg hover:bg-gray-50 border border-transparent hover:border-gray-100 transition-colors">
+                            <div className="flex items-center gap-2">
+                              <div className="w-3 h-3 rounded-full bg-blue-500 shadow-sm"></div>
+                              <span className="font-semibold text-gray-800">{el.getNameDescription()}</span>
+                            </div>
+                            <div className="text-sm text-gray-500 ml-5 font-mono mt-0.5">
+                                {'getAlgebraDescription' in el ? el.getAlgebraDescription() : typeName}
+                            </div>
                         </div>
-                        <div className="text-sm text-gray-500 ml-5 font-mono mt-0.5">
-                            {'getAlgebraDescription' in el ? el.getAlgebraDescription() : typeName}
+                    );
+                })}
+                {kernel.getConstruction().getElements().length === 0 && (
+                  <div className="text-center text-gray-400 text-sm mt-10 p-4">
+                    {t('emptyState')}
+                  </div>
+                )}
+              </div>
+
+              {/* Animations & Controls */}
+              {kernel.getConstruction().getElements().filter(el => el instanceof GeoNumeric && el.isAnimatable()).length > 0 && (
+                <div className="border-t border-gray-200 bg-gray-50 flex flex-col max-h-64">
+                  <div className="p-3 border-b border-gray-200">
+                    <h3 className="font-semibold text-gray-700 text-sm">{t('animationsAndControls')}</h3>
+                  </div>
+                  <div className="p-2 overflow-y-auto space-y-2">
+                      {kernel.getConstruction().getElements()
+                          .filter(el => el instanceof GeoNumeric && el.isAnimatable())
+                          .map(el => (
+                              <SliderControl key={el.id} numeric={el as GeoNumeric} kernel={kernel} onNumericChange={notifyNumericChange} />
+                      ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {panelTab === 'properties' && (
+            <div className="flex-1 overflow-y-auto p-3">
+              {selectedElements.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12 text-gray-400">
+                  <Menu size={32} className="mb-3 opacity-50" />
+                  <span className="text-sm">请先在画布上选择一个对象查看/编辑属性</span>
+                </div>
+              ) : selectedElements.length === 1 ? (
+                (() => {
+                  const el = selectedElements[0];
+                  const needsFill = el instanceof GeoPolygon || el instanceof GeoConic;
+                  return (
+                    <div className="space-y-5">
+                      <div className="flex items-center justify-between pb-2 border-b border-gray-200">
+                        <span className="text-base font-semibold text-gray-800">{el.getNameDescription()}</span>
+                        <span className="text-xs px-2 py-1 rounded bg-gray-100 text-gray-600 font-mono">{el.getClassName()}</span>
+                      </div>
+
+                      {/* 轮廓颜色 */}
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-medium text-gray-600 block">轮廓颜色</label>
+                        <div className="flex gap-2 items-center">
+                          <input type="color"
+                            value={el.strokeColor ?? '#000000'}
+                            onChange={(e) => recordStyleChange(el, { strokeColor: e.target.value })}
+                            className="w-9 h-9 rounded cursor-pointer border-0 p-0 overflow-hidden"
+                          />
+                          <input type="text"
+                            value={el.strokeColor ?? '#000000'}
+                            onChange={(e) => recordStyleChange(el, { strokeColor: e.target.value })}
+                            className="flex-1 px-2 py-1.5 text-xs border border-gray-300 rounded font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
                         </div>
+                      </div>
+
+                      {/* 线宽 */}
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-medium text-gray-600 block">线宽</label>
+                        <input type="number" min="0" step="0.5" max="50"
+                          value={el.strokeWidth ?? el.defaultLineWidth}
+                          onChange={(e) => recordStyleChange(el, { strokeWidth: Number(e.target.value) })}
+                          className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+
+                      {/* 线型 */}
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-medium text-gray-600 block">线型</label>
+                        <button
+                          onClick={() => recordStyleChange(el, { strokeDash: el.strokeDash ? null : [5 / coord.xScale, 5 / coord.xScale] })}
+                          className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded bg-gray-50 hover:bg-gray-100 flex justify-between items-center">
+                          <span>{el.strokeDash && el.strokeDash.length ? '虚线' : '实线'}</span>
+                          {el.strokeDash && el.strokeDash.length ? (
+                            <span className="text-gray-500 font-mono">{String(el.strokeDash[0]).slice(0,3)} , {String(el.strokeDash[1]).slice(0,3)}</span>
+                          ) : null}
+                        </button>
+                      </div>
+
+                      {/* 填充颜色（多边形/圆） */}
+                      {needsFill && (
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-medium text-gray-600 block">填充颜色</label>
+                          <div className="flex gap-2 items-center">
+                            <input type="color"
+                              value={el.fillColor ?? 'rgba(59, 130, 246, 0.2)'}
+                              onChange={(e) => recordStyleChange(el, { fillColor: e.target.value })}
+                              className="w-9 h-9 rounded cursor-pointer border-0 p-0 overflow-hidden"
+                            />
+                            <input type="text"
+                              value={el.fillColor ?? 'rgba(59, 130, 246, 0.2)'}
+                              onChange={(e) => recordStyleChange(el, { fillColor: e.target.value })}
+                              className="flex-1 px-2 py-1.5 text-xs border border-gray-300 rounded font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 标签显隐 */}
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-medium text-gray-700">显示标签</label>
+                        <input type="checkbox"
+                          checked={el.labelVisible}
+                          onChange={(e) => recordStyleChange(el, { labelVisible: e.target.checked })}
+                        />
+                      </div>
+
+                      {/* 标签显示时机 */}
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-medium text-gray-600 block">标签显示时机</label>
+                        <select
+                          value={el.labelMode}
+                          onChange={(e) => recordStyleChange(el, { labelMode: e.target.value as any })}
+                          className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+                          <option value="always">总是显示</option>
+                          <option value="mouse">鼠标悬停或选中时</option>
+                          <option value="never">从不显示</option>
+                        </select>
+                      </div>
                     </div>
-                );
-            })}
-            {kernel.getConstruction().getElements().length === 0 && (
-              <div className="text-center text-gray-400 text-sm mt-10 p-4">
-                {t('emptyState')}
-              </div>
-            )}
-          </div>
-
-          {/* Animations & Controls */}
-          {kernel.getConstruction().getElements().filter(el => el instanceof GeoNumeric && el.isAnimatable()).length > 0 && (
-            <div className="border-t border-gray-200 bg-gray-50 flex flex-col max-h-64">
-              <div className="p-3 border-b border-gray-200">
-                <h3 className="font-semibold text-gray-700 text-sm">{t('animationsAndControls')}</h3>
-              </div>
-              <div className="p-2 overflow-y-auto space-y-2">
-                  {kernel.getConstruction().getElements()
-                      .filter(el => el instanceof GeoNumeric && el.isAnimatable())
-                      .map(el => (
-                          <SliderControl key={el.id} numeric={el as GeoNumeric} kernel={kernel} onNumericChange={notifyNumericChange} />
-                  ))}
-              </div>
+                  );
+                })()
+              ) : (
+                <div className="space-y-4">
+                  <div className="text-sm font-medium text-gray-700">
+                    <span className="text-blue-600">{selectedElements.length}</span> 个对象被选中
+                  </div>
+                  <div className="space-y-2 text-sm">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-600">统一轮廓颜色:</span>
+                      <input type="color" value="#000000"
+                        onChange={(e) => {
+                          selectedElements.forEach((el) => recordStyleChange(el, { strokeColor: e.target.value }));
+                        }}
+                        className="w-7 h-7 rounded cursor-pointer border-0 p-0 overflow-hidden"
+                      />
+                    </div>
+                    <button
+                      onClick={() => {
+                        selectedElements.forEach((el) => recordStyleChange(el, { strokeDash: null }));
+                      }}
+                      className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded bg-gray-50 hover:bg-gray-100">
+                      全部设为实线
+                    </button>
+                    <div className="pt-2 text-xs text-gray-500">
+                      多选时只能编辑共享样式；单个对象时还可编辑填充、标签等完整属性。
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

@@ -18,6 +18,9 @@ export class GeoLocus extends GeoElement {
 
   getClassName() { return 'GeoLocus'; }
 
+  // ---- P2-1: 默认样式（绘制层 fallback）----
+  public get defaultStrokeColor(): string { return '#8b5cf6'; }
+
   getSamples(): Array<{ x: number; y: number }> { return this.samples; }
   getSegments(): Array<{ start: number; end: number }> { return this.segments; }
 
