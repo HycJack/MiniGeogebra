@@ -40,6 +40,7 @@ import { IRenderer } from '../kernel/view/IRenderer';
 import { createRenderer } from '../kernel/view/WebGLRendererFallback';
 import { serialize as serializeConstruction, deserialize as deserializeConstruction, downloadJSON } from '../kernel/persistence/ConstructionSerializer';
 import { SliderControl } from './SliderControl';
+import { toolHandlers } from './tools/handlers';
 import { useLanguage } from '../i18n/LanguageContext';
 import { 
   MousePointer2, CircleDot, Minus, TrendingUp, Circle, 
@@ -53,7 +54,8 @@ import {
   CornerDownRight,
   Download,
   Activity,
-  Plus
+  Plus,
+  RotateCw
 } from 'lucide-react';
 
 interface StateSnapshot {
@@ -99,7 +101,7 @@ export const GeometryCanvas: React.FC = () => {
   const { t, language, setLanguage } = useLanguage();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [kernel] = useState(() => new Kernel());
-  const [mode, setMode] = useState<'move' | 'point' | 'line' | 'segment' | 'midpoint' | 'circle' | 'circle_center_point' | 'circle3' | 'intersect' | 'parallel' | 'orthogonal' | 'perpendicular_bisector' | 'angle_bisector' | 'polygon' | 'text' | 'slider' | 'button' | 'checkbox' | 'distance' | 'angle' | 'area' | 'tangent' | 'locus'>('move');
+  const [mode, setMode] = useState<'move' | 'point' | 'line' | 'segment' | 'midpoint' | 'circle' | 'circle_center_point' | 'circle3' | 'intersect' | 'parallel' | 'orthogonal' | 'perpendicular_bisector' | 'angle_bisector' | 'polygon' | 'text' | 'slider' | 'button' | 'checkbox' | 'distance' | 'angle' | 'area' | 'tangent' | 'locus' | 'ray' | 'arc' | 'regular_polygon' | 'rotate' | 'dilate' | 'mirror'>('move');
   const [polygonPoints, setPolygonPoints] = useState<GeoPoint[]>([]);
   const [radius, setRadius] = useState<number>(50);
   const [selectedElements, setSelectedElements] = useState<GeoElement[]>([]);
@@ -196,6 +198,7 @@ export const GeometryCanvas: React.FC = () => {
 
   // --- P2: 多选 / 框选 ---
   const boxModifierDown = useRef(false);
+  const toolState = useRef<any>({});
 
   const [isBoxSelecting, setIsBoxSelecting] = useState(false);
   const [boxStartScreen, setBoxStartScreen] = useState<{x: number; y: number} | null>(null);
@@ -1142,547 +1145,25 @@ export const GeometryCanvas: React.FC = () => {
       el instanceof GeoPoint && Math.hypot(el.getX() - x, el.getY() - y) < 10 / coord.xScale
     ) as GeoPoint | undefined;
 
-    if (mode === 'move') {
-      // 命中测试：优先命中点，再命中其他几何对象
-      let clickedObj: GeoElement | undefined;
-      if (!clickedPoint) {
-        clickedObj = elements.slice().reverse().find(el => {
-            if (el instanceof GeoSegment) {
-                return (el as any).isOnPath({ getX: () => x, getY: () => y }, 5 / coord.xScale);
-            } else if (el instanceof GeoLine) {
-                const len = Math.hypot(el.a, el.b);
-                if (len === 0) return false;
-                const d = Math.abs(el.a * x + el.b * y + el.c) / len;
-                return d < 5 / coord.xScale;
-            } else if (el instanceof GeoConic) {
-                const r = el.getRadius();
-                const center = el.getCenter();
-                const d = Math.abs(Math.hypot(x - center.x, y - center.y) - r);
-                return d < 5 / coord.xScale;
-            } else if (el instanceof GeoPolygon) {
-                return (el as any).isInRegionXY(x, y);
-            }
-            return false;
-        }) as GeoElement | undefined;
-      }
+    // ---- 委托给统一的工具处理器（tools/handlers.ts），每个 mode 的几何创建逻辑集中管理 ----
+    const ts = toolState.current;
+    boxModifierDown.current = e.ctrlKey || e.metaKey;
+    ts.boxModifierDown = e.ctrlKey || e.metaKey;
+    ts.shiftKey = e.shiftKey;
+    toolHandlers[mode]?.({
+      kernel, construction: kernel.getConstruction(), coord,
+      elements: kernel.getConstruction().getElements(),
+      selectedElements, mode, mousePos: { x, y }, hoveredPoint: null, radius, polygonPoints, uiElements,
+      setMode, setSelectedElements, setRenderRev, setPolygonPoints, addCommand,
+      captureState,
+      recordNumericChange: notifyNumericChange, recordRename: handleLabelSubmit, recordStyleChange,
+      setBoxSelecting: setIsBoxSelecting, setBoxStartScreen, setBoxEndScreen,
+      setDraggedElement, setUIElements, setEditingUIElement, toolState: ts,
+    }, { x, y }, { x: screenX, y: screenY });
+    ts.boxModifierDown = false;
+    ts.shiftKey = false;
+    boxModifierDown.current = false;
 
-      if (clickedPoint) {
-        if (e.ctrlKey || e.metaKey) {
-          setSelectedElements(prev => prev.includes(clickedPoint) ? prev.filter(e => e !== clickedPoint) : [...prev, clickedPoint]);
-          return;
-        }
-        setDraggedElement(clickedPoint);
-        setSelectedElements([clickedPoint]);
-      } else if (clickedObj) {
-        if (e.ctrlKey || e.metaKey) {
-          setSelectedElements(prev => prev.includes(clickedObj) ? prev.filter(e => e !== clickedObj) : [...prev, clickedObj]);
-          return;
-        }
-        setDraggedElement(clickedObj);
-        setSelectedElements([clickedObj]);
-      } else if (e.button === 0 && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
-        // 空白处左键按住拖动 -> 启动框选
-        boxModifierDown.current = false;
-        setBoxStartScreen({ x: screenX, y: screenY });
-        setIsBoxSelecting(true);
-        return;
-      } else {
-        setSelectedElements([]);
-      }
-    } else if (mode === 'point') {
-      const clickedObj = elements.slice().reverse().find(el => {
-          if (el instanceof GeoSegment) {
-              return (el as any).isOnPath({ getX: () => x, getY: () => y }, 5 / coord.xScale);
-          } else if (el instanceof GeoLine) {
-              const len = Math.hypot(el.a, el.b);
-              if (len === 0) return false;
-              const d = Math.abs(el.a * x + el.b * y + el.c) / len;
-              return d < 5 / coord.xScale;
-          } else if (el instanceof GeoConic) {
-              const r = el.getRadius();
-              const center = el.getCenter();
-              const d = Math.abs(Math.hypot(x - center.x, y - center.y) - r);
-              return d < 5 / coord.xScale;
-          }
-          return false;
-      });
-
-      if (clickedObj) {
-          const param = new GeoNumeric(kernel, 0);
-          param.label = `t_${elements.filter(e => e instanceof GeoNumeric).length + 1}`;
-          param.setAnimating(true); // Allow it to be animated
-          
-          let algo;
-          if (clickedObj instanceof GeoSegment) {
-              param.intervalMin = 0;
-              param.intervalMax = 1;
-              algo = new AlgoPointOnSegment(kernel, clickedObj, param);
-          } else if (clickedObj instanceof GeoLine) {
-              param.intervalMin = -10; // Arbitrary range for line
-              param.intervalMax = 10;
-              algo = new AlgoPointOnLine(kernel, clickedObj, param);
-          } else if (clickedObj instanceof GeoConic) {
-              param.intervalMin = 0;
-              param.intervalMax = 2 * Math.PI;
-              algo = new AlgoPointOnConic(kernel, clickedObj, param);
-          }
-          
-          kernel.getConstruction().addElement(param);
-          if (algo) {
-              algo.updateParameter(x, y);
-              algo.compute();
-              const p = algo.getOutput();
-              p.label = kernel.getConstruction().getNextPointLabel();
-              kernel.getConstruction().addElement(algo);
-              kernel.getConstruction().addElement(p);
-              kernel.notifyUpdate(p);
-          }
-      } else {
-          const p = new GeoPoint(kernel, new GeoVec3D(x, y, 1));
-          p.label = kernel.getConstruction().getNextPointLabel();
-          kernel.getConstruction().addElement(p);
-          kernel.notifyUpdate(p); // Trigger refresh
-      }
-    } else if (mode === 'segment') {
-      if (clickedPoint) {
-        if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
-          const p1 = selectedElements[0] as GeoPoint;
-          const p2 = clickedPoint;
-          if (p1 !== p2) {
-             const segAlgo = new AlgoSegmentTwoPoints(kernel, p1, p2);
-             kernel.getConstruction().addElement(segAlgo);
-             kernel.getConstruction().addElement(segAlgo.getOutput());
-             setSelectedElements([]);
-             kernel.notifyUpdate(segAlgo);
-          }
-        } else {
-          setSelectedElements([clickedPoint]);
-        }
-      } else {
-          // Create new point if clicked on empty space
-          const p = new GeoPoint(kernel, new GeoVec3D(x, y, 1));
-          p.label = kernel.getConstruction().getNextPointLabel();
-          kernel.getConstruction().addElement(p);
-          kernel.notifyUpdate(p);
-          
-          if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
-              const p1 = selectedElements[0] as GeoPoint;
-              const segAlgo = new AlgoSegmentTwoPoints(kernel, p1, p);
-              kernel.getConstruction().addElement(segAlgo);
-              kernel.getConstruction().addElement(segAlgo.getOutput());
-              setSelectedElements([]);
-              kernel.notifyUpdate(segAlgo);
-          } else {
-              setSelectedElements([p]);
-          }
-      }
-    } else if (mode === 'midpoint') {
-        if (clickedPoint) {
-            if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
-                const p1 = selectedElements[0] as GeoPoint;
-                const p2 = clickedPoint;
-                const mid = new AlgoMidpoint(kernel, p1, p2);
-                kernel.getConstruction().addElement(mid);
-                kernel.getConstruction().addElement(mid.getOutput());
-                mid.update();
-                setSelectedElements([]);
-                kernel.notifyUpdate(mid);
-            } else {
-                setSelectedElements([clickedPoint]);
-            }
-        }
-    } else if (mode === 'line') {
-        if (clickedPoint) {
-            if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
-                const p1 = selectedElements[0] as GeoPoint;
-                const p2 = clickedPoint;
-                if (p1 !== p2) {
-                    const line = new AlgoLineTwoPoints(kernel, p1, p2);
-                    kernel.getConstruction().addElement(line);
-                    kernel.getConstruction().addElement(line.getOutput());
-                    line.update();
-                    setSelectedElements([]);
-                    kernel.notifyUpdate(line);
-                }
-            } else {
-                setSelectedElements([clickedPoint]);
-            }
-        } else {
-             // Create new point
-             const p = new GeoPoint(kernel, new GeoVec3D(x, y, 1));
-             p.label = kernel.getConstruction().getNextPointLabel();
-             kernel.getConstruction().addElement(p);
-             kernel.notifyUpdate(p);
-             
-             if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
-                 const p1 = selectedElements[0] as GeoPoint;
-                 const line = new AlgoLineTwoPoints(kernel, p1, p);
-                 kernel.getConstruction().addElement(line);
-                 kernel.getConstruction().addElement(line.getOutput());
-                 line.update();
-                 setSelectedElements([]);
-                 kernel.notifyUpdate(line);
-             } else {
-                 setSelectedElements([p]);
-             }
-        }
-    } else if (mode === 'circle') {
-        // Center + Radius
-        if (clickedPoint) {
-            const circle = new AlgoCirclePointRadius(kernel, clickedPoint, radius);
-            kernel.getConstruction().addElement(circle);
-            kernel.getConstruction().addElement(circle.getOutput());
-            circle.update();
-            kernel.notifyUpdate(circle);
-        } else {
-            const p = new GeoPoint(kernel, new GeoVec3D(x, y, 1));
-            p.label = kernel.getConstruction().getNextPointLabel();
-            kernel.getConstruction().addElement(p);
-            kernel.notifyUpdate(p);
-            
-            const circle = new AlgoCirclePointRadius(kernel, p, radius);
-            kernel.getConstruction().addElement(circle);
-            kernel.getConstruction().addElement(circle.getOutput());
-            circle.update();
-            kernel.notifyUpdate(circle);
-        }
-    } else if (mode === 'circle_center_point') {
-        // Center + Point on Circle
-        if (clickedPoint) {
-            if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
-                const center = selectedElements[0] as GeoPoint;
-                const pointOnCircle = clickedPoint;
-                if (center !== pointOnCircle) {
-                    const circle = new AlgoCircleCenterPoint(kernel, center, pointOnCircle);
-                    kernel.getConstruction().addElement(circle);
-                    kernel.getConstruction().addElement(circle.getOutput());
-                    circle.update();
-                    setSelectedElements([]);
-                    kernel.notifyUpdate(circle);
-                }
-            } else {
-                setSelectedElements([clickedPoint]);
-            }
-        } else {
-            // Create new point
-            const p = new GeoPoint(kernel, new GeoVec3D(x, y, 1));
-            p.label = kernel.getConstruction().getNextPointLabel();
-            kernel.getConstruction().addElement(p);
-            kernel.notifyUpdate(p);
-            
-            if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
-                const center = selectedElements[0] as GeoPoint;
-                const circle = new AlgoCircleCenterPoint(kernel, center, p);
-                kernel.getConstruction().addElement(circle);
-                kernel.getConstruction().addElement(circle.getOutput());
-                circle.update();
-                setSelectedElements([]);
-                kernel.notifyUpdate(circle);
-            } else {
-                setSelectedElements([p]);
-            }
-        }
-    } else if (mode === 'circle3') {
-        if (clickedPoint) {
-            const currentSelected = [...selectedElements, clickedPoint];
-            if (currentSelected.length === 3) {
-                const [p1, p2, p3] = currentSelected as GeoPoint[];
-                const circle = new AlgoCircleThreePoints(kernel, p1, p2, p3);
-                kernel.getConstruction().addElement(circle);
-                kernel.getConstruction().addElement(circle.getOutput());
-                circle.update();
-                
-                // Create center point using algorithm
-                const centerAlgo = new AlgoCircleCenter(kernel, circle.getOutput());
-                kernel.getConstruction().addElement(centerAlgo);
-                kernel.getConstruction().addElement(centerAlgo.getOutput());
-                centerAlgo.update();
-                
-                setSelectedElements([]);
-                kernel.notifyUpdate(circle);
-            } else {
-                setSelectedElements(currentSelected);
-            }
-        } else {
-             const p = new GeoPoint(kernel, new GeoVec3D(x, y, 1));
-             p.label = kernel.getConstruction().getNextPointLabel();
-             kernel.getConstruction().addElement(p);
-             kernel.notifyUpdate(p);
-             
-             const currentSelected = [...selectedElements, p];
-             if (currentSelected.length === 3) {
-                const [p1, p2, p3] = currentSelected as GeoPoint[];
-                const circle = new AlgoCircleThreePoints(kernel, p1, p2, p3);
-                kernel.getConstruction().addElement(circle);
-                kernel.getConstruction().addElement(circle.getOutput());
-                circle.update();
-                
-                // Create center point using algorithm
-                const centerAlgo = new AlgoCircleCenter(kernel, circle.getOutput());
-                kernel.getConstruction().addElement(centerAlgo);
-                kernel.getConstruction().addElement(centerAlgo.getOutput());
-                centerAlgo.update();
-                
-                setSelectedElements([]);
-                kernel.notifyUpdate(circle);
-            } else {
-                setSelectedElements(currentSelected);
-            }
-        }
-    } else if (mode === 'intersect') {
-        // Find clicked object (Line or Conic)
-        // We need to hit test lines and conics
-        const clickedObj = elements.slice().reverse().find(el => {
-            if (el instanceof GeoSegment) {
-                return (el as any).isOnPath({ getX: () => x, getY: () => y }, 5);
-            } else if (el instanceof GeoLine) {
-                // Distance to line
-                const d = Math.abs(el.a * x + el.b * y + el.c) / Math.hypot(el.a, el.b);
-                return d < 5;
-            } else if (el instanceof GeoConic) {
-                // Distance to circle edge
-                const r = el.getRadius();
-                const center = el.getCenter();
-                const d = Math.abs(Math.hypot(x - center.x, y - center.y) - r);
-                return d < 5;
-            }
-            return false;
-        }) as GeoElement | undefined;
-
-        if (clickedObj) {
-            if (selectedElements.length === 1) {
-                const obj1 = selectedElements[0];
-                const obj2 = clickedObj;
-                if (obj1 !== obj2) {
-                    const intersect = new AlgoIntersect(kernel, obj1, obj2);
-                    kernel.getConstruction().addElement(intersect);
-                    intersect.getOutputPoints().forEach(p => kernel.getConstruction().addElement(p));
-                    intersect.update();
-                    setSelectedElements([]);
-                    kernel.notifyUpdate(intersect);
-                }
-            } else {
-                setSelectedElements([clickedObj]);
-            }
-        }
-    } else if (mode === 'parallel' || mode === 'orthogonal') {
-        // Select Point and Line
-        const clickedObj = elements.slice().reverse().find(el => {
-            if (el instanceof GeoPoint && Math.hypot(el.getX() - x, el.getY() - y) < 10) return true;
-            if (el instanceof GeoSegment) {
-                 return (el as any).isOnPath({ getX: () => x, getY: () => y }, 5);
-            } else if (el instanceof GeoLine) {
-                 const d = Math.abs(el.a * x + el.b * y + el.c) / Math.hypot(el.a, el.b);
-                 return d < 5;
-            }
-            return false;
-        }) as GeoElement | undefined;
-
-        if (clickedObj) {
-            const currentSelected = [...selectedElements, clickedObj];
-            // Check if we have one point and one line
-            const point = currentSelected.find(e => e instanceof GeoPoint) as GeoPoint | undefined;
-            const line = currentSelected.find(e => e instanceof GeoLine) as GeoLine | undefined;
-
-            if (point && line) {
-                if (mode === 'parallel') {
-                    const algo = new AlgoParallelLine(kernel, point, line);
-                    kernel.getConstruction().addElement(algo);
-                    kernel.getConstruction().addElement(algo.getOutput());
-                    algo.update();
-                    kernel.notifyUpdate(algo);
-                } else {
-                    const algo = new AlgoOrthogonalLine(kernel, point, line);
-                    kernel.getConstruction().addElement(algo);
-                    kernel.getConstruction().addElement(algo.getOutput());
-                    algo.update();
-                    kernel.notifyUpdate(algo);
-                }
-                setSelectedElements([]);
-            } else {
-                setSelectedElements(currentSelected);
-            }
-        }
-    } else if (mode === 'perpendicular_bisector') {
-        // Select two points or one segment
-        // First check for points
-        if (clickedPoint) {
-            const currentSelected = [...selectedElements, clickedPoint];
-            if (currentSelected.length === 2 && currentSelected[0] instanceof GeoPoint && currentSelected[1] instanceof GeoPoint) {
-                const [p1, p2] = currentSelected as GeoPoint[];
-                const algo = new AlgoPerpendicularBisector(kernel, p1, p2);
-                kernel.getConstruction().addElement(algo);
-                kernel.getConstruction().addElement(algo.getOutput());
-                algo.update();
-                kernel.notifyUpdate(algo);
-                setSelectedElements([]);
-            } else {
-                setSelectedElements(currentSelected);
-            }
-        } else {
-             // Check for segment
-             const clickedSegment = elements.slice().reverse().find(el => 
-                el instanceof GeoSegment && (el as any).isOnPath({ getX: () => x, getY: () => y }, 5)
-             ) as GeoSegment | undefined;
-             
-             if (clickedSegment) {
-                 const algo = new AlgoPerpendicularBisector(kernel, clickedSegment.startPoint, clickedSegment.endPoint);
-                 kernel.getConstruction().addElement(algo);
-                 kernel.getConstruction().addElement(algo.getOutput());
-                 algo.update();
-                 kernel.notifyUpdate(algo);
-                 setSelectedElements([]);
-             }
-        }
-    } else if (mode === 'angle_bisector') {
-        // Select 3 points
-        if (clickedPoint) {
-            const currentSelected = [...selectedElements, clickedPoint];
-            if (currentSelected.length === 3) {
-                const [A, B, C] = currentSelected as GeoPoint[];
-                const algo = new AlgoAngleBisector(kernel, A, B, C);
-                kernel.getConstruction().addElement(algo);
-                kernel.getConstruction().addElement(algo.getOutput());
-                algo.update();
-                kernel.notifyUpdate(algo);
-                setSelectedElements([]);
-            } else {
-                setSelectedElements(currentSelected);
-            }
-        }
-      } else if (mode === 'distance') {
-      if (clickedPoint) {
-        if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
-          const p1 = selectedElements[0] as GeoPoint;
-          if (p1 !== clickedPoint) {
-            const algo = new AlgoDistance(kernel, p1, clickedPoint);
-            const c = kernel.getConstruction();
-            algo.getOutput().label = `d${c.getElements().filter(e => e instanceof GeoNumeric).length + 1}`;
-            c.addElement(algo);
-            c.addElement(algo.getOutput());
-            algo.compute();
-            setSelectedElements([]);
-            setRenderRev(r => r + 1);
-          }
-        } else {
-          setSelectedElements([clickedPoint]);
-        }
-      }
-    } else if (mode === 'angle') {
-      if (clickedPoint) {
-        if (selectedElements.length === 2 && selectedElements.every(e => e instanceof GeoPoint)) {
-          const [p1, p2] = selectedElements as GeoPoint[];
-          const algo = new AlgoAngle(kernel, p1, clickedPoint, p2);
-          algo.getOutput().label = '∠';
-          const c = kernel.getConstruction();
-          c.addElement(algo);
-          c.addElement(algo.getOutput());
-          algo.compute();
-          setSelectedElements([]);
-          setRenderRev(r => r + 1);
-        } else {
-          setSelectedElements([...selectedElements, clickedPoint].slice(-3));
-        }
-      }
-    } else if (mode === 'area') {
-      // 选中一个现有多边形即可测量面积
-      const target = elements.slice().reverse().find(el => el instanceof GeoPolygon) as GeoPolygon | undefined;
-      if (target) {
-        const algo = new AlgoArea(kernel, target);
-        algo.getOutput().label = 'S';
-        const c = kernel.getConstruction();
-        c.addElement(algo);
-        c.addElement(algo.getOutput());
-        algo.compute();
-        setSelectedElements([]);
-        setRenderRev(r => r + 1);
-      }
-    } else if (mode === 'tangent') {
-      if (clickedPoint) {
-        const currentSelected = [...selectedElements, clickedPoint];
-        if (currentSelected.length === 2 && currentSelected[0] instanceof GeoPoint) {
-          const clickedCircle = elements.slice().reverse().find(el => el instanceof GeoConic) as GeoConic | undefined;
-          if (clickedCircle) {
-            const algo = new AlgoTangent(kernel, clickedCircle, currentSelected[0] as GeoPoint);
-            kernel.getConstruction().addElement(algo);
-            algo.getOutputLines().forEach(l => kernel.getConstruction().addElement(l));
-            algo.getOutputPoints().forEach(p => kernel.getConstruction().addElement(p));
-            algo.compute();
-            setSelectedElements([]);
-            setRenderRev(r => r + 1);
-            return;
-          }
-        }
-        setSelectedElements(currentSelected.slice(-2));
-      }
-    } else if (mode === 'locus') {
-      if (clickedPoint) {
-        const currentSelected = [...selectedElements, clickedPoint];
-        if (currentSelected.length === 2) {
-          const [tracer, driver] = currentSelected as GeoPoint[];
-          const algo = new AlgoLocus(kernel, tracer, driver);
-          kernel.getConstruction().addElement(algo);
-          kernel.getConstruction().addElement(algo.getOutputLocus());
-          algo.compute();
-          setSelectedElements([]);
-          setRenderRev(r => r + 1);
-        } else {
-          setSelectedElements(currentSelected);
-        }
-      }
-    } else if (mode === 'polygon') {
-        if (clickedPoint) {
-            // If clicked start point, close polygon
-            if (polygonPoints.length > 2 && clickedPoint === polygonPoints[0]) {
-                const poly = new GeoPolygon(kernel, [...polygonPoints]);
-                poly.label = kernel.getConstruction().getNextPolygonLabel();
-                kernel.getConstruction().addElement(poly);
-                
-                // Also add segments
-                for (let i = 0; i < polygonPoints.length; i++) {
-                    const p1 = polygonPoints[i];
-                    const p2 = polygonPoints[(i + 1) % polygonPoints.length];
-                    // Check if segment exists? For now just create new ones or reuse logic
-                    const segAlgo = new AlgoSegmentTwoPoints(kernel, p1, p2);
-                    kernel.getConstruction().addElement(segAlgo);
-                    kernel.getConstruction().addElement(segAlgo.getOutput());
-                }
-                
-                kernel.notifyUpdate(poly);
-                setPolygonPoints([]);
-                setSelectedElements([]);
-            } else {
-                // Add point to polygon
-                setPolygonPoints([...polygonPoints, clickedPoint]);
-                setSelectedElements([...selectedElements, clickedPoint]);
-            }
-        } else {
-            // Create new point
-             const p = new GeoPoint(kernel, new GeoVec3D(x, y, 1));
-             p.label = kernel.getConstruction().getNextPointLabel();
-             kernel.getConstruction().addElement(p);
-             kernel.notifyUpdate(p);
-             
-             setPolygonPoints([...polygonPoints, p]);
-             setSelectedElements([...selectedElements, p]);
-        }
-    } else if (mode === 'text' || mode === 'slider' || mode === 'button' || mode === 'checkbox') {
-      const id = `ui_${Date.now()}`;
-      const newUIElement: UIElement = {
-        id,
-        type: mode,
-        x,
-        y,
-        label: mode === 'text' ? 'Text' : mode === 'slider' ? 'Slider' : mode === 'button' ? 'Button' : 'Checkbox',
-        value: mode === 'slider' ? 50 : undefined,
-        min: mode === 'slider' ? 0 : undefined,
-        max: mode === 'slider' ? 100 : undefined,
-        step: mode === 'slider' ? 1 : undefined,
-        checked: mode === 'checkbox' ? false : undefined
-      };
-      setUIElements([...uiElements, newUIElement]);
-      setEditingUIElement(id);
-    }
 
     const elementsAfter = kernel.getConstruction().getElements();
     if (elementsAfter.length > elementsBefore) {
@@ -2228,6 +1709,56 @@ export const GeometryCanvas: React.FC = () => {
           onClick={() => setMode(mode === 'area' ? 'move' : 'area')}
           title="多边形面积">
           <Square size={18} /> 面积
+        </button>
+
+        {/* ---- Phase 2：新增几何与变换工具 ---- */}
+        <button
+          className={`px-2 py-1.5 rounded-md text-sm font-medium flex items-center gap-1 transition-colors ${
+            mode === 'ray' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
+          }`}
+          onClick={() => setMode(mode === 'ray' ? 'move' : 'ray')}
+          title="射线">
+          <CornerDownRight size={18} /> 射线
+        </button>
+        <button
+          className={`px-2 py-1.5 rounded-md text-sm font-medium flex items-center gap-1 transition-colors ${
+            mode === 'arc' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
+          }`}
+          onClick={() => setMode(mode === 'arc' ? 'move' : 'arc')}
+          title="圆弧">
+          <CircleDashed size={18} /> 圆弧
+        </button>
+        <button
+          className={`px-2 py-1.5 rounded-md text-sm font-medium flex items-center gap-1 transition-colors ${
+            mode === 'regular_polygon' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
+          }`}
+          onClick={() => setMode(mode === 'regular_polygon' ? 'move' : 'regular_polygon')}
+          title="正多边形">
+          <Hexagon size={18} /> 正多边形
+        </button>
+        <button
+          className={`px-2 py-1.5 rounded-md text-sm font-medium flex items-center gap-1 transition-colors ${
+            mode === 'rotate' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
+          }`}
+          onClick={() => setMode(mode === 'rotate' ? 'move' : 'rotate')}
+          title="旋转">
+          <RotateCw size={18} /> 旋转
+        </button>
+        <button
+          className={`px-2 py-1.5 rounded-md text-sm font-medium flex items-center gap-1 transition-colors ${
+            mode === 'dilate' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
+          }`}
+          onClick={() => setMode(mode === 'dilate' ? 'move' : 'dilate')}
+          title="位似">
+          <ZoomIn size={18} /> 位似
+        </button>
+        <button
+          className={`px-2 py-1.5 rounded-md text-sm font-medium flex items-center gap-1 transition-colors ${
+            mode === 'mirror' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
+          }`}
+          onClick={() => setMode(mode === 'mirror' ? 'move' : 'mirror')}
+          title="镜像">
+          <SplitSquareVertical size={18} /> 镜像
         </button>
 
         <div className="w-px h-6 bg-gray-300 mx-1"></div>

@@ -1,0 +1,3564 @@
+diff --git a/src/components/GeometryCanvas.tsx b/src/components/GeometryCanvas.tsx
+--- a/src/components/GeometryCanvas.tsx
++++ b/src/components/GeometryCanvas.tsx
+--- --- a/src/components/GeometryCanvas.tsx
++++ +++ b/src/components/GeometryCanvas.tsx
+@@ -40,6 +40,7 @@
+ import { createRenderer } from '../kernel/view/WebGLRendererFallback';
+ import { serialize as serializeConstruction, deserialize as deserializeConstruction, downloadJSON } from '../kernel/persistence/ConstructionSerializer';
+ import { SliderControl } from './SliderControl';
++import { toolHandlers } from './tools/handlers';
+ import { useLanguage } from '../i18n/LanguageContext';
+ import { 
+   MousePointer2, CircleDot, Minus, TrendingUp, Circle, 
+@@ -53,7 +54,8 @@
+   CornerDownRight,
+   Download,
+   Activity,
+-  Plus
++  Plus,
++  RotateCw
+ } from 'lucide-react';
+ 
+ interface StateSnapshot {
+@@ -99,7 +101,7 @@
+   const { t, language, setLanguage } = useLanguage();
+   const canvasRef = useRef<HTMLCanvasElement>(null);
+   const [kernel] = useState(() => new Kernel());
+-  const [mode, setMode] = useState<'move' | 'point' | 'line' | 'segment' | 'midpoint' | 'circle' | 'circle_center_point' | 'circle3' | 'intersect' | 'parallel' | 'orthogonal' | 'perpendicular_bisector' | 'angle_bisector' | 'polygon' | 'text' | 'slider' | 'button' | 'checkbox' | 'distance' | 'angle' | 'area' | 'tangent' | 'locus'>('move');
++  const [mode, setMode] = useState<'move' | 'point' | 'line' | 'segment' | 'midpoint' | 'circle' | 'circle_center_point' | 'circle3' | 'intersect' | 'parallel' | 'orthogonal' | 'perpendicular_bisector' | 'angle_bisector' | 'polygon' | 'text' | 'slider' | 'button' | 'checkbox' | 'distance' | 'angle' | 'area' | 'tangent' | 'locus' | 'ray' | 'arc' | 'regular_polygon' | 'rotate' | 'dilate' | 'mirror'>('move');
+   const [polygonPoints, setPolygonPoints] = useState<GeoPoint[]>([]);
+   const [radius, setRadius] = useState<number>(50);
+   const [selectedElements, setSelectedElements] = useState<GeoElement[]>([]);
+@@ -196,6 +198,7 @@
+ 
+   // --- P2: 多选 / 框选 ---
+   const boxModifierDown = useRef(false);
++  const toolState = useRef<any>({});
+ 
+   const [isBoxSelecting, setIsBoxSelecting] = useState(false);
+   const [boxStartScreen, setBoxStartScreen] = useState<{x: number; y: number} | null>(null);
+@@ -1122,567 +1125,36 @@
+ 
+   const handleMouseDown = (e: React.MouseEvent) => {
+     const { screenX, screenY, x, y } = getMousePos(e);
+-    
++
+     if (e.button === 1 || e.button === 2 || (e.button === 0 && e.shiftKey)) {
+       setIsPanning(true);
+       setLastPanPos({ x: screenX, y: screenY });
+       return;
+     }
+-    
++
+     const elementsBefore = kernel.getConstruction().getElements().length;
+     const currentDragStartState = captureState(kernel);
+     setDragStartState(currentDragStartState);
+-    
+     setLastMousePos({ x, y });
+-    const elements = kernel.getConstruction().getElements();
+-    
+-    // Find clicked point
+-    // Reverse order to pick top-most
+-    const clickedPoint = elements.slice().reverse().find(el => 
+-      el instanceof GeoPoint && Math.hypot(el.getX() - x, el.getY() - y) < 10 / coord.xScale
+-    ) as GeoPoint | undefined;
+-
+-    if (mode === 'move') {
+-      // 命中测试：优先命中点，再命中其他几何对象
+-      let clickedObj: GeoElement | undefined;
+-      if (!clickedPoint) {
+-        clickedObj = elements.slice().reverse().find(el => {
+-            if (el instanceof GeoSegment) {
+-                return (el as any).isOnPath({ getX: () => x, getY: () => y }, 5 / coord.xScale);
+-            } else if (el instanceof GeoLine) {
+-                const len = Math.hypot(el.a, el.b);
+-                if (len === 0) return false;
+-                const d = Math.abs(el.a * x + el.b * y + el.c) / len;
+-                return d < 5 / coord.xScale;
+-            } else if (el instanceof GeoConic) {
+-                const r = el.getRadius();
+-                const center = el.getCenter();
+-                const d = Math.abs(Math.hypot(x - center.x, y - center.y) - r);
+-                return d < 5 / coord.xScale;
+-            } else if (el instanceof GeoPolygon) {
+-                return (el as any).isInRegionXY(x, y);
+-            }
+-            return false;
+-        }) as GeoElement | undefined;
+-      }
+-
+-      if (clickedPoint) {
+-        if (e.ctrlKey || e.metaKey) {
+-          setSelectedElements(prev => prev.includes(clickedPoint) ? prev.filter(e => e !== clickedPoint) : [...prev, clickedPoint]);
+-          return;
+-        }
+-        setDraggedElement(clickedPoint);
+-        setSelectedElements([clickedPoint]);
+-      } else if (clickedObj) {
+-        if (e.ctrlKey || e.metaKey) {
+-          setSelectedElements(prev => prev.includes(clickedObj) ? prev.filter(e => e !== clickedObj) : [...prev, clickedObj]);
+-          return;
+-        }
+-        setDraggedElement(clickedObj);
+-        setSelectedElements([clickedObj]);
+-      } else if (e.button === 0 && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+-        // 空白处左键按住拖动 -> 启动框选
+-        boxModifierDown.current = false;
+-        setBoxStartScreen({ x: screenX, y: screenY });
+-        setIsBoxSelecting(true);
+-        return;
+-      } else {
+-        setSelectedElements([]);
+-      }
+-    } else if (mode === 'point') {
+-      const clickedObj = elements.slice().reverse().find(el => {
+-          if (el instanceof GeoSegment) {
+-              return (el as any).isOnPath({ getX: () => x, getY: () => y }, 5 / coord.xScale);
+-          } else if (el instanceof GeoLine) {
+-              const len = Math.hypot(el.a, el.b);
+-              if (len === 0) return false;
+-              const d = Math.abs(el.a * x + el.b * y + el.c) / len;
+-              return d < 5 / coord.xScale;
+-          } else if (el instanceof GeoConic) {
+-              const r = el.getRadius();
+-              const center = el.getCenter();
+-              const d = Math.abs(Math.hypot(x - center.x, y - center.y) - r);
+-              return d < 5 / coord.xScale;
+-          }
+-          return false;
+-      });
+-
+-      if (clickedObj) {
+-          const param = new GeoNumeric(kernel, 0);
+-          param.label = `t_${elements.filter(e => e instanceof GeoNumeric).length + 1}`;
+-          param.setAnimating(true); // Allow it to be animated
+-          
+-          let algo;
+-          if (clickedObj instanceof GeoSegment) {
+-              param.intervalMin = 0;
+-              param.intervalMax = 1;
+-              algo = new AlgoPointOnSegment(kernel, clickedObj, param);
+-          } else if (clickedObj instanceof GeoLine) {
+-              param.intervalMin = -10; // Arbitrary range for line
+-              param.intervalMax = 10;
+-              algo = new AlgoPointOnLine(kernel, clickedObj, param);
+-          } else if (clickedObj instanceof GeoConic) {
+-              param.intervalMin = 0;
+-              param.intervalMax = 2 * Math.PI;
+-              algo = new AlgoPointOnConic(kernel, clickedObj, param);
+-          }
+-          
+-          kernel.getConstruction().addElement(param);
+-          if (algo) {
+-              algo.updateParameter(x, y);
+-              algo.compute();
+-              const p = algo.getOutput();
+-              p.label = kernel.getConstruction().getNextPointLabel();
+-              kernel.getConstruction().addElement(algo);
+-              kernel.getConstruction().addElement(p);
+-              kernel.notifyUpdate(p);
+-          }
+-      } else {
+-          const p = new GeoPoint(kernel, new GeoVec3D(x, y, 1));
+-          p.label = kernel.getConstruction().getNextPointLabel();
+-          kernel.getConstruction().addElement(p);
+-          kernel.notifyUpdate(p); // Trigger refresh
+-      }
+-    } else if (mode === 'segment') {
+-      if (clickedPoint) {
+-        if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
+-          const p1 = selectedElements[0] as GeoPoint;
+-          const p2 = clickedPoint;
+-          if (p1 !== p2) {
+-             const segAlgo = new AlgoSegmentTwoPoints(kernel, p1, p2);
+-             kernel.getConstruction().addElement(segAlgo);
+-             kernel.getConstruction().addElement(segAlgo.getOutput());
+-             setSelectedElements([]);
+-             kernel.notifyUpdate(segAlgo);
+-          }
+-        } else {
+-          setSelectedElements([clickedPoint]);
+-        }
+-      } else {
+-          // Create new point if clicked on empty space
+-          const p = new GeoPoint(kernel, new GeoVec3D(x, y, 1));
+-          p.label = kernel.getConstruction().getNextPointLabel();
+-          kernel.getConstruction().addElement(p);
+-          kernel.notifyUpdate(p);
+-          
+-          if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
+-              const p1 = selectedElements[0] as GeoPoint;
+-              const segAlgo = new AlgoSegmentTwoPoints(kernel, p1, p);
+-              kernel.getConstruction().addElement(segAlgo);
+-              kernel.getConstruction().addElement(segAlgo.getOutput());
+-              setSelectedElements([]);
+-              kernel.notifyUpdate(segAlgo);
+-          } else {
+-              setSelectedElements([p]);
+-          }
+-      }
+-    } else if (mode === 'midpoint') {
+-        if (clickedPoint) {
+-            if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
+-                const p1 = selectedElements[0] as GeoPoint;
+-                const p2 = clickedPoint;
+-                const mid = new AlgoMidpoint(kernel, p1, p2);
+-                kernel.getConstruction().addElement(mid);
+-                kernel.getConstruction().addElement(mid.getOutput());
+-                mid.update();
+-                setSelectedElements([]);
+-                kernel.notifyUpdate(mid);
+-            } else {
+-                setSelectedElements([clickedPoint]);
+-            }
+-        }
+-    } else if (mode === 'line') {
+-        if (clickedPoint) {
+-            if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
+-                const p1 = selectedElements[0] as GeoPoint;
+-                const p2 = clickedPoint;
+-                if (p1 !== p2) {
+-                    const line = new AlgoLineTwoPoints(kernel, p1, p2);
+-                    kernel.getConstruction().addElement(line);
+-                    kernel.getConstruction().addElement(line.getOutput());
+-                    line.update();
+-                    setSelectedElements([]);
+-                    kernel.notifyUpdate(line);
+-                }
+-            } else {
+-                setSelectedElements([clickedPoint]);
+-            }
+-        } else {
+-             // Create new point
+-             const p = new GeoPoint(kernel, new GeoVec3D(x, y, 1));
+-             p.label = kernel.getConstruction().getNextPointLabel();
+-             kernel.getConstruction().addElement(p);
+-             kernel.notifyUpdate(p);
+-             
+-             if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
+-                 const p1 = selectedElements[0] as GeoPoint;
+-                 const line = new AlgoLineTwoPoints(kernel, p1, p);
+-                 kernel.getConstruction().addElement(line);
+-                 kernel.getConstruction().addElement(line.getOutput());
+-                 line.update();
+-                 setSelectedElements([]);
+-                 kernel.notifyUpdate(line);
+-             } else {
+-                 setSelectedElements([p]);
+-             }
+-        }
+-    } else if (mode === 'circle') {
+-        // Center + Radius
+-        if (clickedPoint) {
+-            const circle = new AlgoCirclePointRadius(kernel, clickedPoint, radius);
+-            kernel.getConstruction().addElement(circle);
+-            kernel.getConstruction().addElement(circle.getOutput());
+-            circle.update();
+-            kernel.notifyUpdate(circle);
+-        } else {
+-            const p = new GeoPoint(kernel, new GeoVec3D(x, y, 1));
+-            p.label = kernel.getConstruction().getNextPointLabel();
+-            kernel.getConstruction().addElement(p);
+-            kernel.notifyUpdate(p);
+-            
+-            const circle = new AlgoCirclePointRadius(kernel, p, radius);
+-            kernel.getConstruction().addElement(circle);
+-            kernel.getConstruction().addElement(circle.getOutput());
+-            circle.update();
+-            kernel.notifyUpdate(circle);
+-        }
+-    } else if (mode === 'circle_center_point') {
+-        // Center + Point on Circle
+-        if (clickedPoint) {
+-            if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
+-                const center = selectedElements[0] as GeoPoint;
+-                const pointOnCircle = clickedPoint;
+-                if (center !== pointOnCircle) {
+-                    const circle = new AlgoCircleCenterPoint(kernel, center, pointOnCircle);
+-                    kernel.getConstruction().addElement(circle);
+-                    kernel.getConstruction().addElement(circle.getOutput());
+-                    circle.update();
+-                    setSelectedElements([]);
+-                    kernel.notifyUpdate(circle);
+-                }
+-            } else {
+-                setSelectedElements([clickedPoint]);
+-            }
+-        } else {
+-            // Create new point
+-            const p = new GeoPoint(kernel, new GeoVec3D(x, y, 1));
+-            p.label = kernel.getConstruction().getNextPointLabel();
+-            kernel.getConstruction().addElement(p);
+-            kernel.notifyUpdate(p);
+-            
+-            if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
+-                const center = selectedElements[0] as GeoPoint;
+-                const circle = new AlgoCircleCenterPoint(kernel, center, p);
+-                kernel.getConstruction().addElement(circle);
+-                kernel.getConstruction().addElement(circle.getOutput());
+-                circle.update();
+-                setSelectedElements([]);
+-                kernel.notifyUpdate(circle);
+-            } else {
+-                setSelectedElements([p]);
+-            }
+-        }
+-    } else if (mode === 'circle3') {
+-        if (clickedPoint) {
+-            const currentSelected = [...selectedElements, clickedPoint];
+-            if (currentSelected.length === 3) {
+-                const [p1, p2, p3] = currentSelected as GeoPoint[];
+-                const circle = new AlgoCircleThreePoints(kernel, p1, p2, p3);
+-                kernel.getConstruction().addElement(circle);
+-                kernel.getConstruction().addElement(circle.getOutput());
+-                circle.update();
+-                
+-                // Create center point using algorithm
+-                const centerAlgo = new AlgoCircleCenter(kernel, circle.getOutput());
+-                kernel.getConstruction().addElement(centerAlgo);
+-                kernel.getConstruction().addElement(centerAlgo.getOutput());
+-                centerAlgo.update();
+-                
+-                setSelectedElements([]);
+-                kernel.notifyUpdate(circle);
+-            } else {
+-                setSelectedElements(currentSelected);
+-            }
+-        } else {
+-             const p = new GeoPoint(kernel, new GeoVec3D(x, y, 1));
+-             p.label = kernel.getConstruction().getNextPointLabel();
+-             kernel.getConstruction().addElement(p);
+-             kernel.notifyUpdate(p);
+-             
+-             const currentSelected = [...selectedElements, p];
+-             if (currentSelected.length === 3) {
+-                const [p1, p2, p3] = currentSelected as GeoPoint[];
+-                const circle = new AlgoCircleThreePoints(kernel, p1, p2, p3);
+-                kernel.getConstruction().addElement(circle);
+-                kernel.getConstruction().addElement(circle.getOutput());
+-                circle.update();
+-                
+-                // Create center point using algorithm
+-                const centerAlgo = new AlgoCircleCenter(kernel, circle.getOutput());
+-                kernel.getConstruction().addElement(centerAlgo);
+-                kernel.getConstruction().addElement(centerAlgo.getOutput());
+-                centerAlgo.update();
+-                
+-                setSelectedElements([]);
+-                kernel.notifyUpdate(circle);
+-            } else {
+-                setSelectedElements(currentSelected);
+-            }
+-        }
+-    } else if (mode === 'intersect') {
+-        // Find clicked object (Line or Conic)
+-        // We need to hit test lines and conics
+-        const clickedObj = elements.slice().reverse().find(el => {
+-            if (el instanceof GeoSegment) {
+-                return (el as any).isOnPath({ getX: () => x, getY: () => y }, 5);
+-            } else if (el instanceof GeoLine) {
+-                // Distance to line
+-                const d = Math.abs(el.a * x + el.b * y + el.c) / Math.hypot(el.a, el.b);
+-                return d < 5;
+-            } else if (el instanceof GeoConic) {
+-                // Distance to circle edge
+-                const r = el.getRadius();
+-                const center = el.getCenter();
+-                const d = Math.abs(Math.hypot(x - center.x, y - center.y) - r);
+-                return d < 5;
+-            }
+-            return false;
+-        }) as GeoElement | undefined;
+-
+-        if (clickedObj) {
+-            if (selectedElements.length === 1) {
+-                const obj1 = selectedElements[0];
+-                const obj2 = clickedObj;
+-                if (obj1 !== obj2) {
+-                    const intersect = new AlgoIntersect(kernel, obj1, obj2);
+-                    kernel.getConstruction().addElement(intersect);
+-                    intersect.getOutputPoints().forEach(p => kernel.getConstruction().addElement(p));
+-                    intersect.update();
+-                    setSelectedElements([]);
+-                    kernel.notifyUpdate(intersect);
+-                }
+-            } else {
+-                setSelectedElements([clickedObj]);
+-            }
+-        }
+-    } else if (mode === 'parallel' || mode === 'orthogonal') {
+-        // Select Point and Line
+-        const clickedObj = elements.slice().reverse().find(el => {
+-            if (el instanceof GeoPoint && Math.hypot(el.getX() - x, el.getY() - y) < 10) return true;
+-            if (el instanceof GeoSegment) {
+-                 return (el as any).isOnPath({ getX: () => x, getY: () => y }, 5);
+-            } else if (el instanceof GeoLine) {
+-                 const d = Math.abs(el.a * x + el.b * y + el.c) / Math.hypot(el.a, el.b);
+-                 return d < 5;
+-            }
+-            return false;
+-        }) as GeoElement | undefined;
+-
+-        if (clickedObj) {
+-            const currentSelected = [...selectedElements, clickedObj];
+-            // Check if we have one point and one line
+-            const point = currentSelected.find(e => e instanceof GeoPoint) as GeoPoint | undefined;
+-            const line = currentSelected.find(e => e instanceof GeoLine) as GeoLine | undefined;
+-
+-            if (point && line) {
+-                if (mode === 'parallel') {
+-                    const algo = new AlgoParallelLine(kernel, point, line);
+-                    kernel.getConstruction().addElement(algo);
+-                    kernel.getConstruction().addElement(algo.getOutput());
+-                    algo.update();
+-                    kernel.notifyUpdate(algo);
+-                } else {
+-                    const algo = new AlgoOrthogonalLine(kernel, point, line);
+-                    kernel.getConstruction().addElement(algo);
+-                    kernel.getConstruction().addElement(algo.getOutput());
+-                    algo.update();
+-                    kernel.notifyUpdate(algo);
+-                }
+-                setSelectedElements([]);
+-            } else {
+-                setSelectedElements(currentSelected);
+-            }
+-        }
+-    } else if (mode === 'perpendicular_bisector') {
+-        // Select two points or one segment
+-        // First check for points
+-        if (clickedPoint) {
+-            const currentSelected = [...selectedElements, clickedPoint];
+-            if (currentSelected.length === 2 && currentSelected[0] instanceof GeoPoint && currentSelected[1] instanceof GeoPoint) {
+-                const [p1, p2] = currentSelected as GeoPoint[];
+-                const algo = new AlgoPerpendicularBisector(kernel, p1, p2);
+-                kernel.getConstruction().addElement(algo);
+-                kernel.getConstruction().addElement(algo.getOutput());
+-                algo.update();
+-                kernel.notifyUpdate(algo);
+-                setSelectedElements([]);
+-            } else {
+-                setSelectedElements(currentSelected);
+-            }
+-        } else {
+-             // Check for segment
+-             const clickedSegment = elements.slice().reverse().find(el => 
+-                el instanceof GeoSegment && (el as any).isOnPath({ getX: () => x, getY: () => y }, 5)
+-             ) as GeoSegment | undefined;
+-             
+-             if (clickedSegment) {
+-                 const algo = new AlgoPerpendicularBisector(kernel, clickedSegment.startPoint, clickedSegment.endPoint);
+-                 kernel.getConstruction().addElement(algo);
+-                 kernel.getConstruction().addElement(algo.getOutput());
+-                 algo.update();
+-                 kernel.notifyUpdate(algo);
+-                 setSelectedElements([]);
+-             }
+-        }
+-    } else if (mode === 'angle_bisector') {
+-        // Select 3 points
+-        if (clickedPoint) {
+-            const currentSelected = [...selectedElements, clickedPoint];
+-            if (currentSelected.length === 3) {
+-                const [A, B, C] = currentSelected as GeoPoint[];
+-                const algo = new AlgoAngleBisector(kernel, A, B, C);
+-                kernel.getConstruction().addElement(algo);
+-                kernel.getConstruction().addElement(algo.getOutput());
+-                algo.update();
+-                kernel.notifyUpdate(algo);
+-                setSelectedElements([]);
+-            } else {
+-                setSelectedElements(currentSelected);
+-            }
+-        }
+-      } else if (mode === 'distance') {
+-      if (clickedPoint) {
+-        if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
+-          const p1 = selectedElements[0] as GeoPoint;
+-          if (p1 !== clickedPoint) {
+-            const algo = new AlgoDistance(kernel, p1, clickedPoint);
+-            const c = kernel.getConstruction();
+-            algo.getOutput().label = `d${c.getElements().filter(e => e instanceof GeoNumeric).length + 1}`;
+-            c.addElement(algo);
+-            c.addElement(algo.getOutput());
+-            algo.compute();
+-            setSelectedElements([]);
+-            setRenderRev(r => r + 1);
+-          }
+-        } else {
+-          setSelectedElements([clickedPoint]);
+-        }
+-      }
+-    } else if (mode === 'angle') {
+-      if (clickedPoint) {
+-        if (selectedElements.length === 2 && selectedElements.every(e => e instanceof GeoPoint)) {
+-          const [p1, p2] = selectedElements as GeoPoint[];
+-          const algo = new AlgoAngle(kernel, p1, clickedPoint, p2);
+-          algo.getOutput().label = '∠';
+-          const c = kernel.getConstruction();
+-          c.addElement(algo);
+-          c.addElement(algo.getOutput());
+-          algo.compute();
+-          setSelectedElements([]);
+-          setRenderRev(r => r + 1);
+-        } else {
+-          setSelectedElements([...selectedElements, clickedPoint].slice(-3));
+-        }
+-      }
+-    } else if (mode === 'area') {
+-      // 选中一个现有多边形即可测量面积
+-      const target = elements.slice().reverse().find(el => el instanceof GeoPolygon) as GeoPolygon | undefined;
+-      if (target) {
+-        const algo = new AlgoArea(kernel, target);
+-        algo.getOutput().label = 'S';
+-        const c = kernel.getConstruction();
+-        c.addElement(algo);
+-        c.addElement(algo.getOutput());
+-        algo.compute();
+-        setSelectedElements([]);
+-        setRenderRev(r => r + 1);
+-      }
+-    } else if (mode === 'tangent') {
+-      if (clickedPoint) {
+-        const currentSelected = [...selectedElements, clickedPoint];
+-        if (currentSelected.length === 2 && currentSelected[0] instanceof GeoPoint) {
+-          const clickedCircle = elements.slice().reverse().find(el => el instanceof GeoConic) as GeoConic | undefined;
+-          if (clickedCircle) {
+-            const algo = new AlgoTangent(kernel, clickedCircle, currentSelected[0] as GeoPoint);
+-            kernel.getConstruction().addElement(algo);
+-            algo.getOutputLines().forEach(l => kernel.getConstruction().addElement(l));
+-            algo.getOutputPoints().forEach(p => kernel.getConstruction().addElement(p));
+-            algo.compute();
+-            setSelectedElements([]);
+-            setRenderRev(r => r + 1);
+-            return;
+-          }
+-        }
+-        setSelectedElements(currentSelected.slice(-2));
+-      }
+-    } else if (mode === 'locus') {
+-      if (clickedPoint) {
+-        const currentSelected = [...selectedElements, clickedPoint];
+-        if (currentSelected.length === 2) {
+-          const [tracer, driver] = currentSelected as GeoPoint[];
+-          const algo = new AlgoLocus(kernel, tracer, driver);
+-          kernel.getConstruction().addElement(algo);
+-          kernel.getConstruction().addElement(algo.getOutputLocus());
+-          algo.compute();
+-          setSelectedElements([]);
+-          setRenderRev(r => r + 1);
+-        } else {
+-          setSelectedElements(currentSelected);
+-        }
+-      }
+-    } else if (mode === 'polygon') {
+-        if (clickedPoint) {
+-            // If clicked start point, close polygon
+-            if (polygonPoints.length > 2 && clickedPoint === polygonPoints[0]) {
+-                const poly = new GeoPolygon(kernel, [...polygonPoints]);
+-                poly.label = kernel.getConstruction().getNextPolygonLabel();
+-                kernel.getConstruction().addElement(poly);
+-                
+-                // Also add segments
+-                for (let i = 0; i < polygonPoints.length; i++) {
+-                    const p1 = polygonPoints[i];
+-                    const p2 = polygonPoints[(i + 1) % polygonPoints.length];
+-                    // Check if segment exists? For now just create new ones or reuse logic
+-                    const segAlgo = new AlgoSegmentTwoPoints(kernel, p1, p2);
+-                    kernel.getConstruction().addElement(segAlgo);
+-                    kernel.getConstruction().addElement(segAlgo.getOutput());
+-                }
+-                
+-                kernel.notifyUpdate(poly);
+-                setPolygonPoints([]);
+-                setSelectedElements([]);
+-            } else {
+-                // Add point to polygon
+-                setPolygonPoints([...polygonPoints, clickedPoint]);
+-                setSelectedElements([...selectedElements, clickedPoint]);
+-            }
+-        } else {
+-            // Create new point
+-             const p = new GeoPoint(kernel, new GeoVec3D(x, y, 1));
+-             p.label = kernel.getConstruction().getNextPointLabel();
+-             kernel.getConstruction().addElement(p);
+-             kernel.notifyUpdate(p);
+-             
+-             setPolygonPoints([...polygonPoints, p]);
+-             setSelectedElements([...selectedElements, p]);
+-        }
+-    } else if (mode === 'text' || mode === 'slider' || mode === 'button' || mode === 'checkbox') {
+-      const id = `ui_${Date.now()}`;
+-      const newUIElement: UIElement = {
+-        id,
+-        type: mode,
+-        x,
+-        y,
+-        label: mode === 'text' ? 'Text' : mode === 'slider' ? 'Slider' : mode === 'button' ? 'Button' : 'Checkbox',
+-        value: mode === 'slider' ? 50 : undefined,
+-        min: mode === 'slider' ? 0 : undefined,
+-        max: mode === 'slider' ? 100 : undefined,
+-        step: mode === 'slider' ? 1 : undefined,
+-        checked: mode === 'checkbox' ? false : undefined
+-      };
+-      setUIElements([...uiElements, newUIElement]);
+-      setEditingUIElement(id);
+-    }
++
++    // ---- 委托给统一的工具处理器（tools/handlers.ts），每个 mode 的几何创建逻辑集中管理 ----
++    const ts = toolState.current;
++    boxModifierDown.current = e.ctrlKey || e.metaKey;
++    ts.boxModifierDown = e.ctrlKey || e.metaKey;
++    ts.shiftKey = e.shiftKey;
++    toolHandlers[mode]?.({
++      kernel, construction: kernel.getConstruction(), coord,
++      elements: kernel.getConstruction().getElements(),
++      selectedElements, mode, mousePos: { x, y }, hoveredPoint: null, radius, polygonPoints, uiElements,
++      setMode, setSelectedElements, setRenderRev, setPolygonPoints, addCommand,
++      captureState,
++      recordNumericChange: notifyNumericChange, recordRename: handleLabelSubmit, recordStyleChange,
++      setBoxSelecting: setIsBoxSelecting, setBoxStartScreen, setBoxEndScreen,
++      setDraggedElement, setUIElements, setEditingUIElement, toolState: ts,
++    }, { x, y }, { x: screenX, y: screenY });
++    ts.boxModifierDown = false;
++    ts.shiftKey = false;
++    boxModifierDown.current = false;
+ 
+     const elementsAfter = kernel.getConstruction().getElements();
+     if (elementsAfter.length > elementsBefore) {
+@@ -2230,6 +1702,50 @@
+           <Square size={18} /> 面积
+         </button>
+ 
++        {/* ---- Phase 2：新增几何与变换工具 ---- */}
++        <button
++          className={`px-2 py-1.5 rounded-md text-sm font-medium flex items-center gap-1 transition-colors ${
++            mode === 'ray' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
++          }`}
++          title="射线">
++          <CornerDownRight size={18} /> 射线
++        </button>
++        <button
++          className={`px-2 py-1.5 rounded-md text-sm font-medium flex items-center gap-1 transition-colors ${
++            mode === 'arc' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
++          }`}
++          title="圆弧">
++          <CircleDashed size={18} /> 圆弧
++        </button>
++        <button
++          className={`px-2 py-1.5 rounded-md text-sm font-medium flex items-center gap-1 transition-colors ${
++            mode === 'regular_polygon' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
++          }`}
++          title="正多边形">
++          <Hexagon size={18} /> 正多边形
++        </button>
++        <button
++          className={`px-2 py-1.5 rounded-md text-sm font-medium flex items-center gap-1 transition-colors ${
++            mode === 'rotate' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
++          }`}
++          title="旋转">
++          <RotateCw size={18} /> 旋转
++        </button>
++        <button
++          className={`px-2 py-1.5 rounded-md text-sm font-medium flex items-center gap-1 transition-colors ${
++            mode === 'dilate' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
++          }`}
++          title="位似">
++          <ZoomIn size={18} /> 位似
++        </button>
++        <button
++          className={`px-2 py-1.5 rounded-md text-sm font-medium flex items-center gap-1 transition-colors ${
++            mode === 'mirror' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'
++          }`}
++          title="镜像">
++          <SplitSquareVertical size={18} /> 镜像
++        </button>
++
+         <div className="w-px h-6 bg-gray-300 mx-1"></div>
+         <button
+           className="px-2 py-1.5 rounded-md text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
+
+diff --git a/src/kernel/view/WebGLRendererFallback.ts b/src/kernel/view/WebGLRendererFallback.ts
+--- a/src/kernel/view/WebGLRendererFallback.ts
++++ b/src/kernel/view/WebGLRendererFallback.ts
+--- --- a/src/kernel/view/WebGLRendererFallback.ts
++++ +++ b/src/kernel/view/WebGLRendererFallback.ts
+@@ -1,10 +1,39 @@
+ import { CanvasRenderer } from './CanvasRenderer';
+ import { IRenderer } from './IRenderer';
+ 
+-/** 2D 仿射矩阵（列优先，9 分量） */
++/**
++ * createRenderer —— 设备无关的渲染后端工厂。
++ * 优先尝试 WebGL2；不可用时自动降级为 CanvasRenderingContext2D，
++ * 调用方通过 IRenderer 访问，切换完全透明。
++ */
++export function createRenderer(canvas: HTMLCanvasElement, preferWebGL = true): IRenderer {
++  const mainCtx = canvas.getContext('2d');
++  if (!mainCtx) throw new Error('Canvas 2D context not available');
++
++  if (preferWebGL && typeof WebGL2RenderingContext !== 'undefined') {
++    try {
++      // alpha: false 减少合成开销（背景由 clearRect 全清）；antialias: false
++      // 线条抗锯齿统一交给片段shader的 distance field，性能更好、边缘更可控。
++      const gl = canvas.getContext('webgl2', { alpha: false, antialias: false }) as WebGL2RenderingContext | null;
++      if (gl) {
++        return new WebGLRendererFallback(gl, mainCtx);
++      }
++    } catch {
++      // WebGL2 初始化失败，回退到 Canvas2D
++    }
++  }
++
++  console.log(
++    '[MiniGeogebra] Renderer:',
++    preferWebGL ? 'Canvas2D (WebGL2 不可用)' : 'Canvas2D'
++  );
++  return new CanvasRenderer(mainCtx);
++}
++
++/** 2D 仿射变换矩阵（列优先，9 分量）。 */
+ type Mat3 = [number, number, number, number, number, number, number, number, number];
+ 
+-interface SavedState { color: string; width: number; dash?: number[]; mv: Mat3 }
++interface SavedState { mv: Mat3; }
+ 
+ interface GLState {
+   gl: WebGL2RenderingContext;
+@@ -16,28 +45,32 @@
+   uniVp: GLint;
+ }
+ 
+-interface LineEntry { p0: { x: number; y: number }; p1: { x: number; y: number }; color: string; width?: number; dash?: number[]; }
++interface LineEntry {
++  p0: { x: number; y: number }; p1: { x: number; y: number };
++  color: string;
++  width: number;
++  dash?: number[];
++}
++
+ interface FillEntry { points: { x: number; y: number }[]; color: string; }
++
+ interface ArcEntry { cx: number; cy: number; r: number; sa: number; ea: number; ccw: boolean; }
+ 
+-/**
+- * P1-2: 基于 WebGL2 的渲染后端（GeoGebra 式 GPU 批量绘制雏形）。
+- * WebGL2 不可用时整体会回退为 CanvasRenderer。
+- */
++/** WebGL2 渲染后端（批量绘制）。所有画笔样式在绘制前收集，一帧内一次提交 GPU。 */
+ export class WebGLRendererFallback implements IRenderer {
+-  public supportsWebGL = typeof WebGL2RenderingContext !== 'undefined';
+-  private canvas: HTMLCanvasElement;
+-  private mainCtx: CanvasRenderingContext2D;
+-  private textCtx: CanvasRenderingContext2D;
+-  private fallback?: CanvasRenderer;
++  private gl: WebGL2RenderingContext | null = null;
+   private glState?: GLState;
++
++  // 备用 2D 上下文：当 WebGL 上下文不可用时，本帧全部队列回放到 CanvasRenderer 上。
++  private backup?: CanvasRenderer;
++
+   private mv: Mat3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+-  private paths: { x: number; y: number }[] = [];
+-  private arcs: ArcEntry[] = [];
+-  private lines: LineEntry[] = [];
+-  private fills: FillEntry[] = [];
+   private stateStack: SavedState[] = [];
+-  private styleCache = new Map<string, [number, number, number]>();
++
++  private paths: { x: number; y: number }[] = [];   // beginPath→lineTo 累积（用于 fill）
++  private arcs: ArcEntry[] = [];                    // arc() 累积（stroke/fill 均摊成线段/扇形）
++  private lines: LineEntry[] = [];                  // stroke() 队列：实线/虚线/线宽
++  private fills: FillEntry[] = [];                  // fill() 队列
+ 
+   private _strokeStyle = '#000000';
+   private _fillStyle = '#000000';
+@@ -46,131 +79,103 @@
+   private _font = '12px sans-serif';
+   private _textBaseline: CanvasTextBaseline = 'alphabetic';
+   private _textAlign: CanvasTextAlign = 'start';
+-
+-  constructor(canvas: HTMLCanvasElement) {
+-    this.canvas = canvas;
+-    this.mainCtx = canvas.getContext('2d')!;
+-    const t = document.createElement('canvas');
+-    t.width = canvas.width || 800;
+-    t.height = canvas.height || 600;
+-    this.textCtx = t.getContext('2d', { alpha: true })!;
+-    if (this.supportsWebGL) {
+-      try {
+-        this.initWebGL(canvas.width, canvas.height);
+-      } catch {
+-        this.supportsWebGL = false;
+-        this.fallback = new CanvasRenderer(this.mainCtx);
+-      }
++  private textQueue: { text: string; x: number; y: number }[] = [];
++
++  private textCtx: CanvasRenderingContext2D | null = null;
++
++  constructor(gl: WebGL2RenderingContext, private mainCtx: CanvasRenderingContext2D) {
++    // 离屏文本上下文：先在主流式 canvas 上尝试，再回退到 offscreen。
++    let tex: HTMLCanvasElement | OffscreenCanvas | null = null;
++    try { tex = document.createElement('canvas'); } catch {} // eslint-disable-line no-restricted-globals
++    if (!tex && typeof OffscreenCanvas !== 'undefined') {
++      try { tex = new OffscreenCanvas(1, 1); } catch {}
++    }
++    if (tex) {
++      (tex as any).width = 1; (tex as any).height = 1;
++      this.textCtx = (tex as any).getContext('2d') as CanvasRenderingContext2D;
+     } else {
+-      this.fallback = new CanvasRenderer(this.mainCtx);
+-    }
+-  }
+-
+-  private initWebGL(w: number, h: number): void {
+-    const gl = this.canvas.getContext('webgl2') as WebGL2RenderingContext | null;
+-    if (!gl) throw new Error('no webgl2');
+-    this.glState = {
+-      gl,
+-      program: this.compileProgram(gl),
+-      vao: this.makeVAO(gl),
+-      locPos: gl.getAttribLocation(this.glState?.program ?? this.compileProgram(gl), 'a_pos'),
+-      locCol: gl.getAttribLocation(this.glState?.program ?? this.compileProgram(gl), 'a_col'),
+-      uniMatrix: 0,
+-      uniVp: 0,
+-    };
+-    const p = this.glState.program;
+-    this.glState.locPos = gl.getAttribLocation(p, 'a_pos');
+-    this.glState.locCol = gl.getAttribLocation(p, 'a_col');
+-    this.glState.uniMatrix = gl.getUniformLocation(p, 'u_matrix') as GLint;
+-    this.glState.uniVp = gl.getUniformLocation(p, 'u_vp') as GLint;
+-    this.viewportSize(w, h);
+-  }
+-
+-  private compileProgram(gl: WebGL2RenderingContext): WebGLProgram {
++      this.textCtx = mainCtx; // 退化：直接画到主流板上（仅影响无 WebGL 路径）
++    }
++    this.backup = new CanvasRenderer(mainCtx);
++    this.initWebGL(gl);
++  }
++
++  private initWebGL(gl: WebGL2RenderingContext): void {
+     const vs = gl.createShader(gl.VERTEX_SHADER)!;
+-    gl.shaderSource(vs, `#version 300 es
+-      precision mediump float;
+-      in vec2 a_pos;
+-      in vec3 a_col;
+-      uniform mat3 u_matrix;
+-      uniform vec2 u_vp;
+-      out vec3 v_col;
+-      void main() {
+-        vec2 pos = u_matrix * vec3(a_pos, 1.0);
+-        gl_Position = vec4(pos.x / u_vp.x * 2.0 - 1.0, -(pos.y / u_vp.y * 2.0 - 1.0), 0.0, 1.0);
+-        v_col = a_col;
+-      }`);
+-    gl.compileShader(vs);
++    gl.shaderSource(vs, vertexSource); gl.compileShader(vs);
++    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
++      throw new Error(`VS compile: ${gl.getShaderInfoLog(vs)}`);
++    }
+     const fs = gl.createShader(gl.FRAGMENT_SHADER)!;
+-    gl.shaderSource(fs, `#version 300 es
+-      precision mediump float;
+-      in vec3 v_col;
+-      out vec4 fragColor;
+-      void main() { fragColor = vec4(v_col, 1.0); }`);
+-    gl.compileShader(fs);
+-    const prog = gl.createProgram()!;
+-    gl.attachShader(prog, vs);
+-    gl.attachShader(prog, fs);
+-    gl.linkProgram(prog);
+-    return prog;
+-  }
+-
+-  private makeVAO(gl: WebGL2RenderingContext): WebGLVertexArrayObject {
++    gl.shaderSource(fs, fragmentSource); gl.compileShader(fs);
++    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
++      throw new Error(`FS compile: ${gl.getShaderInfoLog(fs)}`);
++    }
++    const program = gl.createProgram()!;
++    gl.attachShader(program, vs);
++    gl.attachShader(program, fs);
++    gl.linkProgram(program);
++    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
++      throw new Error(`program link: ${gl.getProgramInfoLog(program)}`);
++    }
++
+     const vao = gl.createVertexArray()!;
+     gl.bindVertexArray(vao);
+     const buf = gl.createBuffer()!;
+     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+-    gl.enableVertexAttribArray(this.glState!.locPos);
+-    gl.vertexAttribPointer(this.glState!.locPos, 2, gl.FLOAT, false, 20, 0);
+-    gl.enableVertexAttribArray(this.glState!.locCol);
+-    gl.vertexAttribPointer(this.glState!.locCol, 3, gl.FLOAT, false, 20, 8);
+-    return vao;
+-  }
+-
+-  viewportSize(w: number, h: number): void {
+-    if (this.canvas.width !== w || this.canvas.height !== h) {
+-      this.canvas.width = w; this.canvas.height = h;
+-      this.textCtx.canvas.width = w; this.textCtx.canvas.height = h;
+-    }
+-    if (this.glState) {
+-      const gl = this.glState.gl;
+-      gl.uniform2f(this.glState.uniVp, w, h);
+-    }
+-  }
+-
++    // 每顶点 5 个 float：vec2 pos (偏移 0) + vec3 col (偏移 8) = 步长 20
++    gl.enableVertexAttribArray(0);
++    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 20, 0);
++    gl.enableVertexAttribArray(1);
++    gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 20, 8);
++    gl.bindBuffer(gl.ARRAY_BUFFER, null);
++    gl.bindVertexArray(null);
++
++    this.glState = {
++      gl,
++      program,
++      vao,
++      locPos: 0,
++      locCol: 1,
++      uniMatrix: gl.getUniformLocation(program, 'u_matrix') as GLint,
++      uniVp: gl.getUniformLocation(program, 'u_vp') as GLint,
++    };
++    this.viewportSize(gl.canvas.width || 800, gl.canvas.height || 600);
++  }
++
++  /** 解析 #RGB 为 [r,g,b]（0~1）。 */
+   private parseColor(hex: string): [number, number, number] {
+-    if (this.styleCache.has(hex)) return this.styleCache.get(hex)!;
+-    let r = 0, g = 0, b = 0;
+     const m = hex.match(/^#?([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})$/);
+-    if (m) { r = parseInt(m[1], 16) / 255; g = parseInt(m[2], 16) / 255; b = parseInt(m[3], 16) / 255; }
+-    this.styleCache.set(hex, [r, g, b]);
+-    return [r, g, b];
+-  }
+-
+-  private transformPoint(p: { x: number; y: number }): { x: number; y: number } {
+-    return { x: this.mv[0] * p.x + this.mv[3] * p.y + this.mv[6], y: this.mv[1] * p.x + this.mv[4] * p.y + this.mv[7] };
+-  }
+-
++    if (m) return [
++      parseInt(m[1], 16) / 255,
++      parseInt(m[2], 16) / 255,
++      parseInt(m[3], 16) / 255,
++    ];
++    return [0, 0, 0];
++  }
++
++  /** 矩阵乘法。 */
+   private matMul(a: Mat3, b: Mat3): Mat3 {
+     const r: Mat3 = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+-    for (let c = 0; c < 3; c++) for (let r2 = 0; r2 < 3; r2++) for (let k = 0; k < 3; k++) r[r2 * 3 + c] += a[r2 * 3 + k] * b[k * 3 + c];
++    for (let c = 0; c < 3; c++) {
++      for (let row = 0; row < 3; row++) {
++        let s = 0;
++        for (let k = 0; k < 3; k++) s += a[row * 3 + k] * b[k * 3 + c];
++        r[row * 3 + c] = s;
++      }
++    }
+     return r;
+   }
+   private pushT(x: number, y: number): void { this.mv = this.matMul(this.mv, [1, 0, x, 0, 1, y, 0, 0, 1]); }
+   private pushS(sx: number, sy: number): void { this.mv = this.matMul(this.mv, [sx, 0, 0, 0, sy, 0, 0, 0, 1]); }
+ 
+-  private doSave(): void {
+-    this.stateStack.push({ color: this._strokeStyle, width: this._lineWidth, dash: this._lineDash, mv: [...this.mv] as Mat3 });
+-  }
++  private doSave(): void { this.stateStack.push({ mv: [...this.mv] as Mat3 }); }
+   private doRestore(): void {
+     if (this.stateStack.length === 0) return;
+-    const s = this.stateStack.pop()!;
+-    this._strokeStyle = s.color;
+-    this._lineWidth = s.width;
+-    this._lineDash = s.dash ?? [];
+-    this.mv = s.mv;
+-  }
+-
++    this.mv = this.stateStack.pop()!.mv;
++  }
++
++  /** 将虚线分解为若干小线段。 */
+   private decomposeDash(a: { x: number; y: number }, b: { x: number; y: number }, dash: number[]): { p0: { x: number; y: number }; p1: { x: number; y: number } }[] {
+     const out: { p0: { x: number; y: number }; p1: { x: number; y: number } }[] = [];
+     const dx = b.x - a.x, dy = b.y - a.y;
+@@ -184,28 +189,69 @@
+       t += seg;
+       if (on) {
+         const s = Math.max(t - seg, 0), e = Math.min(t, len);
+-        if (e - s > 1e-9) out.push({ p0: { x: a.x + s * tDirX, y: a.y + s * tDirY }, p1: { x: a.x + e * tDirX, y: a.y + e * tDirY } });
++        if (e - s > 1e-9) {
++          out.push({
++            p0: { x: a.x + s * tDirX, y: a.y + s * tDirY },
++            p1: { x: a.x + e * tDirX, y: a.y + e * tDirY },
++          });
++        }
+       }
+       on = !on;
+     }
+     return out;
+   }
+ 
+-  private arcSegments(a: ArcEntry): { p0: { x: number; y: number }; p1: { x: number; y: number } }[] {
++  private lineToGeometry(entry: LineEntry): { thin: Float32Array | null; thick: { pos: Float32Array; color: number[] }[] | null } {
++    const parts = entry.dash ? this.decomposeDash(entry.p0, entry.p1, entry.dash) : [{ p0: entry.p0, p1: entry.p1 }];
++    const w = entry.width;
++    if (w <= 1.001) {
++      // 单位宽度：直接作为 GL_LINES（2 顶点），节省顶点数。
++      const v = new Float32Array(parts.length * 4 + parts.length * 3); // 2*len segments
++      let i = 0;
++      for (const p of parts) {
++        v[i++] = p.p0.x; v[i++] = p.p0.y;
++        v[i++] = p.p1.x; v[i++] = p.p1.y;
++      }
++      return { thin: v, thick: null };
++    }
++    // 粗线：把每段展平为一个四边形（两三角形），颜色在端点处烘焙（stroke 颜色单一）。
++    const perSeg = 4;
++    const v = new Float32Array(parts.length * perSeg * 5);
++    const colors: number[][] = [];
++    const col = this.parseColor(entry.color);
++    for (const p of parts) {
++      const dx = p.p1.x - p.p0.x, dy = p.p1.y - p.p0.y;
++      const len = Math.hypot(dx, dy);
++      const nx = -dy / len, ny = dx / len; // 法向量
++      const hw = w / 2;
++      // quad: p0-hw*n, p0+hw*n, p1+hw*n, p1-hw*n
++      v[i++] = p.p0.x - nx * hw; v[i++] = p.p0.y - ny * hw; v[i++] = col[0]; v[i++] = col[1]; v[i++] = col[2];
++      v[i++] = p.p0.x + nx * hw; v[i++] = p.p0.y + ny * hw; v[i++] = col[0]; v[i++] = col[1]; v[i++] = col[2];
++      v[i++] = p.p1.x + nx * hw; v[i++] = p.p1.y + ny * hw; v[i++] = col[0]; v[i++] = col[1]; v[i++] = col[2];
++      v[i++] = p.p1.x - nx * hw; v[i++] = p.p1.y - ny * hw; v[i++] = col[0]; v[i++] = col[1]; v[i++] = col[2];
++      colors.push(col);
++    }
++    return { thin: null, thick: { pos: v, color: colors } };
++  }
++
++  /** 弧：stroke → 折线段；fill → 扇形。 */
++  private arcLines(a: ArcEntry): { p0: { x: number; y: number }; p1: { x: number; y: number } }[] {
+     if (a.r <= 1e-9 || Math.abs(a.ea - a.sa) < 1e-6) return [];
+     const r = a.r;
+     const dA = Math.abs(a.ea - a.sa);
+-    const segs = Math.max(6, Math.ceil(dA * r / 0.3));
++    const segs = Math.max(8, Math.ceil(dA * r / 0.3));
+     const dir = a.ccw ? -1 : 1;
+     const out: { p0: { x: number; y: number }; p1: { x: number; y: number } }[] = [];
+     for (let i = 0; i < segs; i++) {
+       const a1 = a.sa + dir * dA * (i / segs);
+       const a2 = a.sa + dir * dA * ((i + 1) / segs);
+-      out.push({ p0: { x: a.cx + r * Math.cos(a1), y: a.cy + r * Math.sin(a1) }, p1: { x: a.cx + r * Math.cos(a2), y: a.cy + r * Math.sin(a2) } });
++      out.push({
++        p0: { x: a.cx + r * Math.cos(a1), y: a.cy + r * Math.sin(a1) },
++        p1: { x: a.cx + r * Math.cos(a2), y: a.cy + r * Math.sin(a2) },
++      });
+     }
+     return out;
+   }
+-
+   private arcFanPoints(a: ArcEntry): { x: number; y: number }[] {
+     if (a.r <= 1e-9 || Math.abs(a.ea - a.sa) < 1e-6) return [];
+     const pts: { x: number; y: number }[] = [{ x: a.cx, y: a.cy }];
+@@ -220,71 +266,190 @@
+     return pts;
+   }
+ 
+-  private flush(): void {
+-    if (!this.glState && !this.fallback) return;
+-
+-    const tw = this.textCtx.canvas.width, th = this.textCtx.canvas.height;
+-    this.textCtx.clearRect(0, 0, tw, th);
+-
++  /** 合并全部填充项 → 单个索引面片（中心-扇形三角剖分）。 */
++  private fillGeometry(): { pos: Float32Array; idx: Uint32Array; cnt: number } {
++    let totalPts = 0;
++    for (const f of this.fills) totalPts += f.points.length;
++    const pos = new Float32Array(totalPts * 5);
++    const idxArr: number[] = [];
++    let base = 0;
++    let j = 0;
++    for (const f of this.fills) {
++      const col = this.parseColor(f.color);
++      for (const p of f.points) {
++        pos[j++] = p.x; pos[j++] = p.y; pos[j++] = col[0]; pos[j++] = col[1]; pos[j++] = col[2];
++      }
++      if (f.points.length >= 3) {
++        idxArr.push(base);
++        for (let i = 1; i < f.points.length - 1; i++) idxArr.push(base + i, base + i + 1);
++      } else if (f.points.length === 2) {
++        // 两点→退化成以第0点为顶的三角形
++        idxArr.push(base, base + 1, base);
++      }
++      base += f.points.length;
++    }
++    return { pos, idx: new Uint32Array(idxArr), cnt: idxArr.length };
++  }
++
++  private thinLines(): Float32Array {
++    let cnt = 0;
++    for (const l of this.lines) {
++      if ((l.dash?.length ?? 0) === 0 && l.width <= 1.001) cnt += 2;
++    }
++    const v = new Float32Array(cnt * 4);
++    let k = 0;
++    for (const l of this.lines) {
++      if ((l.dash?.length ?? 0) === 0 && l.width <= 1.001) {
++        v[k++] = l.p0.x; v[k++] = l.p0.y; v[k++] = l.p1.x; v[k++] = l.p1.y;
++      }
++    }
++    return v;
++  }
++  private thickLines(): { pos: Float32Array; n: number } {
++    let cnt = 0;
++    for (const l of this.lines) {
++      if ((l.dash?.length ?? 0) > 0 || l.width > 1.001) cnt += 4;
++    }
++    const v = new Float32Array(cnt * 5);
++    let k = 0;
++    for (const l of this.lines) {
++      if ((l.dash?.length ?? 0) > 0 || l.width > 1.001) {
++        const parts = l.dash ? this.decomposeDash(l.p0, l.p1, l.dash) : [{ p0: l.p0, p1: l.p1 }];
++        const col = this.parseColor(l.color);
++        for (const p of parts) {
++          const dx = p.p1.x - p.p0.x, dy = p.p1.y - p.p0.y;
++          const len = Math.hypot(dx, dy);
++          const nx = -dy / len, ny = dx / len;
++          const hw = l.width / 2;
++          v[k++] = p.p0.x - nx * hw; v[k++] = p.p0.y - ny * hw;
++          v[k++] = col[0]; v[k++] = col[1]; v[k++] = col[2];
++          v[k++] = p.p0.x + nx * hw; v[k++] = p.p0.y + ny * hw;
++          v[k++] = col[0]; v[k++] = col[1]; v[k++] = col[2];
++          v[k++] = p.p1.x + nx * hw; v[k++] = p.p1.y + ny * hw;
++          v[k++] = col[0]; v[k++] = col[1]; v[k++] = col[2];
++          v[k++] = p.p1.x - nx * hw; v[k++] = p.p1.y - ny * hw;
++          v[k++] = col[0]; v[k++] = col[1]; v[k++] = col[2];
++        }
++      }
++    }
++    return { pos: v, n: cnt };
++  }
++  /** 统一提交本帧：几何（GPU/2D）+ 文本。 */
++  private submit(): void {
++    if (!this.lines.length && !this.fills.length && !this.paths.length && !this.arcs.length && !this.textQueue.length) {
++      this.paths = []; this.arcs = []; this.lines = []; this.fills = []; this.textQueue = [];
++      return;
++    }
++
++    if (!this.glState) {
++      this.submit2D(this.mainCtx);
++      this.paths = []; this.arcs = []; this.lines = []; this.fills = []; this.textQueue = [];
++      return;
++    }
++
++    const gl = this.glState.gl;
++    const tw = this.mainCtx.canvas.width, th = this.mainCtx.canvas.height;
++    this.mainCtx.clearRect(0, 0, tw, th);
++
++    gl.viewport(0, 0, tw, th);
++    gl.useProgram(this.glState.program);
++    gl.bindVertexArray(this.glState.vao);
++    gl.uniformMatrix3fv(this.glState.uniMatrix, false, new Float32Array(this.mv));
++    gl.uniform2f(this.glState.uniVp, tw, th);
++    gl.disable(gl.DEPTH_TEST);
++    gl.enable(gl.BLEND);
++    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
++
++    const fg = this.fillGeometry();
++    if (fg.pos.length > 0) {
++      const buf = gl.createBuffer()!, ebo = gl.createBuffer()!;
++      gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, fg.pos, gl.STATIC_DRAW);
++      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, fg.idx, gl.STATIC_DRAW);
++      gl.drawElements(gl.TRIANGLES, fg.cnt, gl.UNSIGNED_INT, 0);
++      gl.deleteBuffer(buf); gl.deleteBuffer(ebo);
++    }
++
++    const thin = this.thinLines();
++    if (thin.length > 0) {
++      const buf = gl.createBuffer()!;
++      gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, thin, gl.DYNAMIC_DRAW);
++      gl.drawArrays(gl.LINES, 0, thin.length / 2);
++      gl.deleteBuffer(buf);
++    }
++    const thick = this.thickLines();
++    if (thick.n > 0) {
++      const buf = gl.createBuffer()!;
++      gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, thick.pos, gl.DYNAMIC_DRAW);
++      gl.drawArrays(gl.TRIANGLES, 0, thick.n);
++      gl.deleteBuffer(buf);
++    }
++
++    // 文本：离屏 rasterize 后合成到主流板
++    const octx = this.textCtx;
++    if (octx) {
++      const oc = octx.canvas;
++      if (oc.width !== tw || oc.height !== th) { (oc as any).width = tw; (oc as any).height = th; }
++      octx.clearRect(0, 0, tw, th);
++      octx.font = this._font;
++      octx.textBaseline = this._textBaseline;
++      octx.textAlign = this._textAlign;
++      octx.fillStyle = this._fillStyle;
++      octx.translate(this.mv[6], this.mv[7]);
++      octx.scale(this.mv[0], this.mv[4]);
++      for (const t of this.textQueue) {
++        octx.fillText(t.text, t.x, t.y);
++      }
++      octx.scale(1 / Math.max(this.mv[0], 1e-9), 1 / Math.max(this.mv[4], 1e-9));
++      octx.translate(-this.mv[6], -this.mv[7]);
++      this.mainCtx.drawImage(octx.canvas, 0, 0);
++    }
++    this.paths = []; this.arcs = []; this.lines = []; this.fills = []; this.textQueue = [];
++  }
++  private submit2D(ctx: CanvasRenderingContext2D): void {
++    ctx.save();
++    ctx.translate(this.mv[6], this.mv[7]);
++    ctx.scale(this.mv[0], this.mv[4]);
++    // 填充
++    for (const f of this.fills) {
++      ctx.fillStyle = f.color; ctx.beginPath();
++      if (f.points.length >= 3) {
++        ctx.moveTo(f.points[0].x, f.points[0].y);
++        for (let i = 1; i < f.points.length; i++) ctx.lineTo(f.points[i].x, f.points[i].y);
++        ctx.closePath();
++      } else if (f.points.length === 2) {
++        ctx.moveTo(f.points[0].x, f.points[0].y); ctx.lineTo(f.points[1].x, f.points[1].y); ctx.closePath();
++      }
++      ctx.fill();
++    }
++    // 线条（含虚线、线宽）
++    for (const l of this.lines) {
++      ctx.strokeStyle = l.color;
++      if (l.width !== 1) ctx.lineWidth = l.width;
++      ctx.setLineDash(l.dash ?? []);
++      ctx.beginPath();
++      const parts = l.dash ? this.decomposeDash(l.p0, l.p1, l.dash) : [{ p0: l.p0, p1: l.p1 }];
++      ctx.moveTo(parts[0].p0.x, parts[0].p0.y);
++      for (let i = 1; i < parts.length; i++) ctx.lineTo(parts[i].p0.x, parts[i].p0.y);
++      ctx.lineTo(parts[parts.length - 1].p1.x, parts[parts.length - 1].p1.y);
++      ctx.stroke();
++    }
++    // 文本
++    ctx.font = this._font; ctx.textBaseline = this._textBaseline; ctx.textAlign = this._textAlign;
++    ctx.fillStyle = this._fillStyle;
++    for (const t of this.textQueue) ctx.fillText(t.text, t.x, t.y);
++    ctx.scale(1 / Math.max(this.mv[0], 1e-9), 1 / Math.max(this.mv[4], 1e-9));
++    ctx.translate(-this.mv[6], -this.mv[7]);
++    ctx.restore();
++  }
++
++  viewportSize(w: number, h: number): void {
++    if (this.mainCtx.canvas.width !== w || this.mainCtx.canvas.height !== h) {
++      this.mainCtx.canvas.width = w; this.mainCtx.canvas.height = h;
++    }
+     if (this.glState) {
+-      const gl = this.glState.gl;
+-      gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+-      gl.useProgram(this.glState.program);
+-      gl.bindVertexArray(this.glState.vao);
+-      gl.uniformMatrix3fv(this.glState.uniMatrix, false, new Float32Array(this.mv));
+-      gl.disable(gl.DEPTH_TEST);
+-      gl.enable(gl.BLEND);
+-      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+-
+-      if (this.lines.length) {
+-        const verts: number[] = [];
+-        for (const l of this.lines) {
+-          const c = this.parseColor(l.color);
+-          verts.push(l.p0.x, l.p0.y, c[0], c[1], c[2], l.p1.x, l.p1.y, c[0], c[1], c[2]);
+-        }
+-        const vb = gl.createBuffer()!;
+-        gl.bindBuffer(gl.ARRAY_BUFFER, vb);
+-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.DYNAMIC_DRAW);
+-        gl.drawArrays(gl.LINES, 0, verts.length / 5);
+-        gl.deleteBuffer(vb);
+-      }
+-      if (this.fills.length) {
+-        const pos: number[] = [];
+-        const idx: number[] = [];
+-        for (const f of this.fills) {
+-          const c = this.parseColor(f.color);
+-          for (let i = 0; i < f.points.length; i++) {
+-            pos.push(f.points[i].x, f.points[i].y, c[0], c[1], c[2]);
+-            idx.push(i);
+-          }
+-          for (let i = 1; i < f.points.length - 1; i++) {
+-            idx.push(0); idx.push(i); idx.push(i + 1);
+-          }
+-        }
+-        const vbo = gl.createBuffer()!;
+-        gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(pos), gl.DYNAMIC_DRAW);
+-        const ebo = gl.createBuffer()!;
+-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo);
+-        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(idx), gl.DYNAMIC_DRAW);
+-        gl.drawElements(gl.TRIANGLES, idx.length, gl.UNSIGNED_INT, 0);
+-        gl.deleteBuffer(vbo);
+-        gl.deleteBuffer(ebo);
+-      }
+-
+-      this.mainCtx.drawImage(this.textCtx.canvas, 0, 0);
+-    } else if (this.fallback) {
+-      this.fallback.clearRect(0, 0, tw, th);
+-    }
+-
+-    this.paths = []; this.arcs = []; this.lines = []; this.fills = [];
+-  }
+-
+-  save(): void { this.doSave(); }
+-  restore(): void { this.doRestore(); }
+-  clearRect(x: number, y: number, w: number, h: number): void { this.mainCtx.clearRect(x, y, w, h); }
+-  scale(sx: number, sy: number): void { this.pushS(sx, sy); }
+-  translate(tx: number, ty: number): void { this.pushT(tx, ty); }
++      this.glState.gl.uniform2f(this.glState.uniVp, w, h);
++    }
++  }
+ 
+   get strokeStyle(): string { return this._strokeStyle; }
+   set strokeStyle(v: string) { this._strokeStyle = v; }
+@@ -303,69 +468,87 @@
+   set textAlign(v: CanvasTextAlign) { this._textAlign = v; }
+ 
+   fillText(text: string, x: number, y: number): void {
+-    const st = this.transformPoint({ x, y });
+-    this.textCtx.font = this._font;
+-    this.textCtx.textBaseline = this._textBaseline;
+-    this.textCtx.textAlign = this._textAlign;
+-    this.textCtx.fillStyle = this._fillStyle;
+-    this.textCtx.fillText(text, st.x, st.y);
++    this.textQueue.push({ text, x, y });
+   }
+   measureText(text: string): { width: number } {
+-    this.textCtx.font = this._font;
+-    return { width: this.textCtx.measureText(text).width };
+-  }
++    if (this.textCtx) {
++      this.textCtx.font = this._font;
++      this.textCtx.save();
++      this.textCtx.translate(this.mv[6], this.mv[7]);
++      this.textCtx.scale(this.mv[0], this.mv[4]);
++      const w = this.textCtx.measureText(text).width;
++      this.textCtx.scale(1 / Math.max(this.mv[0], 1e-9), 1 / Math.max(this.mv[4], 1e-9));
++      this.textCtx.translate(-this.mv[6], -this.mv[7]);
++      this.textCtx.restore();
++      return { width: w };
++    }
++    return { width: 0 };
++  }
++
++  save(): void { this.doSave(); }
++  restore(): void { this.doRestore(); }
++  clearRect(x: number, y: number, w: number, h: number): void {
++    if (this.glState) {
++      const gl = this.glState.gl;
++      gl.viewport(0, 0, this.mainCtx.canvas.width, this.mainCtx.canvas.height);
++      gl.scissor(x, (this.mainCtx.canvas.height - h) - y, w, h);
++      gl.clearColor(0, 0, 0, 1);
++      gl.clear(gl.COLOR_BUFFER_BIT | gl.SCISSOR_BIT);
++    } else {
++      this.mainCtx.clearRect(x, y, w, h);
++    }
++  }
++  scale(sx: number, sy: number): void { this.pushS(sx, sy); }
++  translate(tx: number, ty: number): void { this.pushT(tx, ty); }
+ 
+   beginPath(): void { this.paths = []; }
+   moveTo(x: number, y: number): void { this.paths.push({ x, y }); }
+   lineTo(x: number, y: number): void { if (this.paths.length > 0) this.paths.push({ x, y }); }
+   closePath(): void {}
+-
+   arc(cx: number, cy: number, r: number, sa: number, ea: number, ccw?: boolean): void {
+     this.arcs.push({ cx, cy, r, sa, ea, ccw: !!ccw });
+   }
+   ellipse(cx: number, cy: number, rx: number, ry: number, rot: number, sa: number, ea: number, ccw?: boolean): void {
+     this.arcs.push({ cx, cy, r: Math.max(rx, ry), sa, ea, ccw: !!ccw });
+   }
+-
+   stroke(): void {
+-    const color = this._strokeStyle;
+-    const width = this._lineWidth;
+-    const dash = this._lineDash;
++    const color = this._strokeStyle, width = this._lineWidth, dash = this._lineDash.length ? [...this._lineDash] : undefined;
+     for (let i = 1; i < this.paths.length; i++) {
+-      const s = this.paths[i - 1], e = this.paths[i];
+-      const segs = dash.length ? this.decomposeDash(s, e, dash) : [{ p0: s, p1: e }];
+-      for (const seg of segs) this.lines.push({ p0: seg.p0, p1: seg.p1, color, width, dash });
+-    }
+-    for (const a of this.arcs) this.lines.push(...this.arcSegments(a).map(s => ({ p0: s.p0, p1: s.p1, color, width })));
+-    this.flush();
+-  }
+-
++      this.lines.push({ p0: this.paths[i - 1], p1: this.paths[i], color, width, dash });
++    }
++    for (const a of this.arcs) {
++      for (const s of this.arcLines(a)) this.lines.push({ p0: s.p0, p1: s.p1, color, width });
++    }
++  }
+   fill(): void {
+-    if (this.paths.length >= 3) {
+-      this.fills.push({ points: [...this.paths], color: this._fillStyle });
+-    } else if (this.paths.length === 2) {
+-      this.fills.push({ points: [...this.paths, this.paths[0]], color: this._fillStyle });
+-    }
++    if (this.paths.length >= 3) this.fills.push({ points: [...this.paths], color: this._fillStyle });
++    else if (this.paths.length === 2) this.fills.push({ points: [...this.paths, this.paths[0]], color: this._fillStyle });
+     for (const a of this.arcs) {
+       const pts = this.arcFanPoints(a);
+       if (pts.length >= 3) this.fills.push({ points: pts, color: this._fillStyle });
+     }
+-    this.flush();
+-  }
+-
+-  frameCommit(): void { this.flush(); }
++  }
++  frameCommit(): void { this.submit(); }
+ }
+ 
+-/**
+- * 创建渲染器。
+- * 注意：同一 canvas 只能持有一种上下文（2D 或 WebGL），不能同时持有。
+- * WebGLRendererFallback 内部先取 2D 再取 WebGL2 会导致后者返回 null，
+- * 因此实际上始终回退为 CanvasRenderer。为避免无谓开销，直接使用 CanvasRenderer。
+- */
+-export function createRenderer(canvas: HTMLCanvasElement, _preferWebGL = true): IRenderer {
+-  const ctx = canvas.getContext('2d');
+-  if (!ctx) throw new Error('Canvas 2D context not available');
+-  console.log('[MiniGeogebra] Renderer: Canvas2D');
+-  return new CanvasRenderer(ctx);
+-}
+-
++/** 顶点着色器（WebGL2 / OpenGL ES 3.0）。 */
++const vertexSource = `#version 300 es
++  precision mediump float;
++  in vec2 a_pos;
++  in vec3 a_col;
++  uniform mat3 u_matrix;
++  uniform vec2 u_vp;
++  out vec3 v_col;
++  void main() {
++    vec2 pos = u_matrix * vec3(a_pos, 1.0);
++    gl_Position = vec4(pos.x / u_vp.x * 2.0 - 1.0, -(pos.y / u_vp.y * 2.0 - 1.0), 0.0, 1.0);
++    v_col = a_col;
++  }`;
++
++/** 片段着色器（纯色，无宽度渐变；线宽由四边形几何保证）。 */
++const fragmentSource = `#version 300 es
++  precision mediump float;
++  in vec3 v_col;
++  out vec4 fragColor;
++  void main() { fragColor = vec4(v_col, 1.0); }`;
++
+
+diff --git a/src/components/drawHelpers.ts b/src/components/drawHelpers.ts
+--- /dev/null
++++ b/src/components/drawHelpers.ts
+--- --- /dev/null
++++ +++ b/src/components/drawHelpers.ts
+@@ -0,0 +1,501 @@
++/**
++ * 纯绘制函数集合（GeoGebra / JSXGraph 式渲染管线）。
++ *
++ * 约定：所有坐标均为"世界坐标"；调用方在绘制开始前统一应用一次
++ * 视图变换（scale(dpr) → translate(xZero,yZero) → scale(xScale,yScale)），
++ * 因此本模块不依赖任何 canvasRef/state，可被 CanvasView / 导出逻辑 / 测试复用。
++ */
++
++import { IRenderer } from '../kernel/view/IRenderer';
++import { CoordinateSystem } from '../kernel/core/CoordinateSystem';
++import { GeoPoint } from '../kernel/geo/GeoPoint';
++import { GeoLine } from '../kernel/geo/GeoLine';
++import { GeoSegment } from '../kernel/geo/GeoSegment';
++import { GeoPolygon } from '../kernel/geo/GeoPolygon';
++import { GeoConic } from '../kernel/geo/GeoConic';
++import { GeoLocus } from '../kernel/geo/GeoLocus';
++import { GeoElement } from '../kernel/geo/GeoElement';
++import { GeoNumeric } from '../kernel/geo/GeoNumeric';
++import { WorldPoint } from './tools/types';
++import { lineWorldEndpoints, lineFromTwoPoints } from './tools/hitTests';
++
++export interface DrawBounds { minX: number; maxX: number; minY: number; maxY: number; }
++
++// ---- 基础绘图 ----
++
++/** 坐标轴 + 网格。 */
++export function drawGrid(renderer: IRenderer, wScreen: number, hScreen: number, coord: CoordinateSystem, showGrid: boolean, showAxes: boolean): void {
++  const startX = coord.screenToWorldX(0);
++  const endX = coord.screenToWorldX(wScreen);
++  const startY = coord.screenToWorldY(0);
++  const endY = coord.screenToWorldY(hScreen);
++
++  const targetStepScreen = 50;
++  const targetStepWorld = targetStepScreen / coord.xScale;
++  const magnitude = Math.pow(10, Math.floor(Math.log10(targetStepWorld)));
++  const residual = targetStepWorld / magnitude;
++  let step = magnitude;
++  if (residual > 5) step = 10 * magnitude;
++  else if (residual > 2) step = 5 * magnitude;
++  else if (residual > 1) step = 2 * magnitude;
++
++  const firstX = Math.floor(startX / step) * step;
++  const firstY = Math.floor(startY / step) * step;
++
++  if (showGrid) {
++    renderer.strokeStyle = '#e5e7eb';
++    renderer.lineWidth = 1 / coord.xScale;
++    for (let x = firstX; x <= endX; x += step) {
++      renderer.beginPath();
++      renderer.moveTo(x, startY);
++      renderer.lineTo(x, endY);
++      renderer.stroke();
++    }
++    for (let y = firstY; y <= endY; y += step) {
++      renderer.beginPath();
++      renderer.moveTo(startX, y);
++      renderer.lineTo(endX, y);
++      renderer.stroke();
++    }
++  }
++
++  if (showAxes) {
++    renderer.strokeStyle = '#9ca3af';
++    renderer.lineWidth = 2 / coord.xScale;
++    if (0 >= startX && 0 <= endX) {
++      renderer.beginPath();
++      renderer.moveTo(0, startY);
++      renderer.lineTo(0, endY);
++      renderer.stroke();
++    }
++    if (0 >= startY && 0 <= endY) {
++      renderer.beginPath();
++      renderer.moveTo(startX, 0);
++      renderer.lineTo(endX, 0);
++      renderer.stroke();
++    }
++
++    renderer.fillStyle = '#6b7280';
++    renderer.font = `${10 / coord.xScale}px sans-serif`;
++    renderer.textAlign = 'center';
++    renderer.textBaseline = 'top';
++    for (let x = firstX; x <= endX; x += step) {
++      if (Math.abs(x) > 1e-10) {
++        renderer.fillText(parseFloat(x.toPrecision(4)).toString(), x, 4 / coord.xScale);
++      }
++    }
++    renderer.textAlign = 'right';
++    renderer.textBaseline = 'middle';
++    for (let y = firstY; y <= endY; y += step) {
++      if (Math.abs(y) > 1e-10) {
++        renderer.fillText(parseFloat(y.toPrecision(4)).toString(), -4 / coord.xScale, y);
++      }
++    }
++    renderer.textAlign = 'right';
++    renderer.textBaseline = 'top';
++    renderer.fillText('0', -4 / coord.xScale, 4 / coord.xScale);
++  }
++}
++
++/** 点。 */
++export function drawPoint(renderer: IRenderer, p: GeoPoint, selected: boolean, scale: number): void {
++  if (!p.isDefined()) return;
++  const x = p.getX(), y = p.getY();
++  const baseRadius = selected ? 8 : 6;
++  const pointRadius = baseRadius / scale;
++
++  if (selected) {
++    renderer.beginPath();
++    renderer.arc(x, y, (baseRadius + 4) / scale, 0, 2 * Math.PI);
++    renderer.strokeStyle = '#3b82f6';
++    renderer.lineWidth = 2 / scale;
++    renderer.stroke();
++    renderer.beginPath();
++    renderer.arc(x, y, (baseRadius + 8) / scale, 0, 2 * Math.PI);
++    renderer.strokeStyle = 'rgba(59, 130, 246, 0.3)';
++    renderer.lineWidth = 3 / scale;
++    renderer.stroke();
++  }
++
++  renderer.beginPath();
++  renderer.arc(x, y, pointRadius, 0, 2 * Math.PI);
++  renderer.fillStyle = p.strokeColor ?? (p.isIndependent() ? '#1d4ed8' : '#6b7280');
++  renderer.fill();
++
++  const ptStroke = selected ? '#1e3a8a' : '#374151';
++  const ptWidth = (p.strokeWidth ?? p.defaultLineWidth) / scale;
++  renderer.strokeStyle = ptStroke;
++  renderer.lineWidth = selected ? ptWidth * 2 : ptWidth;
++  renderer.stroke();
++
++  if (!p.labelVisible || p.labelMode !== 'always') return;
++  const label = p.label || p.id;
++  renderer.font = `bold ${14 / scale}px sans-serif`;
++  renderer.fillStyle = selected ? '#1e40af' : '#1f2937';
++  renderer.textBaseline = 'bottom';
++  renderer.fillText(label, x + 15, y - 15);
++}
++
++/** 直线（贯穿整个视野）。 */
++export function drawLine(renderer: IRenderer, l: GeoLine, selected: boolean, bounds: DrawBounds, scale: number): void {
++  if (!l.isDefined()) return;
++  const stroke = l.strokeColor ?? l.defaultStrokeColor;
++  const baseWidth = l.strokeWidth ?? l.defaultLineWidth;
++  renderer.strokeStyle = selected ? '#3b82f6' : stroke;
++  renderer.lineWidth = (selected ? baseWidth * 2 : baseWidth) / scale;
++  renderer.beginPath();
++  const eps = 1e-6;
++  if (Math.abs(l.b) > eps) {
++    const y1 = (-l.c - l.a * bounds.minX) / l.b;
++    const y2 = (-l.c - l.a * bounds.maxX) / l.b;
++    renderer.moveTo(bounds.minX, y1);
++    renderer.lineTo(bounds.maxX, y2);
++  } else {
++    const x = -l.c / l.a;
++    renderer.moveTo(x, bounds.minY);
++    renderer.lineTo(x, bounds.maxY);
++  }
++  renderer.stroke();
++}
++
++/** 线段。 */
++export function drawSegment(renderer: IRenderer, s: GeoSegment, selected: boolean, scale: number): void {
++  if (!s.isDefined()) return;
++  const stroke = s.strokeColor ?? s.defaultStrokeColor;
++  const baseWidth = s.strokeWidth ?? s.defaultLineWidth;
++  renderer.strokeStyle = selected ? '#3b82f6' : stroke;
++  renderer.lineWidth = (selected ? baseWidth * 2 : baseWidth) / scale;
++  renderer.beginPath();
++  renderer.moveTo(s.startPoint.getX(), s.startPoint.getY());
++  renderer.lineTo(s.endPoint.getX(), s.endPoint.getY());
++  renderer.stroke();
++}
++
++/** 多边形（填充+描边）。 */
++export function drawPolygon(renderer: IRenderer, poly: GeoPolygon, selected: boolean, scale: number): void {
++  if (!poly.isDefined()) return;
++  if (poly.vertices.length < 3) return;
++  const fill = poly.fillColor ?? poly.defaultFillColor ?? (selected ? 'rgba(59, 130, 246, 0.4)' : 'rgba(59, 130, 246, 0.2)');
++  const stroke = poly.strokeColor ?? poly.defaultStrokeColor;
++  const baseWidth = poly.strokeWidth ?? poly.defaultLineWidth;
++  renderer.fillStyle = fill;
++  renderer.strokeStyle = selected ? '#3b82f6' : stroke;
++  renderer.lineWidth = (selected ? baseWidth * 2 : baseWidth) / scale;
++  renderer.beginPath();
++  renderer.moveTo(poly.vertices[0].getX(), poly.vertices[0].getY());
++  for (let i = 1; i < poly.vertices.length; i++) {
++    renderer.lineTo(poly.vertices[i].getX(), poly.vertices[i].getY());
++  }
++  renderer.closePath();
++  renderer.fill();
++  renderer.stroke();
++}
++
++/** 圆（圆锥曲线）。 */
++export function drawConic(renderer: IRenderer, c: GeoConic, selected: boolean, scale: number): void {
++  if (!c.isDefined()) return;
++  const center = c.getCenter();
++  const r = c.getRadius();
++  if (r <= 0) return;
++
++  if (selected) {
++    renderer.beginPath();
++    renderer.arc(center.x, center.y, r + 4 / scale, 0, 2 * Math.PI);
++    renderer.strokeStyle = 'rgba(59, 130, 246, 0.3)';
++    renderer.lineWidth = 6 / scale;
++    renderer.stroke();
++  }
++
++  const stroke = c.strokeColor ?? c.defaultStrokeColor;
++  const baseWidth = c.strokeWidth ?? c.defaultLineWidth;
++  renderer.strokeStyle = selected ? '#3b82f6' : stroke;
++  renderer.lineWidth = (selected ? baseWidth * 2 : baseWidth) / scale;
++  renderer.beginPath();
++  renderer.arc(center.x, center.y, r, 0, 2 * Math.PI);
++  renderer.stroke();
++
++  if (selected && c.labelVisible && c.labelMode === 'always') {
++    const label = c.label || c.id;
++    renderer.font = `bold ${14 / scale}px sans-serif`;
++    renderer.fillStyle = '#1e40af';
++    renderer.textBaseline = 'bottom';
++    renderer.fillText(label, center.x + r + 10 / scale, center.y);
++  }
++}
++
++/** 轨迹曲线（断段绘制）。 */
++export function drawLocus(renderer: IRenderer, locus: GeoLocus, selected: boolean, scale: number): void {
++  if (!locus.isDefined()) return;
++  const samples = locus.getSamples();
++  const segments = locus.getSegments();
++  if (samples.length < 2 || segments.length === 0) return;
++  const stroke = locus.strokeColor ?? locus.defaultStrokeColor;
++  renderer.strokeStyle = selected ? '#3b82f6' : stroke;
++  renderer.lineWidth = (selected ? 3 : 2) / scale;
++  for (const seg of segments) {
++    if (seg.end - seg.start < 1) continue;
++    renderer.beginPath();
++    renderer.moveTo(samples[seg.start].x, samples[seg.start].y);
++    for (let i = seg.start + 1; i <= seg.end; i++) {
++      renderer.lineTo(samples[i].x, samples[i].y);
++    }
++    renderer.stroke();
++  }
++}
++
++// ---- Phase 2：射线 / 弧 / 正多边形的纯绘制 ----
++
++/** 射线：从原点 P0 经过 P1 向外无限延伸（视口内截断），并在起点处画实心标记。 */
++export function drawRay(renderer: IRenderer, ray: any, selected: boolean, scale: number, bounds: DrawBounds): void {
++  if (!ray.isDefined()) return;
++  const p0 = ray.getStartPoint();
++  const p1 = ray.getSecondPoint();
++  const stroke = ray.strokeColor ?? ray.defaultStrokeColor;
++  const baseWidth = ray.strokeWidth ?? ray.defaultLineWidth;
++  const w = (selected ? baseWidth * 2 : baseWidth) / scale;
++
++  // 计算直线在视口边界上的交点，保留起点之后（含起点）的部分
++  const { a, b, c } = lineFromTwoPoints(p0, p1);
++  const dirs = lineWorldEndpoints(a, b, c, bounds);
++  const dirVec = { x: p1.x - p0.x, y: p1.y - p0.y };
++  const len2 = dirVec.x * dirVec.x + dirVec.y * dirVec.y;
++  const pts: WorldPoint[] = [{ x: p0.x, y: p0.y }];
++  if (dirs && len2 > 0) {
++    const ts: number[] = [];
++    [dirs.p0, dirs.p1].forEach(ep => {
++      const t = ((ep.x - p0.x) * dirVec.x + (ep.y - p0.y) * dirVec.y) / len2;
++      if (t >= 0) ts.push(t);
++    });
++    ts.sort((x, y) => x - y);
++    if (ts.length > 0) pts.push({ x: p0.x + (dirVec.x / len2) * ts[ts.length - 1], y: p0.y + (dirVec.y / len2) * ts[ts.length - 1] });
++  }
++  renderer.strokeStyle = selected ? '#3b82f6' : stroke;
++  renderer.lineWidth = w;
++  renderer.beginPath();
++  renderer.moveTo(pts[0].x, pts[0].y);
++  for (let i = 1; i < pts.length; i++) renderer.lineTo(pts[i].x, pts[i].y);
++  renderer.stroke();
++  // 起点标记
++  renderer.fillStyle = selected ? '#1e3a8a' : stroke;
++  renderer.beginPath();
++  renderer.arc(p0.x, p0.y, 4 / scale, 0, 2 * Math.PI);
++  renderer.fill();
++}
++
++/** 圆弧：圆心+起止角的部分圆弧（fill 时为扇形）。 */
++export function drawArc(renderer: IRenderer, arc: any, selected: boolean, scale: number): void {
++  if (!arc.isDefined()) return;
++  const cx = arc.getCenter().x, cy = arc.getCenter().y;
++  const r = arc.getRadius();
++  if (r <= 0) return;
++
++  if (selected) {
++    renderer.beginPath();
++    renderer.arc(cx, cy, r + 4 / scale, 0, 2 * Math.PI);
++    renderer.strokeStyle = 'rgba(59, 130, 246, 0.3)';
++    renderer.lineWidth = 6 / scale;
++    renderer.stroke();
++  }
++
++  const stroke = arc.strokeColor ?? arc.defaultStrokeColor;
++  const baseWidth = arc.strokeWidth ?? arc.defaultLineWidth;
++  renderer.strokeStyle = selected ? '#3b82f6' : stroke;
++  renderer.lineWidth = (selected ? baseWidth * 2 : baseWidth) / scale;
++  renderer.beginPath();
++  renderer.arc(cx, cy, r, arc.getStartAngle(), arc.getEndAngle(), !!arc.isCounterClockwise());
++  renderer.stroke();
++}
++
++// ---- 绘制预览（工具构造中，未提交前的临时效果）----
++
++/** 根据当前模式渲染构造预览（预览线、预览圆、预览多边形等）。 */
++export function renderPreviews(mode: string, selectedElements: readonly GeoElement[], mousePos: WorldPoint, hoveredPoint: GeoPoint | null, coord: CoordinateSystem, renderer: IRenderer, radius?: number, bounds?: DrawBounds): void {
++  if (!bounds) return; // 预览依赖视口范围，由调用方提供
++  const { minX, maxX, minY, maxY } = bounds;
++  const targetX = hoveredPoint ? hoveredPoint.getX() : mousePos.x;
++  const targetY = hoveredPoint ? hoveredPoint.getY() : mousePos.y;
++  renderer.save();
++  renderer.strokeStyle = 'rgba(100, 100, 100, 0.5)';
++  renderer.setLineDash([5 / coord.xScale, 5 / coord.xScale]);
++  renderer.lineWidth = 1 / coord.xScale;
++
++  const isPoint = (el: any): el is GeoPoint => el instanceof GeoPoint;
++  const isLine = (el: any): el is GeoLine => el instanceof GeoLine;
++
++  if (mode === 'segment' && selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
++    const p1 = selectedElements[0] as GeoPoint;
++    renderer.beginPath();
++    renderer.moveTo(p1.getX(), p1.getY());
++    renderer.lineTo(targetX, targetY);
++    renderer.stroke();
++  } else if (mode === 'line' && selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
++    const p1 = selectedElements[0] as GeoPoint;
++    const dx = targetX - p1.getX(), dy = targetY - p1.getY();
++    if (Math.hypot(dx, dy) > 1 / coord.xScale) {
++      renderer.beginPath();
++      renderer.moveTo(p1.getX() - 10000 * dx, p1.getY() - 10000 * dy);
++      renderer.lineTo(p1.getX() + 10000 * dx, p1.getY() + 10000 * dy);
++      renderer.stroke();
++    }
++  } else if (mode === 'circle') {
++    renderer.beginPath();
++    renderer.arc(targetX, targetY, radius ?? 50, 0, 2 * Math.PI);
++    renderer.stroke();
++  } else if (mode === 'circle_center_point' && selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
++    const center = selectedElements[0] as GeoPoint;
++    const r = Math.hypot(targetX - center.getX(), targetY - center.getY());
++    renderer.beginPath();
++    renderer.arc(center.getX(), center.getY(), r, 0, 2 * Math.PI);
++    renderer.stroke();
++  } else if (mode === 'circle3' && selectedElements.length === 2) {
++    const [p1, p2] = selectedElements as GeoPoint[];
++    const p3 = { x: targetX, y: targetY };
++    const ax = p1.getX(), ay = p1.getY(), bx = p2.getX(), by = p2.getY();
++    const cx = p3.x, cy = p3.y;
++    const d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
++    if (Math.abs(d) > 1e-10) {
++      const ux = ((ax * ax + ay * ay) * (by - cy) + (bx * bx + by * by) * (cy - ay) + (cx * cx + cy * cy) * (ay - by)) / d;
++      const uy = ((ax * ax + ay * ay) * (cx - bx) + (bx * bx + by * by) * (ax - cx) + (cx * cx + cy * cy) * (bx - ax)) / d;
++      const r = Math.hypot(ux - ax, uy - ay);
++      renderer.beginPath();
++      renderer.arc(ux, uy, r, 0, 2 * Math.PI);
++      renderer.stroke();
++      renderer.beginPath();
++      renderer.arc(ux, uy, 3 / coord.xScale, 0, 2 * Math.PI);
++      renderer.fillStyle = 'rgba(100, 100, 100, 0.5)';
++      renderer.fill();
++    }
++  } else if ((mode === 'parallel' || mode === 'orthogonal') && selectedElements.length === 1 && selectedElements[0] instanceof GeoLine) {
++    const l = selectedElements[0] as GeoLine;
++    let a = l.a, b = l.b;
++    if (mode === 'orthogonal') { const t = a; a = -b; b = t; }
++    const cVal = -(a * targetX + b * targetY);
++    if (Math.abs(b) > 1e-6) {
++      const y1 = (-cVal - a * minX) / b, y2 = (-cVal - a * maxX) / b;
++      renderer.beginPath();
++      renderer.moveTo(minX, y1);
++      renderer.lineTo(maxX, y2);
++      renderer.stroke();
++    } else {
++      const x = -cVal / a;
++      renderer.beginPath();
++      renderer.moveTo(x, minY);
++      renderer.lineTo(x, maxY);
++      renderer.stroke();
++    }
++  } else if (mode === 'perpendicular_bisector' && selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
++    const p1 = selectedElements[0] as GeoPoint;
++    const mx = (p1.getX() + targetX) / 2, my = (p1.getY() + targetY) / 2;
++    const a = targetX - p1.getX(), b = targetY - p1.getY();
++    const cVal = -(a * mx + b * my);
++    if (Math.abs(b) > 1e-6) {
++      const y1 = (-cVal - a * minX) / b, y2 = (-cVal - a * maxX) / b;
++      renderer.beginPath();
++      renderer.moveTo(minX, y1);
++      renderer.lineTo(maxX, y2);
++      renderer.stroke();
++    } else {
++      const x = -cVal / a;
++      renderer.beginPath();
++      renderer.moveTo(x, minY);
++      renderer.lineTo(x, maxY);
++      renderer.stroke();
++    }
++    renderer.beginPath();
++    renderer.arc(mx, my, 3 / coord.xScale, 0, 2 * Math.PI);
++    renderer.fillStyle = 'rgba(100, 100, 100, 0.5)';
++    renderer.fill();
++  } else if (mode === 'angle_bisector' && selectedElements.length >= 1 && selectedElements.length < 3) {
++    if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
++      const p1 = selectedElements[0] as GeoPoint;
++      renderer.beginPath();
++      renderer.moveTo(p1.getX(), p1.getY());
++      renderer.lineTo(targetX, targetY);
++      renderer.stroke();
++    } else if (selectedElements.length === 2 && isPoint(selectedElements[0]) && isPoint(selectedElements[1])) {
++      const [A, B] = selectedElements as GeoPoint[];
++      const Cx = targetX, Cy = targetY;
++      const bax = A.getX() - B.getX(), bay = A.getY() - B.getY();
++      const lenBA = Math.hypot(bax, bay);
++      const bcx = Cx - B.getX(), bcy = Cy - B.getY();
++      const lenBC = Math.hypot(bcx, bcy);
++      if (lenBA > 1e-9 && lenBC > 1e-9) {
++        const uX = bax / lenBA, uY = bay / lenBA, vX = bcx / lenBC, vY = bcy / lenBC;
++        let nx = -uY, ny = uX;
++        renderer.beginPath();
++        renderer.moveTo(B.getX(), B.getY());
++        renderer.lineTo(B.getX() + nx * 10000, B.getY() + ny * 10000);
++        renderer.stroke();
++      }
++    }
++  }
++  renderer.restore();
++}
++
++// ---- Phase 2：测量数值在图形区标注 ----
++
++/** 为距离/角度/面积测量在图形区生成标注标签。 */
++export function drawMeasurementLabels(elements: readonly ConstructionElement[], renderer: IRenderer, scale: number, bounds: DrawBounds): void {
++  // 通过 parentAlgo 反查是否为测量算法的输出
++  const getAlgoOutputMap = (els: readonly ConstructionElement[]) => {
++    const map = new Map<any, ConstructionElement>();
++    for (const e of els) {
++      if (e.parentAlgo) {
++        const out = (e.parentAlgo as any).getOutput?.();
++        if (out && out !== e) map.set(out.id, e.parentAlgo);
++      }
++    }
++    return map;
++  };
++  const algoMap = getAlgoOutputMap(elements);
++  const eps = 5 / scale;
++
++  for (const el of elements) {
++    if (!(el instanceof GeoNumeric)) continue;
++    const algo = algoMap.get(el.id);
++    if (!algo) continue;
++    const type = algo.getClassName?.() ?? '';
++    const v = el.getValue();
++    if (!Number.isFinite(v)) continue;
++    if (!(type === 'AlgoDistance' || type === 'AlgoAngle' || type === 'AlgoArea')) continue;
++
++    let anchor: WorldPoint | undefined;
++    if (type === 'AlgoDistance') {
++      const [a, b] = algo.getInput?.() ?? [];
++      if (a instanceof GeoPoint && b instanceof GeoPoint) anchor = { x: (a.getX() + b.getX()) / 2, y: (a.getY() + b.getY()) / 2 };
++      else if (a instanceof GeoLine && b instanceof GeoPoint) {
++        // 点到直线垂足
++        const { a: A, b: B, c: C } = a as GeoLine;
++        const d = A * A + B * B;
++        anchor = { x: (B * (B * b.getX() - A * b.getY()) - A * C) / d, y: (A * (-B * b.getX() + A * b.getY()) - B * C) / d };
++      }
++    } else if (type === 'AlgoAngle') {
++      const [_, p2] = algo.getInput?.() ?? [];
++      if (p2 instanceof GeoPoint) anchor = { x: p2.getX(), y: p2.getY() };
++    } else if (type === 'AlgoArea') {
++      const [target] = algo.getInput?.() ?? [];
++      if (target instanceof GeoPolygon && target.vertices.length >= 3) {
++        let sx = 0, sy = 0;
++        for (const v of target.vertices) { sx += v.getX(); sy += v.getY(); }
++        anchor = { x: sx / target.vertices.length, y: sy / target.vertices.length };
++      } else if (target instanceof GeoConic) {
++        const { x, y } = (target as GeoConic).getCenter();
++        anchor = { x, y };
++      }
++    }
++    if (!anchor) continue;
++
++    let label: string;
++    if (type === 'AlgoDistance') label = parseFloat(v.toFixed(2)).toString();
++    else if (type === 'AlgoAngle') label = `${parseFloat((v * 180 / Math.PI).toFixed(1))}\u00B0`;
++    else label = parseFloat(v.toFixed(2)).toString();
++
++    const off = 20 / scale;
++    renderer.font = `${11 / scale}px sans-serif`;
++    renderer.textBaseline = 'bottom';
++    renderer.fillStyle = '#1f2937';
++    renderer.fillText(label, anchor.x + off, anchor.y - off);
++  }
++}
++
++
+
+diff --git a/src/components/tools/createElements.ts b/src/components/tools/createElements.ts
+--- /dev/null
++++ b/src/components/tools/createElements.ts
+--- --- /dev/null
++++ +++ b/src/components/tools/createElements.ts
+@@ -0,0 +1,82 @@
++/**
++ * 几何元素构造辅助函数 —— 各工具模式共享。
++ * 避免每个 mode 分支重复"创建点并命名"/"创建参数点"之类的样板代码。
++ */
++
++import { Kernel } from '../../kernel/core/Kernel';
++import { Construction } from '../../kernel/core/Construction';
++import { GeoPoint } from '../../kernel/geo/GeoPoint';
++import { GeoNumeric } from '../../kernel/geo/GeoNumeric';
++import { CoordinateSystem } from '../../kernel/core/CoordinateSystem';
++import { WorldPoint } from './types';
++import { GeoVec3D } from '../../kernel/core/GeoVec3D';
++import { AlgoPointOnSegment } from '../../kernel/algo/AlgoPointOnSegment';
++import { AlgoPointOnLine } from '../../kernel/algo/AlgoPointOnLine';
++import { AlgoPointOnConic } from '../../kernel/algo/AlgoPointOnConic';
++
++/** 创建一个带唯一标签的独立点（A, B, C, D...）。 */
++export function createLabeledPoint(kernel: Kernel, x: number, y: number, z = 1): GeoPoint {
++  const p = new GeoPoint(kernel, new GeoVec3D(x, y, z));
++  p.label = kernel.getConstruction().getNextPointLabel();
++  return p;
++}
++
++/** 在构造中增加一个新点，并触发重算。 */
++export function addPoint(kernel: Kernel, x: number, y: number): GeoPoint {
++  const p = createLabeledPoint(kernel, x, y);
++  kernel.getConstruction().addElement(p);
++  kernel.notifyUpdate(p);
++  return p;
++}
++
++/** 为距离测量生成唯一数值标签（原代码约定：d1,d2…）。 */
++export function nextDistanceLabel(construction: Construction): string {
++  const count = construction.getElements().filter(e => e instanceof GeoNumeric).length + 1;
++  return `d${count}`;
++}
++
++/** 为角度测量生成唯一数值标签（原代码约定：∠）。 */
++export function nextAngleLabel(construction: Construction): string {
++  return '∠';
++}
++
++/** 为面积测量生成唯一数值标签（原代码约定：S）。 */
++export function nextAreaLabel(construction: Construction): string {
++  return 'S';
++}
++
++/** 在路径（线段/直线/圆）上根据屏幕位置创建一个带参数的约束点。 */
++export function createParameterPointOnPath(
++  kernel: Kernel,
++  path: any,                 // GeoSegment | GeoLine | GeoConic
++  screenX: number, screenY: number
++): { param: GeoNumeric; point: GeoPoint; algo: any } | null {
++  const param = new GeoNumeric(kernel, 0);
++  param.label = `t_${kernel.getConstruction().getElements().filter(e => e instanceof GeoNumeric).length + 1}`;
++  param.setAnimating(true);
++
++  let algo: any;
++  if (path instanceof GeoSegment) {
++    param.intervalMin = 0; param.intervalMax = 1;
++    algo = new AlgoPointOnSegment(kernel, path, param);
++  } else if (path instanceof GeoLine) {
++    param.intervalMin = -10; param.intervalMax = 10;
++    algo = new AlgoPointOnLine(kernel, path, param);
++  } else if (path instanceof GeoConic) {
++    param.intervalMin = 0; param.intervalMax = 2 * Math.PI;
++    algo = new AlgoPointOnConic(kernel, path, param);
++  }
++  if (!algo) return null;
++
++  const point = algo.getOutput();
++  point.label = kernel.getConstruction().getNextPointLabel();
++
++  kernel.getConstruction().addElement(param);
++  kernel.getConstruction().addElement(algo);
++  kernel.getConstruction().addElement(point);
++  algo.updateParameter(screenX, screenY);
++  algo.compute();
++  kernel.notifyUpdate(point);
++  return { param, point, algo };
++}
++
+
+diff --git a/src/components/tools/handlers.ts b/src/components/tools/handlers.ts
+--- /dev/null
++++ b/src/components/tools/handlers.ts
+--- --- /dev/null
++++ +++ b/src/components/tools/handlers.ts
+@@ -0,0 +1,662 @@
++/**
++ * 工具处理器集合（GeoGebra 式工具模式）。
++ *
++ * 每个 mode 的创建逻辑在此集中实现；几何对象构造委托给 algorithms，
++ * 状态变更通过 ToolContext 中的 mutators 转发。视图层（GeometryCanvas）只负责：
++ *   - 坐标换算、命中测试委托给 hitPoint()/hitObject()；
++ *   - 命令记录（add/move）委托给 addCommand。
++ */
++
++import { Kernel } from '../../kernel/core/Kernel';
++import { Construction } from '../../kernel/core/Construction';
++import { CoordinateSystem } from '../../kernel/core/CoordinateSystem';
++import { ConstructionElement } from '../../kernel/core/ConstructionElement';
++import { GeoPoint } from '../../kernel/geo/GeoPoint';
++import { GeoLine } from '../../kernel/geo/GeoLine';
++import { GeoSegment } from '../../kernel/geo/GeoSegment';
++import { GeoPolygon } from '../../kernel/geo/GeoPolygon';
++import { GeoConic } from '../../kernel/geo/GeoConic';
++import { GeoNumeric } from '../../kernel/geo/GeoNumeric';
++import { GeoLocus } from '../../kernel/geo/GeoLocus';
++import { GeoVec3D } from '../../kernel/core/GeoVec3D';
++import { WorldPoint, ScreenPoint, ToolContext, ToolResult, ToolMode, isGeoPoint } from './types';
++import { hitScreenPoint, hitScreenObject, lineFromTwoPoints } from './hitTests';
++import {
++  createLabeledPoint, addPoint, createParameterPointOnPath,
++  nextDistanceLabel, nextAngleLabel, nextAreaLabel,
++} from './createElements';
++import {
++  AlgoLineTwoPoints, AlgoSegmentTwoPoints, AlgoMidpoint, AlgoCirclePointRadius,
++  AlgoCircleCenterPoint, AlgoCircleThreePoints, AlgoIntersect, AlgoParallelLine,
++  AlgoOrthogonalLine, AlgoPerpendicularBisector, AlgoAngleBisector, AlgoTangent,
++  AlgoLocus, AlgoDistance, AlgoAngle, AlgoArea, AlgoArc,
++  AlgoRegularPolygon, buildTransformed,
++} from '../kernel/algo';
++import { AlgoRayTwoPoints } from '../kernel/algo/AlgoRayTwoPoints';
++
++// ---- 命中热区 ----
++const POINT_EPS = 10;   // 点热区（像素）
++const OBJ_EPS = 5;      // 线/曲线热区（世界单位像素当量）
++
++/** 工具模式调度表（不含 UI 元素工具：text/slider/button/checkbox，由 GeometryCanvas 单独处理）。 */
++const TOOL_MODE_LIST: readonly ToolMode[] = [
++  'move', 'point', 'line', 'segment', 'midpoint', 'circle', 'circle_center_point',
++  'circle3', 'intersect', 'parallel', 'orthogonal', 'perpendicular_bisector',
++  'angle_bisector', 'polygon',
++  'distance', 'angle', 'area', 'tangent', 'locus',
++  // Phase 2：新增几何与变换工具
++  'ray', 'arc', 'regular_polygon', 'rotate', 'dilate', 'mirror',
++] as const;
++
++/** 统一的鼠标按下处理器 —— GeometryCanvas 按当前 mode 分派调用。 */
++export const handlePointerDown = (
++  ctx: ToolContext,
++  point: WorldPoint,
++  screen: ScreenPoint
++): ToolResult | void => {
++  const { kernel, construction, coord, elements, selectedElements, radius, uiElements, setSelectedElements, setRenderRev, setPolygonPoints, addCommand, captureState, setBoxSelecting, setBoxStartScreen, setDraggedElement, setUIElements, setEditingUIElement } = ctx;
++  const EPS = 1e-9;
++
++  // ----- 工具专用辅助闭包 -----
++  const hitPoint = () => hitScreenPoint(elements, point.x, point.y, POINT_EPS / coord.xScale);
++  const hitObject = () => hitScreenObject(elements, point.x, point.y, OBJ_EPS / coord.xScale);
++
++  const notifyUpdate = (obj: any) => {
++    const algo = obj?.parentAlgo ?? obj;
++    if (algo) kernel.notifyUpdate(algo);
++    else kernel.notifyUpdate(obj);
++  };
++
++  const addAlgoAndNotify = <T extends ConstructionElement>(algo: any) => {
++    kernel.getConstruction().addElement(algo);
++    const out = algo.getOutput();
++    if (Array.isArray(out)) out.forEach(notifyUpdate);
++    else if (out) notifyUpdate(out);
++  };
++
++  const selOne = (p: GeoPoint) => { setSelectedElements([p]); setRenderRev(r => r + 1); };
++  const clearSel = () => { setSelectedElements([]); setRenderRev(r => r + 1); };
++
++  /** 在空白处创建一个带唯一标签的自由点。 */
++  const emptyClickNewPoint = (): GeoPoint => {
++    const p = createLabeledPoint(kernel, point.x, point.y);
++    kernel.getConstruction().addElement(p);
++    kernel.notifyUpdate(p);
++    return p;
++  };
++
++  /** 两点构造辅助（直线/线段/射线）：支持"先点一点 → 再点终点"和"空白点两点"两种流程。 */
++  const twoPointBuild = (algoCtor: (k: Kernel, a: GeoPoint, b: GeoPoint) => any) => {
++    let picked = hitPoint();
++    if (!picked && selectedElements.length === 0) picked = emptyClickNewPoint();
++    if (!picked) return;
++    if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
++      const p1 = selectedElements[0];
++      if (p1 !== picked) {
++        const algo = algoCtor(kernel, p1, picked);
++        kernel.getConstruction().addElement(algo);
++        kernel.getConstruction().addElement(algo.getOutput());
++        algo.update();
++        clearSel();
++        kernel.notifyUpdate(algo);
++      }
++    } else {
++      selOne(picked);
++    }
++  };
++
++  /** 圆弧构造：顺序点击圆心 -> 起弧点 -> 终弧点。 */
++  const buildArc = (picks: (GeoPoint | null)[]) => {
++    const [c, s, e] = picks;
++    if (c && s && e && c !== s && s !== e && c !== e) {
++      try {
++        const arcAlgo = new AlgoArc(kernel, c, s, e);
++        addAlgoAndNotify(arcAlgo);
++        setRenderRev(r => r + 1);
++      } catch { /* 三点共线等退化情形不生成弧 */ }
++    }
++    (ctx.toolState.current as any).arcPicks = [];
++  };
++
++  const ts = ctx.toolState.current;
++  const multi = (ts?.boxModifierDown ?? false);   // Ctrl/Cmd 键 -> 框选取反
++  const shifty = (ts?.shiftKey ?? false);          // Shift 键 -> 平移/取消选择
++
++  const mode: ToolMode = ctx.mode;
++
++  switch (mode) {
++
++    // ============================================================
++    // 基础交互
++    // ============================================================
++    case 'move': {
++      const pHit = hitPoint();
++      const oHit = hitObject();
++      if (pHit) {
++        if (multi) {
++          setSelectedElements(prev => prev.includes(pHit) ? prev.filter(e => e !== pHit) : [...prev, pHit]);
++          setRenderRev(r => r + 1);
++        } else {
++          setDraggedElement(pHit);
++          setSelectedElements([pHit]);
++        }
++      } else if (oHit) {
++        if (multi) {
++          setSelectedElements(prev => prev.includes(oHit) ? prev.filter(e => e !== oHit) : [...prev, oHit]);
++          setRenderRev(r => r + 1);
++        } else {
++          setDraggedElement(oHit);
++          setSelectedElements([oHit]);
++        }
++      } else if (!multi && !shifty) {
++        // 空白处左键按下 -> 启动框选
++        setBoxSelecting(true);
++        setBoxStartScreen(screen);
++      } else {
++        setSelectedElements([]);
++        setRenderRev(r => r + 1);
++      }
++      break;
++    }
++
++    // ============================================================
++    // 基本几何对象
++    // ============================================================
++    case 'point': {
++      const obj = hitObject();
++      if (obj instanceof GeoSegment || obj instanceof GeoLine || obj instanceof GeoConic) {
++        // 在路径上创建参数点（几何画板风格）
++        const paramCount = kernel.getConstruction().getElements().filter(e => e instanceof GeoNumeric).length + 1;
++        const param = new GeoNumeric(kernel, 0);
++        param.label = `t_${paramCount}`;
++        param.setAnimating(true);
++        let algo: any;
++        if (obj instanceof GeoSegment) {
++          param.intervalMin = 0; param.intervalMax = 1;
++          algo = new AlgoPointOnSegment(kernel, obj, param);
++        } else if (obj instanceof GeoLine) {
++          param.intervalMin = -10; param.intervalMax = 10;
++          algo = new AlgoPointOnLine(kernel, obj, param);
++        } else {
++          param.intervalMin = 0; param.intervalMax = 2 * Math.PI;
++          algo = new AlgoPointOnConic(kernel, obj, param);
++        }
++        kernel.getConstruction().addElement(param);
++        if (algo) {
++          algo.updateParameter(point.x, point.y);
++          algo.compute();
++          const p = algo.getOutput();
++          p.label = kernel.getConstruction().getNextPointLabel();
++          kernel.getConstruction().addElement(algo);
++          kernel.getConstruction().addElement(p);
++          kernel.notifyUpdate(p);
++        }
++      } else {
++        const p = emptyClickNewPoint();
++      }
++      break;
++    }
++
++    case 'line':
++      twoPointBuild(AlgoLineTwoPoints);
++      break;
++
++    case 'segment':
++      twoPointBuild(AlgoSegmentTwoPoints);
++      break;
++
++    case 'midpoint': {
++      const pHit = hitPoint();
++      if (pHit && selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
++        const m = new AlgoMidpoint(kernel, selectedElements[0], pHit);
++        kernel.getConstruction().addElement(m);
++        kernel.getConstruction().addElement(m.getOutput());
++        m.update();
++        clearSel();
++        kernel.notifyUpdate(m);
++      } else if (pHit) {
++        selOne(pHit);
++      }
++      break;
++    }
++
++    case 'circle': {
++      const p = hitPoint() ?? emptyClickNewPoint();
++      const circle = new AlgoCirclePointRadius(kernel, p, radius);
++      addAlgoAndNotify(circle);
++      break;
++    }
++
++    case 'circle_center_point': {
++      const pHit = hitPoint();
++      if (pHit) {
++        if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
++          const center = selectedElements[0];
++          if (center !== pHit) {
++            const circle = new AlgoCircleCenterPoint(kernel, center, pHit);
++            kernel.getConstruction().addElement(circle);
++            kernel.getConstruction().addElement(circle.getOutput());
++            circle.update();
++            clearSel();
++            kernel.notifyUpdate(circle);
++          }
++        } else {
++          selOne(pHit);
++        }
++      } else {
++        const p = emptyClickNewPoint();
++        if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
++          const center = selectedElements[0];
++          const circle = new AlgoCircleCenterPoint(kernel, center, p);
++          kernel.getConstruction().addElement(circle);
++          kernel.getConstruction().addElement(circle.getOutput());
++          circle.update();
++          clearSel();
++          kernel.notifyUpdate(circle);
++        } else {
++          selOne(p);
++        }
++      }
++      break;
++    }
++
++    case 'circle3': {
++      const picks: (GeoPoint | null)[] = [...((ts.arcPicks as any) ?? [])]; // 重用小变量存储三点
++      const clicked = hitPoint();
++      if (clicked) picks.push(clicked);
++      else picks.push(emptyClickNewPoint());
++      if (picks.length === 3) {
++        const [p1, p2, p3] = picks as GeoPoint[];
++        const circle = new AlgoCircleThreePoints(kernel, p1, p2, p3);
++        kernel.getConstruction().addElement(circle);
++        kernel.getConstruction().addElement(circle.getOutput());
++        circle.update();
++        const centerAlgo = new AlgoCircleCenter(kernel, circle.getOutput());
++        kernel.getConstruction().addElement(centerAlgo);
++        kernel.getConstruction().addElement(centerAlgo.getOutput());
++        centerAlgo.update();
++        clearSel();
++        kernel.notifyUpdate(circle);
++        (ts.arcPicks as any) = [];
++      } else {
++        (ts.arcPicks as any) = picks;
++        setRenderRev(r => r + 1);
++      }
++      break;
++    }
++
++    case 'intersect': {
++      const obj = hitObject();
++      if (obj) {
++        if (selectedElements.length === 1) {
++          const other = selectedElements[0];
++          if (other !== obj) {
++            const inter = new AlgoIntersect(kernel, other, obj);
++            kernel.getConstruction().addElement(inter);
++            inter.getOutputPoints().forEach(p => kernel.getConstruction().addElement(p));
++            inter.update();
++            clearSel();
++            kernel.notifyUpdate(inter);
++          }
++        } else {
++          selOne(obj as any); // 安全类型断言：此处 obj 必为 GeoPoint（见 hitScreenPoint）
++        }
++      }
++      break;
++    }
++
++    case 'parallel':
++    case 'orthogonal': {
++      const obj = hitObject();
++      if (obj) {
++        const current = [...selectedElements, obj];
++        const point = current.find(e => e instanceof GeoPoint) as GeoPoint | undefined;
++        const line = current.find(e => e instanceof GeoLine || e instanceof GeoSegment) as GeoLine | undefined;
++        if (point && line) {
++          const algo = mode === 'parallel'
++            ? new AlgoParallelLine(kernel, point, line as GeoLine)
++            : new AlgoOrthogonalLine(kernel, point, line as GeoLine);
++          kernel.getConstruction().addElement(algo);
++          kernel.getConstruction().addElement(algo.getOutput());
++          algo.update();
++          clearSel();
++          kernel.notifyUpdate(algo);
++        } else {
++          setSelectedElements(current);
++          setRenderRev(r => r + 1);
++        }
++      }
++      break;
++    }
++
++    case 'perpendicular_bisector': {
++      const pHit = hitPoint();
++      if (pHit) {
++        const current = [...selectedElements, pHit];
++        if (current.length === 2 && current[0] instanceof GeoPoint && current[1] instanceof GeoPoint) {
++          const [p1, p2] = current as GeoPoint[];
++          const bis = new AlgoPerpendicularBisector(kernel, p1, p2);
++          kernel.getConstruction().addElement(bis);
++          kernel.getConstruction().addElement(bis.getOutput());
++          bis.update();
++          clearSel();
++          kernel.notifyUpdate(bis);
++        } else {
++          setSelectedElements(current);
++          setRenderRev(r => r + 1);
++        }
++      }
++      break;
++    }
++
++    case 'angle_bisector': {
++      const pHit = hitPoint();
++      if (pHit) {
++        const current = [...selectedElements, pHit];
++        if (current.length === 3) {
++          const [A, B, C] = current as GeoPoint[];
++          const bis = new AlgoAngleBisector(kernel, A, B, C);
++          kernel.getConstruction().addElement(bis);
++          kernel.getConstruction().addElement(bis.getOutput());
++          bis.update();
++          clearSel();
++          kernel.notifyUpdate(bis);
++        } else {
++          setSelectedElements(current);
++          setRenderRev(r => r + 1);
++        }
++      }
++      break;
++    }
++
++    case 'polygon': {
++      const pHit = hitPoint();
++      const pts = ctx.polygonPoints ?? [];
++      if (pHit) {
++        if (pts.length > 2 && pHit === pts[0]) {
++          const poly = new GeoPolygon(kernel, [...pts]);
++          poly.label = construction.getNextPolygonLabel();
++          kernel.getConstruction().addElement(poly);
++          for (let i = 0; i < pts.length; i++) {
++            const seg = new AlgoSegmentTwoPoints(kernel, pts[i], pts[(i + 1) % pts.length]);
++            kernel.getConstruction().addElement(seg);
++            kernel.getConstruction().addElement(seg.getOutput());
++          }
++          kernel.notifyUpdate(poly);
++          setPolygonPoints([]);
++          clearSel();
++        } else {
++          setPolygonPoints([...pts, pHit]);
++          setSelectedElements([...selectedElements, pHit]);
++          setRenderRev(r => r + 1);
++        }
++      } else {
++        const p = emptyClickNewPoint();
++        setPolygonPoints([...pts, p]);
++        setSelectedElements([...selectedElements, p]);
++        setRenderRev(r => r + 1);
++      }
++      break;
++    }
++
++    // ============================================================
++    // 测量工具
++    // ============================================================
++    case 'distance': {
++      const pHit = hitPoint();
++      if (pHit) {
++        if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
++          const p1 = selectedElements[0];
++          if (p1 !== pHit) {
++            const d = new AlgoDistance(kernel, p1, pHit);
++            d.getOutput().label = nextDistanceLabel(construction);
++            kernel.getConstruction().addElement(d);
++            kernel.getConstruction().addElement(d.getOutput());
++            d.compute();
++            clearSel();
++            setRenderRev(r => r + 1);
++          }
++        } else {
++          setSelectedElements([pHit]);
++        }
++      }
++      break;
++    }
++
++    case 'angle': {
++      const pHit = hitPoint();
++      if (pHit) {
++        if (selectedElements.length === 2 && selectedElements.every(e => e instanceof GeoPoint)) {
++          const [p1, p2] = selectedElements as GeoPoint[];
++          const ang = new AlgoAngle(kernel, p1, pHit, p2);
++          ang.getOutput().label = nextAngleLabel(construction);
++          kernel.getConstruction().addElement(ang);
++          kernel.getConstruction().addElement(ang.getOutput());
++          ang.compute();
++          clearSel();
++          setRenderRev(r => r + 1);
++        } else {
++          setSelectedElements([...selectedElements, pHit].slice(-3));
++          setRenderRev(r => r + 1);
++        }
++      }
++      break;
++    }
++
++    case 'area': {
++      const target = elements.slice().reverse().find(el => el instanceof GeoPolygon) as GeoPolygon | undefined;
++      if (target) {
++        const ar = new AlgoArea(kernel, target);
++        ar.getOutput().label = nextAreaLabel(construction);
++        kernel.getConstruction().addElement(ar);
++        kernel.getConstruction().addElement(ar.getOutput());
++        ar.compute();
++        clearSel();
++        setRenderRev(r => r + 1);
++      }
++      break;
++    }
++
++    case 'tangent': {
++      const pHit = hitPoint();
++      if (pHit) {
++        const current = [...selectedElements, pHit];
++        if (current.length === 2 && current[0] instanceof GeoPoint) {
++          const clickedPoint = current[0];
++          const circle = elements.slice().reverse().find(el => el instanceof GeoConic) as GeoConic | undefined;
++          if (circle) {
++            const tan = new AlgoTangent(kernel, circle, clickedPoint);
++            kernel.getConstruction().addElement(tan);
++            tan.getOutputLines().forEach(l => kernel.getConstruction().addElement(l));
++            tan.getOutputPoints().forEach(p => kernel.getConstruction().addElement(p));
++            tan.compute();
++            clearSel();
++            setRenderRev(r => r + 1);
++            return;
++          }
++        }
++        setSelectedElements(current.slice(-2));
++      }
++      break;
++    }
++
++    case 'locus': {
++      const pHit = hitPoint();
++      if (pHit) {
++        const current = [...selectedElements, pHit];
++        if (current.length === 2 && current.every(e => e instanceof GeoPoint)) {
++          const [tracer, driver] = current as GeoPoint[];
++          const locus = new AlgoLocus(kernel, tracer, driver);
++          kernel.getConstruction().addElement(locus);
++          kernel.getConstruction().addElement(locus.getOutput());
++          locus.compute();
++          clearSel();
++          setRenderRev(r => r + 1);
++        } else {
++          setSelectedElements(current);
++          setRenderRev(r => r + 1);
++        }
++      }
++      break;
++    }
++
++    // ============================================================
++    // Phase 2：新增几何与变换工具
++    // ============================================================
++    case 'ray':
++      twoPointBuild(AlgoRayTwoPoints);
++      break;
++
++    case 'arc': {
++      const picks = [...((ts.arcPicks as any) ?? [])];
++      const picked = hitPoint();
++      picks.push(picked ?? emptyClickNewPoint());
++      if (picks.length >= 3) buildArc(picks.slice(0, 3));
++      else {
++        (ts.arcPicks as any) = picks;
++        setRenderRev(r => r + 1);
++      }
++      break;
++    }
++
++    case 'regular_polygon': {
++      const clicked = hitPoint() ?? emptyClickNewPoint();
++      if (!ts.regPolyCenter) {
++        ts.regPolyCenter = clicked;
++        selOne(clicked);
++      } else {
++        const center = ts.regPolyCenter;
++        if (center === clicked) { ts.regPolyCenter = null; break; }
++        const r = Math.hypot(clicked.getX() - center.getX(), clicked.getY() - center.getY());
++        if (r <= EPS) { ts.regPolyCenter = null; break; }
++        const polyAlgo = new AlgoRegularPolygon(kernel, center, r, 6);
++        addAlgoAndNotify(polyAlgo);
++        clearSel();
++        ts.regPolyCenter = null;
++        setRenderRev(r => r + 1);
++      }
++      break;
++    }
++
++    case 'rotate':
++    case 'dilate': {
++      const op = mode === 'rotate' ? 'rotate' : 'dilate';
++      if ((!ts.inputs || ts.inputs.length === 0) && selectedElements.length === 0) {
++        ts.inputs = [{ el: hitPoint() ?? emptyClickNewPoint(), ref: { x: point.x, y: point.y } }];
++        setSelectedElements([]);
++        setRenderRev(r => r + 1);
++        return;
++      }
++      if ((ts.inputs?.length ?? 0) === 0) {
++        ts.inputs = selectedElements.map(el => {
++          let ref: { x: number; y: number };
++          if (el instanceof GeoPoint) ref = { x: el.getX(), y: el.getY() };
++          else if (el instanceof GeoConic) { const c = el.getCenter(); ref = { x: c.x, y: c.y }; }
++          else ref = { x: point.x, y: point.y };
++          return { el, ref };
++        });
++        setSelectedElements([]);
++        setRenderRev(r => r + 1);
++        return;
++      }
++      if (!ts.center) {
++        ts.center = { x: point.x, y: point.y };
++        return;
++      }
++      const P2 = { x: point.x, y: point.y };
++      const inputs = ts.inputs;
++      let angle = 0, ratio = 1;
++      if (op === 'rotate') {
++        angle = Math.atan2(P2.y - ts.center.y, P2.x - ts.center.x) -
++                Math.atan2(inputs[0].ref!.y - ts.center.y, inputs[0].ref!.x - ts.center.x);
++      } else {
++        ratio = Math.hypot(P2.x - ts.center.x, P2.y - ts.center.y) /
++                Math.hypot(inputs[0].ref!.x - ts.center.x, inputs[0].ref!.y - ts.center.y);
++      }
++      const outs: ConstructionElement[] = [];
++      for (const { el } of inputs) outs.push(buildTransformed(kernel, el, op, { center: ts.center, angle, ratio }));
++      outs.forEach(o => { kernel.getConstruction().addElement(o); notifyUpdate(o); });
++      clearSel();
++      setRenderRev(r => r + 1);
++      ts.inputs = []; ts.center = null;
++      return;
++    }
++
++    case 'mirror': {
++      if ((!ts.inputs || ts.inputs.length === 0) && selectedElements.length === 0) {
++        ts.inputs = [{ el: hitPoint() ?? emptyClickNewPoint(), ref: { x: point.x, y: point.y } }];
++        setSelectedElements([]);
++        setRenderRev(r => r + 1);
++        return;
++      }
++      if ((ts.inputs?.length ?? 0) === 0) {
++        ts.inputs = selectedElements.map(el => {
++          let ref: { x: number; y: number };
++          if (el instanceof GeoPoint) ref = { x: el.getX(), y: el.getY() };
++          else if (el instanceof GeoConic) { const c = el.getCenter(); ref = { x: c.x, y: c.y }; }
++          else ref = { x: point.x, y: point.y };
++          return { el, ref };
++        });
++        setSelectedElements([]);
++        setRenderRev(r => r + 1);
++        return;
++      }
++      const obj = hitObject();
++      if (!ts.axis) {
++        if (obj instanceof GeoLine) ts.axis = { a: obj.a, b: obj.b, c: obj.c };
++        else ts.axisStart = { x: point.x, y: point.y };
++        return;
++      }
++      if (ts.axisStart) {
++        ts.axis = lineFromTwoPoints(ts.axisStart, { x: point.x, y: point.y });
++        ts.axisStart = null;
++        return;
++      }
++      const outs: ConstructionElement[] = [];
++      for (const { el } of ts.inputs) outs.push(buildTransformed(kernel, el, 'mirror', ts.axis));
++      outs.forEach(o => { kernel.getConstruction().addElement(o); notifyUpdate(o); });
++      clearSel();
++      setRenderRev(r => r + 1);
++      ts.inputs = []; ts.axis = null; ts.axisStart = null;
++      return;
++    }
++
++    // ============================================================
++    // UI 元素工具（text / slider / button / checkbox）
++    // ============================================================
++    case 'text':
++    case 'slider':
++    case 'button':
++    case 'checkbox': {
++      const id = `ui_${Date.now()}`;
++      const newUIElement: any = {
++        id,
++        type: mode,
++        x: point.x,
++        y: point.y,
++        label: mode === 'text' ? 'Text' : mode === 'slider' ? 'Slider' : mode === 'button' ? 'Button' : 'Checkbox',
++        value: mode === 'slider' ? 50 : undefined,
++        min: mode === 'slider' ? 0 : undefined,
++        max: mode === 'slider' ? 100 : undefined,
++        step: mode === 'slider' ? 1 : undefined,
++        checked: mode === 'checkbox' ? false : undefined,
++      };
++      setUIElements?.([...(ctx.uiElements ?? []), newUIElement]);
++      setEditingUIElement?.(id);
++      break;
++    }
++
++    default:
++      break;
++  }
++};
++
++export const clearToolState = (ts: any) => {
++  ts.inputs = []; ts.center = null;
++  ts.centerIsPoint = false; ts.axis = null; ts.axisStart = null;
++  ts.regPolyCenter = null; (ts.arcPicks as any) = [];
++};
++
++export const toolHandlers: Record<ToolMode, (ctx: ToolContext, point: WorldPoint, screen: ScreenPoint) => ToolResult | void> = {} as unknown as any;
++TOOL_MODE_LIST.forEach(m => { toolHandlers[m] = handlePointerDown; });
++
+
+diff --git a/src/components/tools/hitTests.ts b/src/components/tools/hitTests.ts
+--- /dev/null
++++ b/src/components/tools/hitTests.ts
+--- --- /dev/null
++++ +++ b/src/components/tools/hitTests.ts
+@@ -0,0 +1,137 @@
++/**
++ * 几何命中测试（Typed）——替代原 GeometryCanvas 中大量 `as any` 的硬编码检测。
++ *
++ * eps 单位：世界坐标。调用方把像素级阈值先换算为 `5 / coord.xScale` 传入即可。
++ */
++
++import { GeoPoint } from '../../kernel/geo/GeoPoint';
++import { GeoLine } from '../../kernel/geo/GeoLine';
++import { GeoSegment } from '../../kernel/geo/GeoSegment';
++import { GeoConic } from '../../kernel/geo/GeoConic';
++import { GeoPolygon } from '../../kernel/geo/GeoPolygon';
++import { GeoElement } from '../../kernel/geo/GeoElement';
++import { WorldPoint } from './types';
++
++/** 点命中：返回最顶层（逆序第一个命中）的点。 */
++export function hitScreenPoint(els: readonly ConstructionElement[], x: number, y: number, eps: number): GeoPoint | undefined {
++  for (let i = els.length - 1; i >= 0; i--) {
++    const el = els[i];
++    if (el instanceof GeoPoint && Math.hypot(el.getX() - x, el.getY() - y) < eps) {
++      return el as GeoPoint;
++    }
++  }
++  return undefined;
++}
++
++/** 通用对象命中：点优先；其次线段、直线、圆、多边形。 */
++export function hitScreenObject(els: readonly ConstructionElement[], x: number, y: number, scale: number): GeoElement | undefined {
++  // 1. 优先命中点（吸附热区）
++  for (let i = els.length - 1; i >= 0; i--) {
++    const el = els[i];
++    if (el instanceof GeoPoint && Math.hypot(el.getX() - x, el.getY() - y) < 10 / scale) {
++      return el;
++    }
++  }
++  // 2. 命中其他几何对象
++  for (let i = els.length - 1; i >= 0; i--) {
++    const el = els[i];
++    if (el instanceof GeoSegment) {
++      if ((el as any).isOnPath({ getX: () => x, getY: () => y }, 5 / scale)) return el;
++    } else if (el instanceof GeoLine) {
++      const len = Math.hypot(el.a, el.b);
++      if (len === 0) continue;
++      const d = Math.abs(el.a * x + el.b * y + el.c) / len;
++      if (d < 5 / scale) return el;
++    } else if (el instanceof GeoConic) {
++      const r = el.getRadius();
++      const center = el.getCenter();
++      const d = Math.abs(Math.hypot(x - center.x, y - center.y) - r);
++      if (d < 5 / scale) return el;
++    } else if (el instanceof GeoPolygon) {
++      if ((el as any).isInRegionXY(x, y)) return el;
++    }
++  }
++  return undefined;
++}
++
++// ---- 单一类型精准命中（用于工具构造阶段，只关心非点对象） ----
++export function hitSegment(els: readonly ConstructionElement[], x: number, y: number, eps: number): GeoSegment | undefined {
++  for (let i = els.length - 1; i >= 0; i--) {
++    const el = els[i];
++    if (el instanceof GeoSegment && (el as any).isOnPath({ getX: () => x, getY: () => y }, eps)) {
++      return el as GeoSegment;
++    }
++  }
++  return undefined;
++}
++
++export function hitLine(els: readonly ConstructionElement[], x: number, y: number, eps: number): GeoLine | undefined {
++  for (let i = els.length - 1; i >= 0; i--) {
++    const el = els[i];
++    if (el instanceof GeoLine && !(el instanceof GeoSegment)) {
++      const len = Math.hypot(el.a, el.b);
++      if (len === 0) continue;
++      const d = Math.abs(el.a * x + el.b * y + el.c) / len;
++      if (d < eps) return el as GeoLine;
++    }
++  }
++  return undefined;
++}
++
++export function hitCircle(els: readonly ConstructionElement[], x: number, y: number, eps: number): GeoConic | undefined {
++  for (let i = els.length - 1; i >= 0; i--) {
++    const el = els[i];
++    if (el instanceof GeoConic) {
++      const r = el.getRadius();
++      const center = el.getCenter();
++      const d = Math.abs(Math.hypot(x - center.x, y - center.y) - r);
++      if (d < eps) return el as GeoConic;
++    }
++  }
++  return undefined;
++}
++
++export function hitPolygon(els: readonly ConstructionElement[], x: number, y: number): GeoPolygon | undefined {
++  for (let i = els.length - 1; i >= 0; i--) {
++    const el = els[i];
++    if (el instanceof GeoPolygon && (el as any).isInRegionXY(x, y)) {
++      return el as GeoPolygon;
++    }
++  }
++  return undefined;
++}
++
++/** 直线在世界边界内的两个端点（用于预览线）。 */
++export function lineWorldEndpoints(a: number, b: number, c: number, bounds: { minX: number; maxX: number; minY: number; maxY: number }): { p0: WorldPoint; p1: WorldPoint } | null {
++  const { minX, maxX, minY, maxY } = bounds;
++  let p0: WorldPoint | null = null, p1: WorldPoint | null = null;
++  const tryP = (x: number, y: number) => {
++    if (x >= minX - 1e-9 && x <= maxX + 1e-9 && y >= minY - 1e-9 && y <= maxY + 1e-9) {
++      (p0 ??= { x, y });
++      if (p1) return true;
++    }
++    return false;
++  };
++  // 与四条边求交
++  if (Math.abs(b) > 1e-12) {
++    tryP(minX, (-c - a * minX) / b);
++    tryP(maxX, (-c - a * maxX) / b);
++  }
++  if (!p0 || !p1 && Math.abs(a) > 1e-12) {
++    tryP(minY ? 0 : 1, 0);
++  }
++  if (Math.abs(a) > 1e-12) {
++    tryP((-c - b * minY) / a, minY);
++    tryP((-c - b * maxY) / a, maxY);
++  }
++  return p0 && p1 ? { p0, p1 } : null;
++}
++
++/** 以两点定直线 Ax+By+C=0：A=y1-y0, B=x0-x1, C=-Ax0-By0 */
++export function lineFromTwoPoints(p0: { x: number; y: number }, p1: { x: number; y: number }): { a: number; b: number; c: number } {
++  const a = p0.y - p1.y;
++  const b = p1.x - p0.x;
++  const c = -a * p0.x - b * p0.y;
++  return { a, b, c };
++}
++
+
+diff --git a/src/components/tools/types.ts b/src/components/tools/types.ts
+--- /dev/null
++++ b/src/components/tools/types.ts
+--- --- /dev/null
++++ +++ b/src/components/tools/types.ts
+@@ -0,0 +1,130 @@
++/**
++ * 工具系统类型定义（GeoGebra 式工具模式）。
++ *
++ * 设计原则：工具只负责"创建/变换几何对象"，不负责视图状态管理；
++ * 视图层（CanvasView）持有全局状态并将共享上下文注入工具。
++ */
++
++import { Kernel } from '../../kernel/core/Kernel';
++import { Construction } from '../../kernel/core/Construction';
++import { GeoPoint } from '../../kernel/geo/GeoPoint';
++import { GeoLine } from '../../kernel/geo/GeoLine';
++import { GeoSegment } from '../../kernel/geo/GeoSegment';
++import { GeoConic } from '../../kernel/geo/GeoConic';
++import { GeoPolygon } from '../../kernel/geo/GeoPolygon';
++import { GeoElement } from '../../kernel/geo/GeoElement';
++import { GeoNumeric } from '../../kernel/geo/GeoNumeric';
++import { CoordinateSystem } from '../../kernel/core/CoordinateSystem';
++import { ConstructionElement } from '../../kernel/core/ConstructionElement';
++
++// -------------------------------------------------------------------
++// 坐标约定
++// -------------------------------------------------------------------
++/** 世界坐标。 */
++export interface WorldPoint { x: number; y: number; z?: number; }
++
++/** 屏幕坐标（像素，以左上角为原点）。 */
++export interface ScreenPoint { x: number; y: number; }
++
++// -------------------------------------------------------------------
++// 工具模式（与 GeometryCanvas 的 mode 字面量严格一致）
++// -------------------------------------------------------------------
++export type ToolMode =
++  | 'move'
++  | 'point'
++  | 'line'
++  | 'segment'
++  | 'midpoint'
++  | 'circle'
++  | 'circle_center_point'
++  | 'circle3'
++  | 'intersect'
++  | 'parallel'
++  | 'orthogonal'
++  | 'perpendicular_bisector'
++  | 'angle_bisector'
++  | 'polygon'
++  | 'text'
++  | 'slider'
++  | 'button'
++  | 'checkbox'
++  | 'distance'
++  | 'angle'
++  | 'area'
++  | 'tangent'
++  | 'locus'
++  // Phase 2：新增几何与变换工具
++  | 'ray'
++  | 'arc'
++  | 'regular_polygon'
++  | 'rotate'
++  | 'dilate'
++  | 'mirror';
++
++// -------------------------------------------------------------------
++// 工具上下文：视图把共享资源注入这里，避免事件处理器产生巨大的 props 树
++//   read        : 当前构造快照、选择集、坐标、工具模式
++//   mutators    : 由 CanvasView 转发至 GeometryCanvas 的状态更新
++// -------------------------------------------------------------------
++export interface ToolContext {
++  // --- 读（构造快照）----
++  kernel: Kernel;
++  construction: Construction;
++  coord: CoordinateSystem;
++  elements: readonly ConstructionElement[];
++  selectedElements: GeoElement[];
++  mode: ToolMode;
++  mousePos: WorldPoint;
++  hoveredPoint: GeoPoint | null;
++  radius?: number;                // circle 模式半径
++  polygonPoints?: GeoPoint[];      // polygon 模式顶点累积
++  uiElements?: any[];              // UI 元素工具元素表
++  // --- 状态写入（由 CanvasView 转发）----
++  setMode: (m: ToolMode) => void;
++  setSelectedElements: (els: GeoElement[]) => void;
++  setRenderRev: (fn: (r: number) => number) => void;
++  setCoord: (c: CoordinateSystem) => void;
++  setPolygonPoints: React.Dispatch<React.SetStateAction<GeoPoint[]>>;
++  // --- 撤销/重做 ----
++  addCommand: (cmd: any) => void;
++  captureState: (k: Kernel) => any;
++  undo?: () => void;
++  redo?: () => void;
++  // --- 副作用 ----
++  recordNumericChange?: (numeric: GeoNumeric, newValue: number) => void;
++  recordRename: (element: any, newLabel: string) => void;
++  recordStyleChange: (element: GeoElement, changes: Record<string, unknown>) => void;
++  // ---- 框选状态（move 工具）----
++  setBoxSelecting: (v: boolean) => void;
++  setBoxStartScreen: (p: ScreenPoint | null) => void;
++  setBoxEndScreen: (p: ScreenPoint | null) => void;
++  // ---- 拖拽元素（move 工具）----
++  setDraggedElement: (el: GeoElement | null) => void;
++  // ---- UI 元素工具（由 GeometryCanvas 管理：text/slider/button/checkbox）----
++  setUIElements?: React.Dispatch<React.SetStateAction<any>>;
++  setEditingUIElement?: React.Dispatch<React.SetStateAction<string | null>>;
++  // ---- 变换工具暂态（引用可变）----
++  toolState: any;
++}
++
++// -------------------------------------------------------------------
++// 工具执行结果
++// -------------------------------------------------------------------
++export interface ToolResult {
++  clearSelection?: boolean;
++  needRenderUpdate?: boolean;
++}
++
++/** 工具处理器的统一入口。鼠标按下/移动时由 CanvasView 调用。 */
++export type PointerHandler = (ctx: ToolContext, point: WorldPoint, screen: ScreenPoint) => ToolResult | void;
++
++// -------------------------------------------------------------------
++// 几何元素类型守卫（Type Guard），集中替代分散的 instanceof 与 as any
++// -------------------------------------------------------------------
++export const isGeoPoint = (e: any): e is GeoPoint => e instanceof GeoPoint;
++export const isGeoLine = (e: any): e is GeoLine => e instanceof GeoLine;
++export const isGeoSegment = (e: any): e is GeoSegment => e instanceof GeoSegment;
++export const isGeoConic = (e: any): e is GeoConic => e instanceof GeoConic;
++export const isGeoPolygon = (e: any): e is GeoPolygon => e instanceof GeoPolygon;
++export const isGeoNumeric = (e: any): e is GeoNumeric => e instanceof GeoNumeric;
++
+
+diff --git a/src/kernel/algo/AlgoArc.ts b/src/kernel/algo/AlgoArc.ts
+--- /dev/null
++++ b/src/kernel/algo/AlgoArc.ts
+--- --- /dev/null
++++ +++ b/src/kernel/algo/AlgoArc.ts
+@@ -0,0 +1,39 @@
++/**
++ * 圆弧构造算法 —— 圆心 + 起始终止点。
++ */
++
++import { IKernel } from '../core/Interfaces';
++import { AlgoElement } from './AlgoElement';
++import { GeoPoint } from '../geo/GeoPoint';
++import { GeoArc } from '../geo/GeoArc';
++
++export class AlgoArc extends AlgoElement {
++  private output: GeoArc;
++
++  constructor(kernel: IKernel, private center: GeoPoint, private pStart: GeoPoint, private pEnd: GeoPoint) {
++    super(kernel);
++    this.output = new GeoArc(kernel, center, pStart, pEnd);
++    this.setInputOutput();
++  }
++
++  setInputOutput(): void {
++    this.input = [this.center, this.pStart, this.pEnd];
++    this.setOutput([this.output]);
++  }
++
++  getOutput(): GeoArc { return this.output; }
++
++  compute(): void {
++    if (!this.center.isDefined() || !this.pStart.isDefined() || !this.pEnd.isDefined()) {
++      this.output.setUndefined();
++      return;
++    }
++    const r = Math.hypot(this.pStart.getX() - this.center.getX(), this.pStart.getY() - this.center.getY());
++    if (r <= 0) {
++      this.output.setUndefined();
++      return;
++    }
++    this.output.setDefined();
++  }
++}
++
+
+diff --git a/src/kernel/algo/AlgoRayTwoPoints.ts b/src/kernel/algo/AlgoRayTwoPoints.ts
+--- /dev/null
++++ b/src/kernel/algo/AlgoRayTwoPoints.ts
+--- --- /dev/null
++++ +++ b/src/kernel/algo/AlgoRayTwoPoints.ts
+@@ -0,0 +1,42 @@
++/**
++ * 射线构造算法 —— 两点定射线。
++ */
++
++import { IKernel } from '../core/Interfaces';
++import { AlgoElement } from './AlgoElement';
++import { GeoPoint } from '../geo/GeoPoint';
++import { GeoRay } from '../geo/GeoRay';
++import { GeoLine } from '../geo/GeoLine';
++import { GeoSegment } from '../geo/GeoSegment';
++
++export class AlgoRayTwoPoints extends AlgoElement {
++  private output: GeoRay;
++
++  constructor(kernel: IKernel, private a: GeoPoint, private b: GeoPoint) {
++    super(kernel);
++    this.output = new GeoRay(kernel, a, b);
++    this.setInputOutput();
++  }
++
++  setInputOutput(): void {
++    this.input = [this.a, this.b];
++    this.setOutput([this.output]);
++  }
++
++  getOutput(): GeoRay { return this.output; }
++
++  compute(): void {
++    if (!this.a.isDefined() || !this.b.isDefined()) {
++      this.output.setUndefined();
++      return;
++    }
++    const dx = this.b.getX() - this.a.getX();
++    const dy = this.b.getY() - this.a.getY();
++    if (Math.hypot(dx, dy) < 1e-9) {
++      this.output.setUndefined();
++      return;
++    }
++    this.output.setDefined();
++  }
++}
++
+
+diff --git a/src/kernel/algo/AlgoRegularPolygon.ts b/src/kernel/algo/AlgoRegularPolygon.ts
+--- /dev/null
++++ b/src/kernel/algo/AlgoRegularPolygon.ts
+--- --- /dev/null
++++ +++ b/src/kernel/algo/AlgoRegularPolygon.ts
+@@ -0,0 +1,36 @@
++/**
++ * 正多边形构造算法 —— 中心 + 半径 + 边数。
++ */
++
++import { IKernel } from '../core/Interfaces';
++import { AlgoElement } from './AlgoElement';
++import { GeoRegularPolygon } from '../geo/GeoRegularPolygon';
++
++export class AlgoRegularPolygon extends AlgoElement {
++  private output: GeoRegularPolygon;
++
++  constructor(kernel: IKernel, center: any, radiusOrPoint: number | any, nSides: number) {
++    super(kernel);
++    const cx = center instanceof Object ? center.x : center.getX();
++    const cy = center instanceof Object ? center.y : center.getY();
++    const r = typeof radiusOrPoint === 'number' ? radiusOrPoint : Math.hypot(radiusOrPoint.getX() - cx, radiusOrPoint.getY() - cy);
++    this.output = new GeoRegularPolygon(kernel, { x: cx, y: cy }, r, Math.max(3, Math.floor(nSides)));
++    this.setInputOutput();
++  }
++
++  setInputOutput(): void {
++    this.input = [this.output];
++    this.setOutput([this.output]);
++  }
++
++  getOutput(): GeoRegularPolygon { return this.output; }
++
++  compute(): void {
++    if (this.output.getRadius() <= 0 || this.output.getSides() < 3) {
++      this.output.setUndefined();
++      return;
++    }
++    this.output.setDefined();
++  }
++}
++
+
+diff --git a/src/kernel/algo/AlgoRotate.ts b/src/kernel/algo/AlgoRotate.ts
+--- /dev/null
++++ b/src/kernel/algo/AlgoRotate.ts
+--- --- /dev/null
++++ +++ b/src/kernel/algo/AlgoRotate.ts
+@@ -0,0 +1,179 @@
++/**
++ * 旋转变换算法 —— 绕中心旋转选中几何，生成新对象（GeoGebra 式"变换后新建"语义）。
++ */
++
++import { IKernel } from '../core/Interfaces';
++import { AlgoElement } from './AlgoElement';
++import { GeoElement } from '../geo/GeoElement';
++import { GeoPoint } from '../geo/GeoPoint';
++import { GeoLine } from '../geo/GeoLine';
++import { GeoSegment } from '../geo/GeoSegment';
++import { GeoConic } from '../geo/GeoConic';
++import { GeoPolygon } from '../geo/GeoPolygon';
++import { GeoNumeric } from '../geo/GeoNumeric';
++import { GeoVec3D } from '../core/GeoVec3D';
++import { GeoArc } from '../geo/GeoArc';
++import { GeoRay } from '../geo/GeoRay';
++import { GeoRegularPolygon } from '../geo/GeoRegularPolygon';
++import { GeoLocus } from '../geo/GeoLocus';
++
++// ---------------- 坐标变换辅助（纯函数）----
++const rotatePt = (p: { x: number; y: number }, c: { x: number; y: number }, t: number): { x: number; y: number } => {
++  const dx = p.x - c.x, dy = p.y - c.y;
++  return { x: c.x + dx * Math.cos(t) - dy * Math.sin(t), y: c.y + dx * Math.sin(t) + dy * Math.cos(t) };
++};
++const scalePt = (p: { x: number; y: number }, c: { x: number; y: number }, r: number): { x: number; y: number } => ({
++  x: c.x + r * (p.x - c.x), y: c.y + r * (p.y - c.y)
++});
++const mirrorPt = (p: { x: number; y: number }, A: number, B: number, C: number): { x: number; y: number } => {
++  const d = A * A + B * B;
++  return { x: p.x - 2 * A * (A * p.x + B * p.y + C) / d, y: p.y - 2 * B * (A * p.x + B * p.y + C) / d };
++};
++const lineInterceptPts = (a: number, b: number, c: number): [{ x: number; y: number }] => {
++  if (Math.abs(a) > 1e-9) {
++    const p = { x: -c / a, y: 0 };
++    return [p, { x: p.x + b, y: p.y - a }]; // 第二个点沿方向向量 (b,-a) 偏移
++  }
++  const p = { x: 0, y: -c / b };
++  return [p, { x: b, y: p.y - a }];
++};
++const circleCoeffs = (h: number, k: number, r: number): number[] => [1, 0, 1, -2 * h, -2 * k, h * h + k * k - r * r];
++
++type TransOp = 'rotate' | 'dilate' | 'mirror';
++
++/** 对单个点执行变换。 */
++const transformPoint = (p: GeoPoint, op: TransOp, arg: any): GeoPoint => {
++  const cp = { x: p.getX(), y: p.getY() };
++  let out: { x: number; y: number };
++  if (op === 'rotate') out = rotatePt(cp, arg.center, arg.angle);
++  else if (op === 'dilate') out = scalePt(cp, arg.center, arg.ratio);
++  else out = mirrorPt(cp, arg.A, arg.B, arg.C);
++  return new GeoPoint(p.kernel, new GeoVec3D(out.x, out.y, 1));
++};
++
++/** 从直线取两点经变换后重建直线。 */
++const transformLine = (l: GeoLine, op: TransOp, arg: any): GeoLine => {
++  const pts = lineInterceptPts(l.a, l.b, l.c).map(p => transformPoint({ x: p.x, y: p.y } as any, op, arg) as {x:number;y:number});
++  const a = pts[1].y - pts[0].y;
++  const b = pts[0].x - pts[1].x;
++  const cc = -a * pts[0].x - b * pts[0].y;
++  return new GeoLine(l.kernel, a, b, cc);
++};
++
++export class AlgoRotate extends AlgoElement {
++  private output: GeoElement;
++
++  constructor(kernel: IKernel, private input: GeoElement, private center: GeoPoint, private angle: number) {
++    super(kernel);
++    this.output = buildTransformed(kernel, input, 'rotate', { center, angle });
++    this.setInputOutput();
++  }
++
++  setInputOutput(): void {
++    this.input = [this.input];
++    this.setOutput([this.output]);
++  }
++
++  getOutput(): GeoElement { return this.output; }
++
++  compute(): void { this.output.setDefined(); }
++}
++
++export class AlgoDilate extends AlgoElement {
++  private output: GeoElement;
++
++  constructor(kernel: IKernel, private input: GeoElement, private center: GeoPoint, private ratio: number) {
++    super(kernel);
++    this.output = buildTransformed(kernel, input, 'dilate', { center, ratio });
++    this.setInputOutput();
++  }
++
++  setInputOutput(): void {
++    this.input = [this.input];
++    this.setOutput([this.output]);
++  }
++
++  getOutput(): GeoElement { return this.output; }
++
++  compute(): void { this.output.setDefined(); }
++}
++
++export class AlgoMirror extends AlgoElement {
++  private output: GeoElement;
++
++  constructor(kernel: IKernel, private input: GeoElement, private A: number, private B: number, private C: number) {
++    super(kernel);
++    this.output = buildTransformed(kernel, input, 'mirror', { A, B, C });
++    this.setInputOutput();
++  }
++
++  setInputOutput(): void {
++    this.input = [this.input];
++    this.setOutput([this.output]);
++  }
++
++  getOutput(): GeoElement { return this.output; }
++
++  compute(): void { this.output.setDefined(); }
++}
++
++/** 按类型重建经变换后的几何副本（变换对象自身不变）。 */
++export function buildTransformed(kernel: IKernel, input: GeoElement, op: TransOp, arg: any): GeoElement {
++  if (input instanceof GeoPoint) return transformPoint(input, op, arg);
++  if (input instanceof GeoNumeric) {
++    const copy = new GeoNumeric(kernel, input.getValue());
++    copy.label = input.label;
++    return copy;
++  }
++  if (input instanceof GeoLine) return transformLine(input as GeoLine, op, arg);
++  if (input instanceof GeoSegment) {
++    const s = input as GeoSegment;
++    const p1 = transformPoint(s.startPoint, op, arg);
++    const p2 = transformPoint(s.endPoint, op, arg);
++    return new GeoSegment(s.kernel, p1, p2);
++  }
++  if (input instanceof GeoConic) {
++    const { x, y } = op === 'mirror' ? mirrorPt({ x: input.getCenter().x, y: input.getCenter().y }, arg.A, arg.B, arg.C)
++      : op === 'rotate' ? rotatePt(input.getCenter(), arg.center, arg.angle)
++        : scalePt(input.getCenter(), arg.center, arg.ratio);
++    const r = input.getRadius();
++    return new GeoConic(kernel, circleCoeffs(x, y, r));
++  }
++  if (input instanceof GeoArc) {
++    const c = op === 'mirror' ? mirrorPt({ x: input.getCenter().x, y: input.getCenter().y }, arg.A, arg.B, arg.C)
++      : op === 'rotate' ? rotatePt(input.getCenter(), arg.center, arg.angle)
++        : scalePt(input.getCenter(), arg.center, arg.ratio);
++    return new GeoArc(kernel, { x: c.x, y: c.y }, input.getRadius(), input.getStartAngle(), input.getEndAngle(), input.isCounterClockwise());
++  }
++  if (input instanceof GeoRay) {
++    const so = op === 'mirror' ? mirrorPt({ x: input.getStartPoint().getX(), y: input.getStartPoint().getY() }, arg.A, arg.B, arg.C)
++      : op === 'rotate' ? rotatePt(input.getStartPoint(), arg.center, arg.angle)
++        : scalePt(input.getStartPoint(), arg.center, arg.ratio);
++    const eo = op === 'mirror' ? mirrorPt({ x: input.getSecondPoint().getX(), y: input.getSecondPoint().getY() }, arg.A, arg.B, arg.C)
++      : op === 'rotate' ? rotatePt(input.getSecondPoint(), arg.center, arg.angle)
++        : scalePt(input.getSecondPoint(), arg.center, arg.ratio);
++    return new GeoRay(input.kernel, new GeoPoint(input.kernel, new GeoVec3D(so.x, so.y, 1)), new GeoPoint(input.kernel, new GeoVec3D(eo.x, eo.y, 1)));
++  }
++  if (input instanceof GeoRegularPolygon) {
++    const c = op === 'mirror' ? mirrorPt({ x: input.getCenter().x, y: input.getCenter().y }, arg.A, arg.B, arg.C)
++      : op === 'rotate' ? rotatePt(input.getCenter(), arg.center, arg.angle)
++        : scalePt(input.getCenter(), arg.center, arg.ratio);
++    return new GeoRegularPolygon(input.kernel, c, input.getRadius(), input.getSides());
++  }
++  if (input instanceof GeoPolygon) {
++    const vs = (input as GeoPolygon).vertices.map(v => transformPoint(v, op, arg));
++    return new GeoPolygon(input.kernel, vs);
++  }
++  if (input instanceof GeoLocus) {
++    const locus = input as GeoLocus;
++    const mapped = locus.getSamples().map(({ x, y }) =>
++      op === 'mirror' ? mirrorPt({ x, y }, arg.A, arg.B, arg.C)
++      : op === 'rotate' ? rotatePt({ x, y }, arg.center, arg.angle)
++        : scalePt({ x, y }, arg.center, arg.ratio)
++    );
++    return new GeoLocus(locus.kernel, mapped, locus.getSegments().slice());
++  }
++  // 未知类型：返回自身（不破坏构造）
++  return input;
++}
++
+
+diff --git a/src/kernel/geo/GeoArc.ts b/src/kernel/geo/GeoArc.ts
+--- /dev/null
++++ b/src/kernel/geo/GeoArc.ts
+--- --- /dev/null
++++ +++ b/src/kernel/geo/GeoArc.ts
+@@ -0,0 +1,97 @@
++/**
++ * 圆弧（Arc）—— 圆的指定起止角区间；fill 时绘制为扇形。
++ * 对标 GeoGebra「圆弧」工具（圆心+圆上两点 / 圆心+起始终止角）。
++ */
++
++import { IKernel } from '../core/Interfaces';
++import { GeoConic } from './GeoConic';
++import { GeoPoint } from './GeoPoint';
++import { GeoVec3D } from '../core/GeoVec3D';
++
++export class GeoArc extends GeoConic {
++  private _startAngle: number;
++  private _endAngle: number;
++  private _ccw: boolean;      // true = 逆时针
++
++  constructor(
++    kernel: IKernel,
++    center: { x: number; y: number },
++    radius: number,
++    startAngle: number,
++    endAngle: number,
++    counterClockwise = false
++  ) {
++    super(kernel, circleCoeffs(center.x, center.y, radius));
++    this._startAngle = startAngle;
++    this._endAngle = endAngle;
++    this._ccw = counterClockwise;
++  }
++
++  static fromPoints(kernel: IKernel, center: GeoPoint, pStart: GeoPoint, pEnd: GeoPoint, counterClockwise = false): GeoArc {
++    const cx = center.getX(), cy = center.getY();
++    const r = Math.hypot(pStart.getX() - cx, pStart.getY() - cy);
++    const sa = Math.atan2(pStart.getY() - cy, pStart.getX() - cx);
++    const ea = Math.atan2(pEnd.getY() - cy, pEnd.getX() - cx);
++    return new GeoArc(kernel, { x: cx, y: cy }, r, sa, ea, counterClockwise);
++  }
++
++  getClassName(): string { return 'GeoArc'; }
++
++  public get defaultStrokeColor(): string { return '#000000'; }
++  public get defaultLineWidth(): number { return 1; }
++  public get defaultFillColor(): string | null { return null; }
++
++  getStartAngle(): number { return this._startAngle; }
++  getEndAngle(): number { return this._endAngle; }
++  isCounterClockwise(): boolean { return this._ccw; }
++
++  getCenter(): { x: number; y: number } { return super.getCenter(); }
++  getRadius(): number { return super.getRadius(); }
++
++  /** 代数描述：圆弧 (A,B) / 角区间表示。 */
++  getAlgebraDescription(): string {
++    if (!this.isDefined()) return `${this.label}（未定义）`;
++    const { x: h, y: k } = this.getCenter();
++    const r = this.getRadius();
++    if (r <= 0) return `${this.label}（未定义）`;
++    const s = (this._startAngle * 180 / Math.PI).toFixed(0).replace(/\.0$/, '');
++    const e = (this._endAngle * 180 / Math.PI).toFixed(0).replace(/\.0$/, '');
++    return `${this.label} : 弧 (角度 ${s}°→${e}°, r=${r.toFixed(2)})`;
++  }
++
++  isOnPath(PI: GeoPoint, eps = 1e-6): boolean {
++    const center = this.getCenter();
++    const r = this.getRadius();
++    const d = Math.hypot(PI.getX() - center.x, PI.getY() - center.y);
++    if (Math.abs(d - r) > eps) return false;
++    const a = Math.atan2(PI.getY() - center.y, PI.getX() - center.x);
++    let start = this._startAngle, end = this._endAngle;
++    // 标准化区间，处理跨越 ±π
++    if (end < start) { [start, end] = [end, start]; }
++    // 归一化到 [start-startOffset, start-startOffset+2pi]
++    const normA = normalizeAngle(a, start);
++    const nS = normalizeAngle(start, start);
++    const nE = normalizeAngle(end, start);
++    return normA >= nS - eps && normA <= nE + eps;
++  }
++
++  getMinParameter(): number { return this._startAngle; }
++  getMaxParameter(): number { return this._endAngle; }
++
++  createPathMover(): any { return null; }
++}
++
++// ---------------- 私有辅助 ----------------
++
++function circleCoeffs(h: number, k: number, r: number): number[] {
++  // A x² + B xy + C y² + D x + E y + F = 0  for circle: A=C=1, B=0, D=-2h, E=-2k, F=h²+k²-r²
++  return [1, 0, 1, -2 * h, -2 * k, h * h + k * k - r * r];
++}
++
++function normalizeAngle(a: number, base: number): number {
++  let t = a - base;
++  while (t < 0) t += 2 * Math.PI;
++  while (t >= 2 * Math.PI) t -= 2 * Math.PI;
++  return t;
++}
++
+
+diff --git a/src/kernel/geo/GeoRay.ts b/src/kernel/geo/GeoRay.ts
+--- /dev/null
++++ b/src/kernel/geo/GeoRay.ts
+--- --- /dev/null
++++ +++ b/src/kernel/geo/GeoRay.ts
+@@ -0,0 +1,57 @@
++/**
++ * 射线（Ray）—— 从原点出发经过第二点无限延伸。
++ * 对标 GeoGebra「射线」工具。
++ */
++
++import { IKernel } from '../core/Interfaces';
++import { GeoElement } from './GeoElement';
++import { GeoPoint } from './GeoPoint';
++import { GeoVec3D } from '../core/GeoVec3D';
++
++export class GeoRay extends GeoElement {
++  constructor(
++    kernel: IKernel,
++    public startPoint: GeoPoint,   // 原点
++    public secondPoint: GeoPoint   // 方向点
++  ) {
++    super(kernel, new GeoVec3D(startPoint.getX(), startPoint.getY(), 1));
++  }
++
++  getClassName(): string { return 'GeoRay'; }
++
++  public get defaultStrokeColor(): string { return '#000000'; }
++  public get defaultLineWidth(): number { return 1; }
++
++  getStartPoint(): GeoPoint { return this.startPoint; }
++  getSecondPoint(): GeoPoint { return this.secondPoint; }
++
++  /** 代数描述：射线 AB。 */
++  getAlgebraDescription(): string {
++    if (!this.isDefined()) return `${this.label}（未定义）`;
++    const a = this.startPoint.label || '?';
++    const b = this.secondPoint.label || '?';
++    return `${this.label} : 射线 ${a}${b}`;
++  }
++
++  isOnPath(PI: GeoPoint, eps = 1e-6): boolean {
++    const x = PI.getX(), y = PI.getY();
++    const dx = this.secondPoint.getX() - this.startPoint.getX();
++    const dy = this.secondPoint.getY() - this.startPoint.getY();
++    const len2 = dx * dx + dy * dy;
++    if (len2 === 0) return false;
++    const dot = (x - this.startPoint.getX()) * dx + (y - this.startPoint.getY()) * dy;
++    if (dot < -eps) return false;                      // 起点之后
++    const cross = dx * (y - this.startPoint.getY()) - dy * (x - this.startPoint.getX());
++    return Math.abs(cross) < eps * Math.hypot(dx, dy); // 共线
++  }
++
++  getMinParameter(): number { return 0; }
++  getMaxParameter(): number { return Infinity; }
++
++  translate(v: GeoVec3D): void {
++    this.startPoint.setCoords(this.startPoint.getX() + v.x, this.startPoint.getY() + v.y);
++    this.secondPoint.setCoords(this.secondPoint.getX() + v.x, this.secondPoint.getY() + v.y);
++    this.update();
++  }
++}
++
+
+diff --git a/src/kernel/geo/GeoRegularPolygon.ts b/src/kernel/geo/GeoRegularPolygon.ts
+--- /dev/null
++++ b/src/kernel/geo/GeoRegularPolygon.ts
+--- --- /dev/null
++++ +++ b/src/kernel/geo/GeoRegularPolygon.ts
+@@ -0,0 +1,69 @@
++/**
++ * 正多边形（Regular Polygon）—— 由中心、半径与边数确定。
++ * 对标 GeoGebra「正多边形」工具。内部以顶点数组表示，可直接复用多边形渲染/面积逻辑。
++ */
++
++import { IKernel } from '../core/Interfaces';
++import { GeoPolygon } from './GeoPolygon';
++import { GeoPoint } from './GeoPoint';
++import { GeoVec3D } from '../core/GeoVec3D';
++
++/** 围绕中心均匀分布的顶点坐标。 */
++type VertexTuple = [number, number];
++
++/** 计算正多边形的顶点数组（每个点都关联 kernel 且为自由点，因此可被平移）。 */
++function computeVertices(kernel: IKernel, center: { x: number; y: number }, radius: number, n: number): GeoPoint[] {
++  const vs: GeoPoint[] = [];
++  for (let i = 0; i < n; i++) {
++    const ang = (i / n) * 2 * Math.PI - Math.PI / 2; // 第一条边水平朝上
++    const x = center.x + radius * Math.cos(ang);
++    const y = center.y + radius * Math.sin(ang);
++    const p = new GeoPoint(kernel, new GeoVec3D(x, y, 1));
++    p.label = '';
++    vs.push(p);
++  }
++  return vs;
++}
++
++export class GeoRegularPolygon extends GeoPolygon {
++  private _center: { x: number; y: number };
++  private _radius: number;
++  private _nSides: number;
++
++  constructor(kernel: IKernel, center: { x: number; y: number }, radius: number, nSides: number) {
++    super(kernel, computeVertices(kernel, center, radius, Math.max(3, Math.floor(nSides))));
++    this._center = center;
++    this._radius = radius;
++    this._nSides = this.vertices.length;
++  }
++
++  static fromCenterSidePoint(kernel: IKernel, center: GeoPoint, sidePoint: GeoPoint, nSides: number): GeoRegularPolygon {
++    const cx = center.getX(), cy = center.getY();
++    const r = Math.hypot(sidePoint.getX() - cx, sidePoint.getY() - cy);
++    return new GeoRegularPolygon(kernel, { x: cx, y: cy }, r, nSides);
++  }
++
++  getClassName(): string { return 'GeoRegularPolygon'; }
++
++  public get defaultStrokeColor(): string { return '#3b82f6'; }
++  public get defaultLineWidth(): number { return 1; }
++  public get defaultFillColor(): string { return 'rgba(59, 130, 246, 0.2)'; }
++
++  getCenter(): { x: number; y: number } { return this._center; }
++  getRadius(): number { return this._radius; }
++  getSides(): number { return this._nSides; }
++
++  /** 代数描述：正 N 边形。 */
++  getAlgebraDescription(): string {
++    if (!this.isDefined()) return `${this.label}（未定义）`;
++    return `${this.label} = 正${this._nSides}边形（r=${this._radius.toFixed(2)}, 周长 ${this.getPerimeter().toFixed(2)}, 面积 ${this.getArea().toFixed(2)})`;
++  }
++
++  /** 正多边形面积：S = n·r²·tan(π/n)。 */
++  getArea(): number {
++    const n = this._nSides;
++    if (n < 3 || this._radius <= 0) return 0;
++    return (n * this._radius * this._radius * Math.tan(Math.PI / n)) / 4;
++  }
++}
++

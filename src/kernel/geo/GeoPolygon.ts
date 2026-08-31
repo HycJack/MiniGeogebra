@@ -24,7 +24,7 @@ export class GeoPolygon extends GeoElement implements Region {
     return `${this.label} = [${labels}]（周长 ${perim.toFixed(2)}，面积 ${area.toFixed(2)}）`;
   }
 
-  private getPerimeter(): number {
+  protected getPerimeter(): number {
     let p = 0;
     for (let i = 0, j = this.vertices.length - 1; i < this.vertices.length; j = i++) {
       p += Math.hypot(
@@ -35,7 +35,7 @@ export class GeoPolygon extends GeoElement implements Region {
     return p;
   }
 
-  private getArea(): number {
+  protected getArea(): number {
     let sum = 0;
     for (let i = 0, j = this.vertices.length - 1; i < this.vertices.length; j = i++) {
       sum += this.vertices[j].getX() * this.vertices[i].getY()
