@@ -6,10 +6,11 @@ import { useLanguage } from '../i18n/LanguageContext';
 interface SliderControlProps {
   numeric: GeoNumeric;
   kernel: Kernel;
+  label?: string;
   onNumericChange?: (numeric: GeoNumeric, oldValue: number, newValue: number) => void;
 }
 
-export const SliderControl: React.FC<SliderControlProps> = ({ numeric, kernel, onNumericChange }) => {
+export const SliderControl: React.FC<SliderControlProps> = ({ numeric, kernel, label, onNumericChange }) => {
   const { t } = useLanguage();
   const value = numeric.getValue();
   const min = numeric.intervalMin;
@@ -72,7 +73,7 @@ export const SliderControl: React.FC<SliderControlProps> = ({ numeric, kernel, o
   return (
     <div className="bg-white p-3 rounded-lg border border-gray-200 mb-3 shadow-sm text-sm">
       <div className="flex justify-between items-center mb-2">
-        <span className="font-semibold text-gray-700">{numeric.label || t('parameter')}</span>
+        <span className="font-semibold text-gray-700">{label || numeric.label || t('parameter')}</span>
         <button
           onClick={toggleAnimation}
           className={`px-2 py-1 rounded text-xs font-medium transition-colors ${

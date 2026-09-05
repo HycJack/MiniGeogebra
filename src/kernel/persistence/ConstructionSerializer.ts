@@ -20,6 +20,7 @@ import { AlgoAngleBisector } from '../algo/AlgoAngleBisector';
 import { AlgoPointOnLine } from '../algo/AlgoPointOnLine';
 import { AlgoPointOnSegment } from '../algo/AlgoPointOnSegment';
 import { AlgoPointOnConic } from '../algo/AlgoPointOnConic';
+import { AlgoPointOnPolyLine } from '../algo/AlgoPointOnPolyLine';
 import { AlgoTranslate } from '../algo/AlgoTranslate';
 import { AlgoDistance } from '../algo/AlgoDistance';
 import { AlgoAngle } from '../algo/AlgoAngle';
@@ -94,6 +95,7 @@ function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[]): AlgoEle
   const asConic = (n: number) => inputs[n] as import('../geo/GeoConic').GeoConic;
   const asLine = (n: number) => inputs[n] as import('../geo/GeoLine').GeoLine;
   const asSegment = (n: number) => inputs[n] as import('../geo/GeoSegment').GeoSegment;
+  const asPolyLine = (n: number) => inputs[n] as import('../geo/GeoPolyLine').GeoPolyLine;
 
   switch (type) {
     case 'AlgoLineTwoPoints':        return new AlgoLineTwoPoints(kernel, asPoint(0), asPoint(1));
@@ -111,6 +113,7 @@ function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[]): AlgoEle
     case 'AlgoPointOnLine':          return new AlgoPointOnLine(kernel, asLine(0), inputs[1] as GeoNumeric);
     case 'AlgoPointOnSegment':       return new AlgoPointOnSegment(kernel, asSegment(0), inputs[1] as GeoNumeric);
     case 'AlgoPointOnConic':         return new AlgoPointOnConic(kernel, asConic(0), inputs[1] as GeoNumeric);
+    case 'AlgoPointOnPolyLine':      return new AlgoPointOnPolyLine(kernel, asPolyLine(0), inputs[1] as GeoNumeric);
     case 'AlgoTranslate':            return new AlgoTranslate(kernel, inputs[0], inputs[1] as import('../geo/GeoVector').GeoVector);
     case 'AlgoDistance':             return new AlgoDistance(kernel, inputs[0], inputs[1]);
     case 'AlgoAngle':                return new AlgoAngle(kernel, asPoint(0), asPoint(1), asPoint(2));

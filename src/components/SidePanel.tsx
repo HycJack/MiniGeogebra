@@ -7,7 +7,7 @@ import { GeoConic } from '../kernel/geo/GeoConic';
 import { GeoNumeric } from '../kernel/geo/GeoNumeric';
 import { CoordinateSystem } from '../kernel/core/CoordinateSystem';
 import { SliderControl } from './SliderControl';
-import { Menu, Sliders } from 'lucide-react';
+import { Menu, Sliders, Square } from 'lucide-react';
 import type { TFunction } from '../i18n/LanguageContext';
 
 interface SidePanelProps {
@@ -18,13 +18,27 @@ interface SidePanelProps {
   coord: CoordinateSystem;
   recordStyleChange: (el: GeoElement, changes: Record<string, unknown>) => void;
   notifyNumericChange: (numeric: GeoNumeric, oldValue: number, newValue: number) => void;
+  renderRev: number;
   t: TFunction;
 }
 
 const SidePanel: React.FC<SidePanelProps> = ({
   kernel, panelTab, setPanelTab, selectedElements, coord,
-  recordStyleChange, notifyNumericChange, t
+  recordStyleChange, notifyNumericChange, renderRev, t
 }) => {
+  // renderRev 只用于让约束点参数在动画循环中随构造刷新重新计算。
+  void renderRev;
+  const animationElements = kernel.getConstruction().getElements().flatMap(el => {
+    if (el instanceof GeoNumeric && el.isAnimating()) {
+      return [{ point: null, numeric: el }];
+    }
+    if (el instanceof GeoPoint && el.parentAlgo) {
+      const numeric = el.parentAlgo.getInput().find(input => input instanceof GeoNumeric) as GeoNumeric | undefined;
+      if (numeric && numeric.isAnimating()) return [{ point: el, numeric }];
+    }
+    return [];
+  });
+
   return (
     <div className="w-72 bg-white border-r border-gray-200 flex flex-col shadow-sm z-10">
       <div className="flex items-stretch border-b border-gray-200 bg-gray-50">
@@ -78,17 +92,31 @@ const SidePanel: React.FC<SidePanelProps> = ({
             )}
           </div>
 
-          {kernel.getConstruction().getElements().filter(el => el instanceof GeoNumeric && el.isAnimatable()).length > 0 && (
+          {animationElements.length > 0 && (
             <div className="border-t border-gray-200 bg-gray-50 flex flex-col max-h-64">
               <div className="p-3 border-b border-gray-200">
-                <h3 className="font-semibold text-gray-700 text-sm">{t('animationsAndControls')}</h3>
+                <div className="flex items-center justify-between">
+                  <h3 className="font-semibold text-gray-700 text-sm">{t('animationsAndControls')}</h3>
+                  <button
+                    type="button"
+                    onClick={() => kernel.getAnimationManager().stopAllAnimation()}
+                    className="p-1.5 rounded hover:bg-gray-200 text-gray-600 transition-colors"
+                    title={t('stopAnimation')}
+                  >
+                    <Square size={14} />
+                  </button>
+                </div>
               </div>
               <div className="p-2 overflow-y-auto space-y-2">
-                {kernel.getConstruction().getElements()
-                  .filter(el => el instanceof GeoNumeric && el.isAnimatable())
-                  .map(el => (
-                    <SliderControl key={el.id} numeric={el as GeoNumeric} kernel={kernel} onNumericChange={notifyNumericChange} />
-                  ))}
+                {animationElements.map(({ point, numeric }) => (
+                  <SliderControl
+                    key={numeric.id}
+                    numeric={numeric}
+                    kernel={kernel}
+                    label={point?.getNameDescription()}
+                    onNumericChange={notifyNumericChange}
+                  />
+                ))}
               </div>
             </div>
           )}

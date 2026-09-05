@@ -9,6 +9,7 @@ export class AnimationManager {
 
     private kernel: IKernel;
     private animatedGeos: GeoElement[] = [];
+    private animationStartValues = new Map<GeoElement, number>();
     private timerId: number | null = null;
     private lastTime = 0;
 
@@ -17,18 +18,21 @@ export class AnimationManager {
     }
 
     public addAnimatedGeo(geo: GeoElement) {
-        if (geo.isAnimating() && !this.animatedGeos.includes(geo)) {
-            this.animatedGeos.push(geo);
+        if (!geo.isAnimating() || this.animatedGeos.includes(geo)) return;
+        const value = (geo as any).getValue?.();
+        if (typeof value === 'number' && !isNaN(value)) {
+            this.animationStartValues.set(geo, value);
         }
+        this.animatedGeos.push(geo);
     }
 
     public removeAnimatedGeo(geo: GeoElement) {
         const index = this.animatedGeos.indexOf(geo);
-        if (index > -1) {
-            this.animatedGeos.splice(index, 1);
-            if (this.animatedGeos.length === 0) {
-                this.stopAnimation();
-            }
+        if (index === -1) return;
+        this.animatedGeos.splice(index, 1);
+        this.animationStartValues.delete(geo);
+        if (this.animatedGeos.length === 0) {
+            this.stopAnimation();
         }
     }
 
@@ -48,6 +52,21 @@ export class AnimationManager {
 
     public isRunning(): boolean {
         return this.timerId !== null;
+    }
+
+    /** Stop the clock and return each animated numeric to its value at playback start. */
+    public stopAllAnimation(): void {
+        const geos = [...this.animatedGeos];
+        this.stopAnimation();
+        geos.forEach(geo => {
+            const startValue = this.animationStartValues.get(geo);
+            if (startValue !== undefined && typeof (geo as any).setValue === 'function') {
+                (geo as any).setValue(startValue);
+                this.kernel.recomputeDependents(geo);
+            }
+            geo.setAnimating(false);
+        });
+        this.animationStartValues.clear();
     }
 
     public getAnimatedGeos(): GeoElement[] {

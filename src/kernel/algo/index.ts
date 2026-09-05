@@ -20,6 +20,7 @@ export { AlgoCircleCenter } from './AlgoCircleCenter';
 export { AlgoPointOnSegment } from './AlgoPointOnSegment';
 export { AlgoPointOnLine } from './AlgoPointOnLine';
 export { AlgoPointOnConic } from './AlgoPointOnConic';
+export { AlgoPointOnPolyLine } from './AlgoPointOnPolyLine';
 export { AlgoIntersect } from './AlgoIntersect';
 export { AlgoParallelLine } from './AlgoParallelLine';
 export { AlgoOrthogonalLine } from './AlgoOrthogonalLine';

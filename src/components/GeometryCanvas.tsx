@@ -555,7 +555,7 @@ export const GeometryCanvas: React.FC = () => {
 
       {/* ── Main Content ──────────────────────────────────────── */}
       <div className="flex flex-1 overflow-hidden relative">
-        <SidePanel kernel={kernel} panelTab={panelTab} setPanelTab={setPanelTab} selectedElements={selectedElements} coord={coord} recordStyleChange={recordStyleChange} notifyNumericChange={notifyNumericChange} t={t} />
+        <SidePanel kernel={kernel} panelTab={panelTab} setPanelTab={setPanelTab} selectedElements={selectedElements} coord={coord} recordStyleChange={recordStyleChange} notifyNumericChange={notifyNumericChange} renderRev={renderRev} t={t} />
 
         {/* Canvas Area */}
         <div className="flex-1 relative bg-white z-0" ref={containerRef}>

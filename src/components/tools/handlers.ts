@@ -31,7 +31,6 @@ import {
   AlgoOrthogonalLine, AlgoPerpendicularBisector, AlgoAngleBisector, AlgoTangent,
   AlgoLocus, AlgoDistance, AlgoAngle, AlgoArea, AlgoArc,
   AlgoRegularPolygon, AlgoCircleCenter,
-  AlgoPointOnSegment, AlgoPointOnLine, AlgoPointOnConic,
   buildTransformed,
 } from '../../kernel/algo';
 import { AlgoRayTwoPoints } from '../../kernel/algo/AlgoRayTwoPoints';
@@ -209,31 +208,15 @@ export const handlePointerDown = (
     case 'point':
     case 'point_on_object': {
       const obj = hitObject();
-      if (obj instanceof GeoSegment || obj instanceof GeoLine || obj instanceof GeoConic) {
-        const paramCount = kernel.getConstruction().getElements().filter(e => e instanceof GeoNumeric).length + 1;
-        const param = new GeoNumeric(kernel, 0);
-        param.label = `t_${paramCount}`;
-        param.setAnimating(true);
-        let algo: any;
-        if (obj instanceof GeoSegment) {
-          param.intervalMin = 0; param.intervalMax = 1;
-          algo = new AlgoPointOnSegment(kernel, obj, param);
-        } else if (obj instanceof GeoLine) {
-          param.intervalMin = -10; param.intervalMax = 10;
-          algo = new AlgoPointOnLine(kernel, obj, param);
-        } else {
-          param.intervalMin = 0; param.intervalMax = 2 * Math.PI;
-          algo = new AlgoPointOnConic(kernel, obj, param);
-        }
-        kernel.getConstruction().addElement(param);
-        if (algo) {
-          algo.updateParameter(point.x, point.y);
-          algo.compute();
-          const p = algo.getOutput();
-          p.label = kernel.getConstruction().getNextPointLabel();
-          kernel.getConstruction().addElement(algo);
-          kernel.getConstruction().addElement(p);
-          kernel.notifyUpdate(p);
+      if (
+        obj instanceof GeoSegment || obj instanceof GeoLine ||
+        obj instanceof GeoConic || obj instanceof GeoPolyLine
+      ) {
+        const created = createParameterPointOnPath(kernel, obj, point.x, point.y);
+        if (created) {
+          notifyUpdate(created.point);
+          setSelectedElements([created.point]);
+          setRenderRev(r => r + 1);
         }
       } else {
         emptyClickNewPoint();

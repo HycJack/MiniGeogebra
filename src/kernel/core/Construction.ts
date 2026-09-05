@@ -267,4 +267,15 @@ export class Construction {
       index++;
     }
   }
+
+  getNextNumericLabel(additionalLabels?: Set<string>): string {
+    const existingLabels = new Set(this.elements.map(e => (e as any).label).filter(l => l));
+    if (additionalLabels) additionalLabels.forEach(l => existingLabels.add(l));
+    let index = 1;
+    while (true) {
+      const label = `t${index}`;
+      if (!existingLabels.has(label)) return label;
+      index++;
+    }
+  }
 }

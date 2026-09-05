@@ -10,10 +10,13 @@ import { GeoNumeric } from '../../kernel/geo/GeoNumeric';
 import { GeoSegment } from '../../kernel/geo/GeoSegment';
 import { GeoLine } from '../../kernel/geo/GeoLine';
 import { GeoConic } from '../../kernel/geo/GeoConic';
+import { GeoPolyLine } from '../../kernel/geo/GeoPolyLine';
 import { GeoVec3D } from '../../kernel/core/GeoVec3D';
+import { AlgoElement } from '../../kernel/algo/AlgoElement';
 import { AlgoPointOnSegment } from '../../kernel/algo/AlgoPointOnSegment';
 import { AlgoPointOnLine } from '../../kernel/algo/AlgoPointOnLine';
 import { AlgoPointOnConic } from '../../kernel/algo/AlgoPointOnConic';
+import { AlgoPointOnPolyLine } from '../../kernel/algo/AlgoPointOnPolyLine';
 
 /** 创建一个带唯一标签的独立点（A, B, C, D...）。 */
 export function createLabeledPoint(kernel: Kernel, x: number, y: number, z = 1): GeoPoint {
@@ -46,15 +49,14 @@ export function nextAreaLabel(construction: Construction): string {
   return 'S';
 }
 
-/** 在路径（线段/直线/圆）上根据屏幕位置创建一个带参数的约束点。 */
+/** 在路径（线段/直线/圆/折线）上根据屏幕位置创建一个带参数的约束点。 */
 export function createParameterPointOnPath(
   kernel: Kernel,
-  path: any,                 // GeoSegment | GeoLine | GeoConic
+  path: GeoSegment | GeoLine | GeoConic | GeoPolyLine,
   screenX: number, screenY: number
-): { param: GeoNumeric; point: GeoPoint; algo: any } | null {
+): { param: GeoNumeric; point: GeoPoint; algo: AlgoElement } | null {
   const param = new GeoNumeric(kernel, 0);
-  param.label = `t_${kernel.getConstruction().getElements().filter(e => e instanceof GeoNumeric).length + 1}`;
-  param.setAnimating(true);
+  param.label = kernel.getConstruction().getNextNumericLabel();
 
   let algo: any;
   if (path instanceof GeoSegment) {
@@ -66,6 +68,9 @@ export function createParameterPointOnPath(
   } else if (path instanceof GeoConic) {
     param.intervalMin = 0; param.intervalMax = 2 * Math.PI;
     algo = new AlgoPointOnConic(kernel, path, param);
+  } else if (path instanceof GeoPolyLine) {
+    param.intervalMin = 0; param.intervalMax = path.vertices.length - 1;
+    algo = new AlgoPointOnPolyLine(kernel, path, param);
   }
   if (!algo) return null;
 
