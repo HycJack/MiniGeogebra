@@ -3,6 +3,7 @@ export { AlgoPolyLine } from './AlgoPolyLine';
 export { AlgoSemicircle } from './AlgoSemicircle';
 export { AlgoCircularSector } from './AlgoCircularSector';
 export { AlgoCircumcircularArc } from './AlgoCircumcircularArc';
+export { AlgoCircumcircularSector } from './AlgoCircumcircularSector';
 export { AlgoSlope } from './AlgoSlope';
 export { AlgoEllipse } from './AlgoEllipse';
 export { AlgoHyperbola } from './AlgoHyperbola';

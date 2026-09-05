@@ -1,5 +1,5 @@
 import React from 'react';
-import { GeoNumeric } from '../kernel/geo/GeoNumeric';
+import { GeoNumeric, AnimationType } from '../kernel/geo/GeoNumeric';
 import { Kernel } from '../kernel/core/Kernel';
 import { useLanguage } from '../i18n/LanguageContext';
 
@@ -16,6 +16,7 @@ export const SliderControl: React.FC<SliderControlProps> = ({ numeric, kernel, o
   const max = numeric.intervalMax;
   const isAnimating = numeric.isAnimating();
   const speed = numeric.animationSpeed;
+  const animationType = numeric.animationType;
 
   const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = parseFloat(e.target.value);
@@ -60,6 +61,11 @@ export const SliderControl: React.FC<SliderControlProps> = ({ numeric, kernel, o
         am.startAnimation();
       }
     }
+    kernel.notifyUpdate(numeric);
+  };
+
+  const handleTypeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    numeric.setAnimationType(Number(e.target.value) as AnimationType);
     kernel.notifyUpdate(numeric);
   };
 
@@ -111,6 +117,14 @@ export const SliderControl: React.FC<SliderControlProps> = ({ numeric, kernel, o
           onChange={handleSpeedChange}
           className="w-14 px-1 py-1 border rounded text-xs text-center bg-gray-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
         />
+        <label className="ml-auto text-xs text-gray-500">{t('animationType')}:</label>
+        <select value={animationType} onChange={handleTypeChange}
+          className="w-24 px-1 py-1 border rounded text-xs bg-gray-50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500">
+          <option value={AnimationType.OSCILLATING}>{t('oscillating')}</option>
+          <option value={AnimationType.INCREASING}>{t('increasing')}</option>
+          <option value={AnimationType.DECREASING}>{t('decreasing')}</option>
+          <option value={AnimationType.INCREASING_ONCE}>{t('increasingOnce')}</option>
+        </select>
       </div>
     </div>
   );

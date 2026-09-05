@@ -178,7 +178,7 @@ export function drawGrid(renderer: IRenderer, wScreen: number, hScreen: number, 
 
 /** 点。 */
 export function drawPoint(renderer: IRenderer, p: GeoPoint, selected: boolean, scale: number): void {
-  if (!p.isDefined()) return;
+  if (!p.isDefined() || p.visible === false) return;
   const x = p.getX(), y = p.getY();
   const baseRadius = selected ? 8 : 6;
   const pointRadius = baseRadius / scale;
@@ -221,7 +221,7 @@ export function drawPoint(renderer: IRenderer, p: GeoPoint, selected: boolean, s
 
 /** 直线（贯穿整个视野）。 */
 export function drawLine(renderer: IRenderer, l: GeoLine, selected: boolean, bounds: DrawBounds, scale: number): void {
-  if (!l.isDefined()) return;
+  if (!l.isDefined() || l.visible === false) return;
   const stroke = l.strokeColor ?? l.defaultStrokeColor;
   const baseWidth = l.strokeWidth ?? l.defaultLineWidth;
   renderer.strokeStyle = selected ? '#3b82f6' : stroke;
@@ -243,7 +243,7 @@ export function drawLine(renderer: IRenderer, l: GeoLine, selected: boolean, bou
 
 /** 线段。 */
 export function drawSegment(renderer: IRenderer, s: GeoSegment, selected: boolean, scale: number): void {
-  if (!s.isDefined()) return;
+  if (!s.isDefined() || s.visible === false) return;
   const stroke = s.strokeColor ?? s.defaultStrokeColor;
   const baseWidth = s.strokeWidth ?? s.defaultLineWidth;
   renderer.strokeStyle = selected ? '#3b82f6' : stroke;
@@ -256,7 +256,7 @@ export function drawSegment(renderer: IRenderer, s: GeoSegment, selected: boolea
 
 /** 多边形（填充+描边）。 */
 export function drawPolygon(renderer: IRenderer, poly: GeoPolygon, selected: boolean, scale: number): void {
-  if (!poly.isDefined()) return;
+  if (!poly.isDefined() || poly.visible === false) return;
   if (poly.vertices.length < 3) return;
   const fill = poly.fillColor ?? poly.defaultFillColor ?? (selected ? 'rgba(59, 130, 246, 0.4)' : 'rgba(59, 130, 246, 0.2)');
   const stroke = poly.strokeColor ?? poly.defaultStrokeColor;
@@ -276,7 +276,7 @@ export function drawPolygon(renderer: IRenderer, poly: GeoPolygon, selected: boo
 
 /** 圆锥曲线（圆 / 椭圆 / 双曲线 / 抛物线）。 */
 export function drawConic(renderer: IRenderer, c: GeoConic, selected: boolean, scale: number): void {
-  if (!c.isDefined()) return;
+  if (!c.isDefined() || c.visible === false) return;
 
   const stroke = c.strokeColor ?? c.defaultStrokeColor;
   const baseWidth = c.strokeWidth ?? c.defaultLineWidth;
@@ -345,7 +345,7 @@ export function drawConic(renderer: IRenderer, c: GeoConic, selected: boolean, s
 
 /** 轨迹曲线（断段绘制）。 */
 export function drawLocus(renderer: IRenderer, locus: GeoLocus, selected: boolean, scale: number): void {
-  if (!locus.isDefined()) return;
+  if (!locus.isDefined() || locus.visible === false) return;
   const samples = locus.getSamples();
   const segments = locus.getSegments();
   if (samples.length < 2 || segments.length === 0) return;
@@ -365,7 +365,7 @@ export function drawLocus(renderer: IRenderer, locus: GeoLocus, selected: boolea
 
 /** 向量（带箭头的线段）。 */
 export function drawVector(renderer: IRenderer, v: GeoVector, selected: boolean, scale: number): void {
-  if (!v.isDefined()) return;
+  if (!v.isDefined() || v.visible === false) return;
   const sx = v.startX, sy = v.startY, ex = v.endX, ey = v.endY;
   const stroke = v.strokeColor ?? v.defaultStrokeColor;
   const baseWidth = v.strokeWidth ?? v.defaultLineWidth;
@@ -390,7 +390,7 @@ export function drawVector(renderer: IRenderer, v: GeoVector, selected: boolean,
 
 /** 折线。 */
 export function drawPolyLine(renderer: IRenderer, pl: GeoPolyLine, selected: boolean, scale: number): void {
-  if (!pl.isDefined() || pl.vertices.length < 2) return;
+  if (!pl.isDefined() || pl.visible === false || pl.vertices.length < 2) return;
   const stroke = pl.strokeColor ?? pl.defaultStrokeColor;
   const baseWidth = pl.strokeWidth ?? pl.defaultLineWidth;
   renderer.strokeStyle = selected ? '#3b82f6' : stroke;
@@ -405,7 +405,7 @@ export function drawPolyLine(renderer: IRenderer, pl: GeoPolyLine, selected: boo
 
 /** 圆弧（GeoArc 和 GeoConicPart ARC 类型）。 */
 export function drawArc(renderer: IRenderer, arc: GeoArc, selected: boolean, scale: number): void {
-  if (!arc.isDefined()) return;
+  if (!arc.isDefined() || arc.visible === false) return;
   const center = arc.getCenter();
   const r = arc.getRadius();
   if (r <= 0) return;
@@ -420,7 +420,7 @@ export function drawArc(renderer: IRenderer, arc: GeoArc, selected: boolean, sca
 
 /** 圆锥曲线片段（扇形 / 弓形 / 弧）。 */
 export function drawConicPart(renderer: IRenderer, cp: GeoConicPart, selected: boolean, scale: number): void {
-  if (!cp.isDefined()) return;
+  if (!cp.isDefined() || cp.visible === false) return;
   const center = cp.getCenter();
   const r = cp.getRadius();
   if (r <= 0) return;
@@ -453,7 +453,7 @@ export function drawConicPart(renderer: IRenderer, cp: GeoConicPart, selected: b
 
 /** 射线。 */
 export function drawRay(renderer: IRenderer, ray: GeoRay, selected: boolean, bounds: DrawBounds, scale: number): void {
-  if (!ray.isDefined()) return;
+  if (!ray.isDefined() || ray.visible === false) return;
   const sp = ray.getStartPoint();
   const dp = ray.getSecondPoint();
   const dx = dp.getX() - sp.getX(), dy = dp.getY() - sp.getY();

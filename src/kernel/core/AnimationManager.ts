@@ -4,7 +4,7 @@ import { GeoElement } from '../geo/GeoElement';
 
 export class AnimationManager {
     public static readonly STANDARD_ANIMATION_TIME = 10;
-    public static readonly MAX_ANIMATION_FRAME_RATE = 60;
+    public static readonly MAX_ANIMATION_FRAME_RATE = 30;
     public static readonly MIN_ANIMATION_FRAME_RATE = 2;
 
     private kernel: IKernel;
@@ -83,6 +83,12 @@ export class AnimationManager {
             if (this.animatedGeos.length > 0) {
                 this.kernel.notifyUpdate(this.animatedGeos[0]);
             }
+        }
+
+        // Play-once 动画可能移除最后一个对象；此时不要继续空转。
+        if (this.animatedGeos.length === 0) {
+            this.timerId = null;
+            return;
         }
 
         this.timerId = requestAnimationFrame(this.loop);

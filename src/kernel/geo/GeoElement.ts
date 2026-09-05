@@ -29,6 +29,7 @@ export abstract class GeoElement extends ConstructionElement
   public fillColor: string | null = null;       // null → 不填充（对可填充对象）
   public labelVisible = true;                   // 是否显示标签
   public labelMode: 'always' | 'mouse' | 'never' = 'always';
+  public visible = true;                        // 对象级可见性（隐藏对象仍参与构造）
 
   // 各子类型可覆写的默认样式（绘制层 fallback 用）
   public get defaultStrokeColor(): string { return '#000000'; }

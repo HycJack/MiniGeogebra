@@ -29,7 +29,7 @@ import { CoordinateSystem } from '../kernel/core/CoordinateSystem';
 import { IRenderer, TextItem } from '../kernel/view/IRenderer';
 import { createRenderer } from '../kernel/view/WebGLRendererFallback';
 import { serialize as serializeConstruction, deserialize as deserializeConstruction, downloadJSON } from '../kernel/persistence/ConstructionSerializer';
-import { toolHandlers } from './tools/handlers';
+import { toolHandlers, clearToolState } from './tools/handlers';
 import { drawGrid, drawPoint, drawLine, drawSegment, drawPolygon, drawConic, drawLocus, renderPreviews, drawVector, drawPolyLine, drawArc, drawConicPart, drawRay } from './drawHelpers';
 import { useLanguage } from '../i18n/LanguageContext';
 import { Undo2, Redo2, Globe, ZoomIn, ZoomOut, Home } from 'lucide-react';
@@ -99,6 +99,7 @@ export const GeometryCanvas: React.FC = () => {
   }, [overlayCanvasRef]);
 
   useEffect(() => {
+    clearToolState(toolState.current);
     const pointsToDelete = [...polygonPoints];
     if (pointsToDelete.length > 0) {
       pointsToDelete.forEach(point => kernel.getConstruction().removeElement(point));
@@ -169,7 +170,7 @@ export const GeometryCanvas: React.FC = () => {
 
   const snapshotStyle = useCallback((el: GeoElement): Record<string, unknown> => ({
     strokeColor: el.strokeColor, strokeWidth: el.strokeWidth, strokeDash: el.strokeDash ? [...el.strokeDash] : [],
-    fillColor: el.fillColor, labelVisible: el.labelVisible, labelMode: el.labelMode,
+    fillColor: el.fillColor, labelVisible: el.labelVisible, labelMode: el.labelMode, visible: el.visible,
   }), []);
 
   const applyStyleDirectly = useCallback((el: GeoElement, changes: Record<string, unknown>) => {
@@ -179,11 +180,14 @@ export const GeometryCanvas: React.FC = () => {
     if ('fillColor' in changes) el.fillColor = changes.fillColor as string | null;
     if ('labelVisible' in changes) el.labelVisible = changes.labelVisible as boolean;
     if ('labelMode' in changes) el.labelMode = changes.labelMode as 'always' | 'mouse' | 'never';
+    if ('visible' in changes) el.visible = changes.visible as boolean;
   }, []);
 
   const recordStyleChange = useCallback((element: GeoElement, changes: Record<string, unknown>) => {
+    const before = snapshotStyle(element);
     applyStyleDirectly(element, changes);
-    addCommand({ type: 'style', element, before: snapshotStyle(element), after: { ...changes } });
+    const after = snapshotStyle(element);
+    addCommand({ type: 'style', element, before, after });
   }, [applyStyleDirectly, addCommand, snapshotStyle]);
 
   const deleteWithDependents = useCallback((els: ConstructionElement[]) => {
@@ -217,7 +221,7 @@ export const GeometryCanvas: React.FC = () => {
   const _renderToSvg = useCallback((renderer: IRenderer, bounds: { minX: number; maxX: number; minY: number; maxY: number }) => {
     const vw = (bounds.maxX - bounds.minX) * coord.xScale, vh = (bounds.maxY - bounds.minY) * coord.xScale;
     drawGrid(renderer, vw, vh, coord, showGrid, showAxes);
-    const elements = kernel.getConstruction().getElements();
+    const elements = kernel.getConstruction().getElements().filter(el => el.visible !== false);
     elements.forEach(el => { if (el instanceof GeoPolygon) drawPolygon(renderer, el, false, coord.xScale); });
     elements.forEach(el => {
       if (el instanceof GeoConicPart) drawConicPart(renderer, el, false, coord.xScale);
@@ -329,11 +333,11 @@ export const GeometryCanvas: React.FC = () => {
     if (undoStack.current.length === 0) return;
     const cmd = undoStack.current.pop()!; redoStack.current.push(cmd);
     if (cmd.type === 'add') { [...cmd.elements].reverse().forEach(el => kernel.getConstruction().removeElement(el)); setSelectedElements(prev => prev.filter(e => !(cmd.elements as any[]).includes(e))); setPolygonPoints(prev => prev.filter(e => !(cmd.elements as any[]).includes(e))); }
-    else if (cmd.type === 'delete') { [...cmd.elements].reverse().forEach(el => kernel.getConstruction().deleteElementWithDependents(el)); setSelectedElements([]); }
+    else if (cmd.type === 'delete') { cmd.elements.slice().sort((a, b) => a.constIndex - b.constIndex).forEach(el => kernel.getConstruction().addElement(el)); setSelectedElements([]); }
     else if (cmd.type === 'move') restoreState(cmd.oldState);
     else if (cmd.type === 'numeric') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el instanceof GeoNumeric) el.setValue(cmd.oldValue); }
     else if (cmd.type === 'rename') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el) el.label = cmd.oldLabel; }
-    else if (cmd.type === 'style') applyStyleDirectly(cmd.element, cmd.after);
+    else if (cmd.type === 'style') applyStyleDirectly(cmd.element, cmd.before);
     kernel.getConstruction().updateAllAlgorithms(); setRenderRev(r => r + 1);
   }, [kernel, restoreState, applyStyleDirectly]);
 
@@ -341,11 +345,11 @@ export const GeometryCanvas: React.FC = () => {
     if (redoStack.current.length === 0) return;
     const cmd = redoStack.current.pop()!; undoStack.current.push(cmd);
     if (cmd.type === 'add') cmd.elements.forEach(el => kernel.getConstruction().addElement(el));
-    else if (cmd.type === 'delete') cmd.elements.forEach(el => kernel.getConstruction().addElement(el));
+    else if (cmd.type === 'delete') cmd.elements.slice().sort((a, b) => a.constIndex - b.constIndex).forEach(el => kernel.getConstruction().addElement(el));
     else if (cmd.type === 'move') restoreState(cmd.newState);
     else if (cmd.type === 'numeric') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el instanceof GeoNumeric) el.setValue(cmd.newValue); }
     else if (cmd.type === 'rename') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el) el.label = cmd.newLabel; }
-    else if (cmd.type === 'style') applyStyleDirectly(cmd.element, cmd.before);
+    else if (cmd.type === 'style') applyStyleDirectly(cmd.element, cmd.after);
     kernel.getConstruction().updateAllAlgorithms(); setRenderRev(r => r + 1);
   }, [kernel, restoreState, applyStyleDirectly]);
 
@@ -437,6 +441,9 @@ export const GeometryCanvas: React.FC = () => {
   const handleMouseDown = (e: React.MouseEvent) => {
     const { screenX, screenY, x, y } = getMousePos(e);
     if (e.button === 1 || e.button === 2 || (e.button === 0 && e.shiftKey)) { setIsPanning(true); setLastPanPos({ x: screenX, y: screenY }); return; }
+    if (mode === 'pan') { setIsPanning(true); setLastPanPos({ x: screenX, y: screenY }); return; }
+    if (mode === 'zoom_in') { zoom(1.25); return; }
+    if (mode === 'zoom_out') { zoom(1 / 1.25); return; }
     const elementsBefore = kernel.getConstruction().getElements().length;
     const currentDragStartState = captureState(kernel); setDragStartState(currentDragStartState);
     setLastMousePos({ x, y });
@@ -446,7 +453,7 @@ export const GeometryCanvas: React.FC = () => {
       kernel, construction: kernel.getConstruction(), coord, elements: kernel.getConstruction().getElements(),
       selectedElements, mode, mousePos: { x, y }, hoveredPoint: null, radius, polygonPoints, uiElements,
       setMode, setSelectedElements, setRenderRev, setPolygonPoints, addCommand, captureState,
-      recordNumericChange: notifyNumericChange, recordRename: handleLabelSubmit, recordStyleChange,
+      recordNumericChange: notifyNumericChange, recordRename: handleLabelSubmit, recordStyleChange, deleteElements: deleteWithDependents, t,
       setBoxSelecting: setIsBoxSelecting, setBoxStartScreen, setBoxEndScreen,
       setDraggedElement, setUIElements, setEditingUIElement, toolState: ts,
     }, { x, y }, { x: screenX, y: screenY });
@@ -459,7 +466,7 @@ export const GeometryCanvas: React.FC = () => {
     const { screenX, screenY, x, y } = getMousePos(e); setMousePos({ x, y });
     if (isPanning) { setCoord(prev => prev.panBy(screenX - lastPanPos.x, screenY - lastPanPos.y)); setLastPanPos({ x: screenX, y: screenY }); setRenderRev(r => r + 1); return; }
     if (draggingUIElement) { setUIElements(prev => prev.map(el => el.id === draggingUIElement ? { ...el, x, y } : el)); return; }
-    const elements = kernel.getConstruction().getElements();
+    const elements = kernel.getConstruction().getElements().filter(el => el.visible !== false);
     const hovered = elements.slice().reverse().find(el => el instanceof GeoPoint && Math.hypot(el.getX() - x, el.getY() - y) < 10 / coord.xScale) as GeoPoint | undefined;
     setHoveredPoint(hovered || null);
     if (isBoxSelecting && boxStartScreen) {
@@ -536,30 +543,13 @@ export const GeometryCanvas: React.FC = () => {
     radius, setRadius,
     handleExport, handleExportPNG, handleExportSVG, fileInputRef, handleImportPick,
     snapEnabled, setSnapEnabled, toggleAnimation, isAnimating,
+    language, setLanguage, undo, redo,
+    undoCount: undoStack.current.length, redoCount: redoStack.current.length,
     t,
   };
 
   return (
     <div className="flex flex-col h-screen bg-gray-50 overflow-hidden font-sans">
-      {/* ── Header ────────────────────────────────────────────── */}
-      <header className="h-12 bg-white border-b border-gray-200 px-4 flex items-center justify-between shrink-0 z-20">
-        <div className="flex items-center gap-2">
-            <div className="w-7 h-7 bg-blue-600 rounded-md flex items-center justify-center text-white font-bold text-lg">G</div>
-            <h1 className="text-lg font-semibold text-gray-800 tracking-tight">{t('title')}</h1>
-        </div>
-        <div className="flex items-center gap-2">
-          <button className="p-2 rounded-full hover:bg-gray-100 text-gray-600 disabled:opacity-30 disabled:hover:bg-transparent transition-colors" onClick={undo} disabled={undoStack.current.length === 0} title={t('undo')}><Undo2 size={20} /></button>
-          <button className="p-2 rounded-full hover:bg-gray-100 text-gray-600 disabled:opacity-30 disabled:hover:bg-transparent transition-colors" onClick={redo} disabled={redoStack.current.length === 0} title={t('redo')}><Redo2 size={20} /></button>
-          <div className="w-px h-6 bg-gray-200 mx-2"></div>
-          <div className="flex items-center gap-2 text-gray-600 bg-gray-100 px-3 py-1.5 rounded-md">
-            <Globe size={15} />
-            <select value={language} onChange={(e) => setLanguage(e.target.value as any)} className="bg-transparent text-sm font-medium focus:outline-none cursor-pointer">
-              <option value="zh">中文</option><option value="en">English</option>
-            </select>
-          </div>
-        </div>
-      </header>
-
       {/* ── Toolbar ───────────────────────────────────────────── */}
       <Toolbar {...toolbarProps} />
 
@@ -575,7 +565,13 @@ export const GeometryCanvas: React.FC = () => {
             ref={canvasRef}
             width={canvasSize.width}
             height={canvasSize.height}
-            className={`absolute top-0 left-0 ${isPanning ? 'cursor-grabbing' : 'cursor-crosshair'}`}
+            className={`absolute top-0 left-0 ${
+              isPanning ? 'cursor-grabbing'
+                : mode === 'pan' ? 'cursor-grab'
+                : mode === 'zoom_in' ? 'cursor-zoom-in'
+                : mode === 'zoom_out' ? 'cursor-zoom-out'
+                : 'cursor-crosshair'
+            }`}
             style={{ touchAction: 'none', display: view === '3d' ? 'none' : undefined }}
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}

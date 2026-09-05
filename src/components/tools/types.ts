@@ -31,6 +31,7 @@ export interface ScreenPoint { x: number; y: number; }
 // 工具模式（与 GeometryCanvas 的 mode 字面量严格一致）
 // -------------------------------------------------------------------
 export type ToolMode =
+  | 'select'
   | 'move'
   | 'point'
   | 'line'
@@ -67,12 +68,28 @@ export type ToolMode =
   | 'semicircle'
   | 'sector'
   | 'circumcircular_arc'
+  | 'circumcircular_sector'
   | 'slope'
   | 'ellipse'
   | 'hyperbola'
   | 'parabola'
   | 'conic5'
-  | 'compass';
+  | 'compass'
+  // Phase D: GeoGebra action / transform / view tools
+  | 'point_on_object'
+  | 'segment_fixed'
+  | 'vector_from_point'
+  | 'angle_fixed'
+  | 'mirror_line'
+  | 'mirror_point'
+  | 'mirror_circle'
+  | 'translate_vector'
+  | 'pan'
+  | 'zoom_in'
+  | 'zoom_out'
+  | 'show_hide'
+  | 'show_hide_label'
+  | 'delete';
 
 // -------------------------------------------------------------------
 // 工具上下文：视图把共享资源注入这里，避免事件处理器产生巨大的 props 树
@@ -82,7 +99,7 @@ export interface ToolContext {
   kernel: Kernel;
   construction: Construction;
   coord: CoordinateSystem;
-  elements: readonly ConstructionElement[];
+  elements: readonly (ConstructionElement | GeoElement)[];
   selectedElements: GeoElement[];
   mode: ToolMode;
   mousePos: WorldPoint;
@@ -116,6 +133,9 @@ export interface ToolContext {
   setEditingUIElement?: Dispatch<SetStateAction<string | null>>;
   // ---- 变换工具暂态（引用可变）----
   toolState: any;
+  t?: (key: string) => string;
+  // ---- 动作工具（删除需把级联对象一起写入 undo 栈）----
+  deleteElements?: (els: ConstructionElement[]) => void;
 }
 
 // -------------------------------------------------------------------

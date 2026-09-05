@@ -20,7 +20,7 @@ import { GeoNumeric } from '../../kernel/geo/GeoNumeric';
 import { GeoLocus } from '../../kernel/geo/GeoLocus';
 import { GeoVec3D } from '../../kernel/core/GeoVec3D';
 import { WorldPoint, ScreenPoint, ToolContext, ToolResult, ToolMode } from './types';
-import { hitScreenPoint, hitScreenObject, lineFromTwoPoints } from './hitTests';
+import { hitScreenPoint, hitScreenObject, hitCircle, lineFromTwoPoints } from './hitTests';
 import {
   createLabeledPoint, addPoint, createParameterPointOnPath,
   nextDistanceLabel, nextAngleLabel, nextAreaLabel,
@@ -37,7 +37,7 @@ import {
 import { AlgoRayTwoPoints } from '../../kernel/algo/AlgoRayTwoPoints';
 import {
   AlgoVector, AlgoPolyLine, AlgoSemicircle, AlgoCircularSector,
-  AlgoCircumcircularArc, AlgoSlope, AlgoEllipse, AlgoHyperbola,
+  AlgoCircumcircularArc, AlgoCircumcircularSector, AlgoSlope, AlgoEllipse, AlgoHyperbola,
   AlgoParabola, AlgoConicFivePoints, AlgoCompass,
 } from '../../kernel/algo';
 import { GeoConicPart } from '../../kernel/geo/GeoConicPart';
@@ -45,6 +45,7 @@ import { GeoArc } from '../../kernel/geo/GeoArc';
 import { GeoVector } from '../../kernel/geo/GeoVector';
 import { GeoPolyLine } from '../../kernel/geo/GeoPolyLine';
 import { GeoRay } from '../../kernel/geo/GeoRay';
+import { GeoElement } from '../../kernel/geo/GeoElement';
 
 // ---- 命中热区 ----
 const POINT_EPS = 10;   // 点热区（像素）
@@ -52,15 +53,18 @@ const OBJ_EPS = 5;      // 线/曲线热区（世界单位像素当量）
 
 /** 工具模式调度表（不含 UI 元素工具：text/slider/button/checkbox，由 GeometryCanvas 单独处理）。 */
 const TOOL_MODE_LIST: readonly ToolMode[] = [
-  'move', 'point', 'line', 'segment', 'midpoint', 'circle', 'circle_center_point',
+  'select', 'move', 'point', 'line', 'segment', 'midpoint', 'circle', 'circle_center_point',
   'circle3', 'intersect', 'parallel', 'orthogonal', 'perpendicular_bisector',
   'angle_bisector', 'polygon',
   'distance', 'angle', 'area', 'tangent', 'locus',
   // Phase 2：新增几何与变换工具
   'ray', 'arc', 'regular_polygon', 'rotate', 'dilate', 'mirror',
   // Phase 3：2D 功能扩展
-  'vector', 'polyline', 'semicircle', 'sector', 'circumcircular_arc',
+  'vector', 'polyline', 'semicircle', 'sector', 'circumcircular_arc', 'circumcircular_sector',
   'slope', 'ellipse', 'hyperbola', 'parabola', 'conic5', 'compass',
+  'point_on_object', 'segment_fixed', 'vector_from_point', 'angle_fixed',
+  'mirror_line', 'mirror_point', 'mirror_circle', 'translate_vector',
+  'pan', 'zoom_in', 'zoom_out', 'show_hide', 'show_hide_label', 'delete',
   'text', 'slider', 'button', 'checkbox',
 ] as const;
 
@@ -70,12 +74,16 @@ export const handlePointerDown = (
   point: WorldPoint,
   screen: ScreenPoint
 ): ToolResult | void => {
-  const { kernel, construction, coord, elements, selectedElements, radius, setSelectedElements, setRenderRev, setPolygonPoints, setBoxSelecting, setBoxStartScreen, setDraggedElement, setUIElements, setEditingUIElement } = ctx;
+  const { kernel, construction, coord, elements, selectedElements, radius, setSelectedElements, setRenderRev, setPolygonPoints, setBoxSelecting, setBoxStartScreen, setDraggedElement, setUIElements, setEditingUIElement, recordStyleChange, t } = ctx;
   const EPS = 1e-9;
 
   // ----- 工具专用辅助闭包 -----
-  const hitPoint = () => hitScreenPoint(elements, point.x, point.y, POINT_EPS / coord.xScale);
-  const hitObject = () => hitScreenObject(elements, point.x, point.y, OBJ_EPS / coord.xScale);
+  // 隐藏对象不参与普通命中，但 show/hide 工具仍可用 hitAny* 找到它。
+  const visibleElements = elements.filter(el => (el as GeoElement).visible !== false);
+  const hitPoint = () => hitScreenPoint(visibleElements, point.x, point.y, POINT_EPS / coord.xScale);
+  const hitObject = () => hitScreenObject(visibleElements, point.x, point.y, OBJ_EPS / coord.xScale);
+  const hitAnyPoint = () => hitScreenPoint(elements, point.x, point.y, POINT_EPS / coord.xScale);
+  const hitAnyObject = () => hitScreenObject(elements, point.x, point.y, OBJ_EPS / coord.xScale);
 
   const notifyUpdate = (obj: any) => {
     const algo = obj?.parentAlgo ?? obj;
@@ -92,6 +100,25 @@ export const handlePointerDown = (
 
   const selOne = (p: GeoPoint) => { setSelectedElements([p]); setRenderRev(r => r + 1); };
   const clearSel = () => { setSelectedElements([]); setRenderRev(r => r + 1); };
+
+  /** 变换工具共用的输入收集：优先使用当前选择，否则点击/新建一个对象。 */
+  const collectTransformInputs = () => {
+    if (ts.inputs?.length) return ts.inputs;
+    if (selectedElements.length > 0) {
+      ts.inputs = selectedElements.map(el => {
+        let ref: { x: number; y: number };
+        if (el instanceof GeoPoint) ref = { x: el.getX(), y: el.getY() };
+        else if (el instanceof GeoConic) { const c = el.getCenter(); ref = { x: c.x, y: c.y }; }
+        else ref = { x: point.x, y: point.y };
+        return { el, ref };
+      });
+      clearSel();
+    } else {
+      const el = hitObject() ?? hitPoint() ?? emptyClickNewPoint();
+      ts.inputs = [{ el, ref: el instanceof GeoPoint ? { x: el.getX(), y: el.getY() } : { x: point.x, y: point.y } }];
+    }
+    return ts.inputs as { el: GeoElement; ref?: { x: number; y: number } }[];
+  };
 
   /** 在空白处创建一个带唯一标签的自由点。 */
   const emptyClickNewPoint = (): GeoPoint => {
@@ -145,7 +172,8 @@ export const handlePointerDown = (
     // ============================================================
     // 基础交互
     // ============================================================
-    case 'move': {
+    case 'move':
+    case 'select': {
       const pHit = hitPoint();
       const oHit = hitObject();
       if (pHit) {
@@ -178,7 +206,8 @@ export const handlePointerDown = (
     // ============================================================
     // 基本几何对象
     // ============================================================
-    case 'point': {
+    case 'point':
+    case 'point_on_object': {
       const obj = hitObject();
       if (obj instanceof GeoSegment || obj instanceof GeoLine || obj instanceof GeoConic) {
         const paramCount = kernel.getConstruction().getElements().filter(e => e instanceof GeoNumeric).length + 1;
@@ -636,6 +665,166 @@ export const handlePointerDown = (
       return;
     }
 
+    case 'mirror_line':
+    case 'mirror_point':
+    case 'mirror_circle':
+    case 'translate_vector': {
+      if (mode === 'mirror_line') {
+        if (!ts.transformRef) {
+          const axisObject = hitObject();
+          if (axisObject instanceof GeoLine) {
+            ts.transformRef = { kind: 'line', axis: { a: axisObject.a, b: axisObject.b, c: axisObject.c } };
+            return;
+          }
+          ts.refStart = { x: point.x, y: point.y };
+          return;
+        }
+        if (ts.refStart && !ts.transformRef) {
+          ts.transformRef = { kind: 'line', axis: lineFromTwoPoints(ts.refStart, { x: point.x, y: point.y }) };
+        }
+        ts.refStart = null;
+        const inputs = collectTransformInputs();
+        for (const { el } of inputs) {
+          const out = buildTransformed(kernel, el, 'mirror', ts.transformRef.axis);
+          kernel.getConstruction().addElement(out);
+          notifyUpdate(out);
+        }
+      } else if (mode === 'mirror_point') {
+        if (!ts.transformRef) {
+          const centerPoint = hitPoint() ?? emptyClickNewPoint();
+          ts.transformRef = { kind: 'point', center: { x: centerPoint.getX(), y: centerPoint.getY() } };
+          return;
+        }
+        const inputs = collectTransformInputs();
+        for (const { el } of inputs) {
+          const out = buildTransformed(kernel, el, 'dilate', {
+            center: ts.transformRef.center,
+            ratio: -1,
+          });
+          kernel.getConstruction().addElement(out);
+          notifyUpdate(out);
+        }
+      } else if (mode === 'mirror_circle') {
+        if (!ts.transformRef) {
+          const circle = hitCircle(visibleElements, point.x, point.y, OBJ_EPS / coord.xScale);
+          if (!circle) return;
+          const center = circle.getCenter();
+          ts.transformRef = { kind: 'circle', center, radius: circle.getRadius() };
+          return;
+        }
+        const inputs = collectTransformInputs();
+        for (const { el } of inputs) {
+          const out = buildTransformed(kernel, el, 'invert', ts.transformRef);
+          kernel.getConstruction().addElement(out);
+          notifyUpdate(out);
+        }
+      } else {
+        if (!ts.transformRef) {
+          const vector = hitObject();
+          if (!(vector instanceof GeoVector)) return;
+          ts.transformRef = {
+            kind: 'vector',
+            vector: { x: vector.getVector().x, y: vector.getVector().y },
+          };
+        }
+        const inputs = collectTransformInputs();
+        for (const { el } of inputs) {
+          const out = buildTransformed(kernel, el, 'translate', ts.transformRef.vector);
+          kernel.getConstruction().addElement(out);
+          notifyUpdate(out);
+        }
+      }
+      clearSel();
+      setRenderRev(r => r + 1);
+      ts.inputs = []; ts.transformRef = null; ts.refStart = null;
+      return;
+    }
+
+    case 'segment_fixed': {
+      if (!ts.fixedStart) {
+        const start = hitPoint() ?? emptyClickNewPoint();
+        const input = window.prompt(t('fixedLengthPrompt'), '5');
+        const length = Number(input);
+        if (input === null || !isFinite(length) || length <= 0) return;
+        ts.fixedStart = start;
+        ts.fixedLength = length;
+        setRenderRev(r => r + 1);
+        return;
+      }
+      const dx = point.x - ts.fixedStart.getX();
+      const dy = point.y - ts.fixedStart.getY();
+      const d = Math.hypot(dx, dy) || 1;
+      const end = new GeoPoint(kernel, new GeoVec3D(
+        ts.fixedStart.getX() + dx / d * ts.fixedLength,
+        ts.fixedStart.getY() + dy / d * ts.fixedLength,
+        1,
+      ));
+      end.label = construction.getNextPointLabel();
+      const seg = new AlgoSegmentTwoPoints(kernel, ts.fixedStart, end);
+      kernel.getConstruction().addElement(end);
+      kernel.getConstruction().addElement(seg);
+      kernel.getConstruction().addElement(seg.getOutput());
+      seg.update();
+      clearSel();
+      kernel.notifyUpdate(seg);
+      ts.fixedStart = null; ts.fixedLength = null;
+      break;
+    }
+
+    case 'angle_fixed': {
+      if (!ts.angleVertex) {
+        ts.angleVertex = hitPoint() ?? emptyClickNewPoint();
+        const input = window.prompt(t('fixedAnglePrompt'), '60');
+        const degrees = Number(input);
+        if (input === null || !isFinite(degrees)) {
+          ts.angleVertex = null;
+          return;
+        }
+        ts.angleDegrees = degrees;
+        setRenderRev(r => r + 1);
+        return;
+      }
+      const first = hitPoint() ?? emptyClickNewPoint();
+      const angle = ts.angleDegrees * Math.PI / 180;
+      const vx = first.getX() - ts.angleVertex.getX();
+      const vy = first.getY() - ts.angleVertex.getY();
+      const rx = vx * Math.cos(angle) - vy * Math.sin(angle);
+      const ry = vx * Math.sin(angle) + vy * Math.cos(angle);
+      const second = new GeoPoint(kernel, new GeoVec3D(ts.angleVertex.getX() + rx, ts.angleVertex.getY() + ry, 1));
+      second.label = construction.getNextPointLabel();
+      const ray = new GeoRay(kernel, ts.angleVertex, second);
+      ray.label = construction.getNextLineLabel();
+      kernel.getConstruction().addElement(second);
+      kernel.getConstruction().addElement(ray);
+      kernel.notifyUpdate(ray);
+      clearSel();
+      setRenderRev(r => r + 1);
+      ts.angleVertex = null; ts.angleDegrees = null;
+      break;
+    }
+
+    case 'vector_from_point':
+      twoPointBuild(AlgoVector);
+      break;
+
+    case 'show_hide': {
+      const obj = hitAnyObject();
+      if (obj) recordStyleChange(obj, { visible: obj.visible === false });
+      break;
+    }
+
+    case 'show_hide_label': {
+      const obj = hitAnyObject();
+      if (obj) recordStyleChange(obj, { labelVisible: !obj.labelVisible });
+      break;
+    }
+
+    case 'delete': {
+      const obj = hitAnyObject();
+      if (obj) ctx.deleteElements?.([obj]);
+      break;
+    }
+
     // ============================================================
     // UI 元素工具（text / slider / button / checkbox）
     // ============================================================
@@ -706,13 +895,16 @@ export const handlePointerDown = (
       break;
     }
 
-    case 'circumcircular_arc': {
+    case 'circumcircular_arc':
+    case 'circumcircular_sector': {
       const picks = [...((ts.circArcPicks as any) ?? [])];
       const picked = hitPoint();
       picks.push(picked ?? emptyClickNewPoint());
       if (picks.length >= 3) {
         const [a, b, c] = picks.slice(0, 3) as GeoPoint[];
-        const algo = new AlgoCircumcircularArc(kernel, a, b, c);
+        const algo = mode === 'circumcircular_arc'
+          ? new AlgoCircumcircularArc(kernel, a, b, c)
+          : new AlgoCircumcircularSector(kernel, a, b, c);
         addAlgoAndNotify(algo);
         (ts.circArcPicks as any) = [];
         clearSel();
@@ -813,9 +1005,12 @@ export const handlePointerDown = (
 };
 
 export const clearToolState = (ts: any) => {
-  ts.inputs = []; ts.center = null;
+  ts.inputs = []; ts.center = null; ts.transformRef = null; ts.refStart = null;
   ts.centerIsPoint = false; ts.axis = null; ts.axisStart = null;
   ts.regPolyCenter = null; (ts.arcPicks as any) = [];
+  ts.fixedStart = null; ts.fixedLength = null;
+  ts.angleVertex = null; ts.angleDegrees = null;
+  ts.polylinePts = []; ts.sectorPicks = []; ts.circArcPicks = [];
 };
 
 export const toolHandlers: Record<ToolMode, (ctx: ToolContext, point: WorldPoint, screen: ScreenPoint) => ToolResult | void> = {} as unknown as any;

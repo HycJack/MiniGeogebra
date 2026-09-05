@@ -9,6 +9,7 @@ import { GeoPoint } from '../geo/GeoPoint';
 import { GeoLine } from '../geo/GeoLine';
 import { GeoSegment } from '../geo/GeoSegment';
 import { GeoConic } from '../geo/GeoConic';
+import { GeoConicPart } from '../geo/GeoConicPart';
 import { GeoPolygon } from '../geo/GeoPolygon';
 import { GeoNumeric } from '../geo/GeoNumeric';
 import { GeoVec3D } from '../core/GeoVec3D';
@@ -38,13 +39,26 @@ const lineInterceptPts = (a: number, b: number, c: number): [{ x: number; y: num
 };
 const circleCoeffs = (h: number, k: number, r: number): number[] => [1, 0, 1, -2 * h, -2 * k, h * h + k * k - r * r];
 
-type TransOp = 'rotate' | 'dilate' | 'mirror';
+type TransOp = 'rotate' | 'dilate' | 'mirror' | 'translate' | 'invert';
+
+const translatePt = (p: { x: number; y: number }, v: { x: number; y: number }) => ({ x: p.x + v.x, y: p.y + v.y });
+
+/** 点关于圆的反演。圆心处映射为无穷远，这里按未定义原点处理。 */
+const invertPt = (p: { x: number; y: number }, c: { x: number; y: number }, radius: number) => {
+    const dx = p.x - c.x, dy = p.y - c.y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < 1e-12) return { x: c.x, y: c.y };
+    const k = radius * radius / d2;
+    return { x: c.x + dx * k, y: c.y + dy * k };
+};
 
 const transformPoint = (p: GeoPoint, op: TransOp, arg: any): GeoPoint => {
   const cp = { x: p.getX(), y: p.getY() };
   let out: { x: number; y: number };
   if (op === 'rotate') out = rotatePt(cp, arg.center, arg.angle);
   else if (op === 'dilate') out = scalePt(cp, arg.center, arg.ratio);
+  else if (op === 'translate') out = translatePt(cp, arg.vector);
+  else if (op === 'invert') out = invertPt(cp, arg.center, arg.radius);
   else out = mirrorPt(cp, arg.A, arg.B, arg.C);
   return new GeoPoint(p.kernel, new GeoVec3D(out.x, out.y, 1));
 };
@@ -53,6 +67,8 @@ const transformLine = (l: GeoLine, op: TransOp, arg: any): GeoLine => {
   const pts = lineInterceptPts(l.a, l.b, l.c).map(p =>
     op === 'rotate' ? rotatePt(p, arg.center, arg.angle)
     : op === 'dilate' ? scalePt(p, arg.center, arg.ratio)
+    : op === 'translate' ? translatePt(p, arg.vector)
+    : op === 'invert' ? invertPt(p, arg.center, arg.radius)
     : mirrorPt(p, arg.A, arg.B, arg.C)
   );
   const a = pts[1].y - pts[0].y;
@@ -132,14 +148,33 @@ export function buildTransformed(kernel: IKernel, input: GeoElement, op: TransOp
     copy.label = input.label;
     return copy;
   }
-  if (input instanceof GeoLine) return transformLine(input as GeoLine, op, arg);
   if (input instanceof GeoSegment) {
     const s = input as GeoSegment;
     const p1 = transformPoint(s.startPoint, op, arg);
     const p2 = transformPoint(s.endPoint, op, arg);
     return new GeoSegment(s.kernel, p1, p2);
   }
-  if (input instanceof GeoConic) {
+  if (input instanceof GeoLine) return transformLine(input as GeoLine, op, arg);
+  if (input instanceof GeoConicPart) {
+    if (op === 'translate') {
+      const c = input.getCenter();
+      return new GeoConic(kernel, circleCoeffs(c.x + arg.vector.x, c.y + arg.vector.y, input.getRadius()));
+    }
+    if (op === 'invert') {
+      const c = input.getCenter();
+      const sourceRadius = input.getRadius();
+      const dx = c.x - arg.center.x, dy = c.y - arg.center.y;
+      const centerDistance2 = dx * dx + dy * dy;
+      if (Math.abs(centerDistance2 - sourceRadius * sourceRadius) < 1e-9) {
+        // 经过反演中心的圆映射为直线。
+        return new GeoLine(kernel, dx, dy, -(arg.radius * arg.radius) / 2);
+      }
+      const denominator = centerDistance2 - sourceRadius * sourceRadius;
+      const k = arg.radius * arg.radius / denominator;
+      const imageCenter = { x: arg.center.x + dx * k, y: arg.center.y + dy * k };
+      const imageRadius = arg.radius * arg.radius * sourceRadius / Math.abs(denominator);
+      return new GeoConic(kernel, circleCoeffs(imageCenter.x, imageCenter.y, imageRadius));
+    }
     const { x, y } = op === 'mirror' ? mirrorPt({ x: input.getCenter().x, y: input.getCenter().y }, arg.A, arg.B, arg.C)
       : op === 'rotate' ? rotatePt(input.getCenter(), arg.center, arg.angle)
         : scalePt(input.getCenter(), arg.center, arg.ratio);
@@ -147,6 +182,10 @@ export function buildTransformed(kernel: IKernel, input: GeoElement, op: TransOp
     return new GeoConic(kernel, circleCoeffs(x, y, r));
   }
   if (input instanceof GeoArc) {
+    if (op === 'translate') {
+      const c = input.getCenter();
+      return new GeoArc(kernel, { x: c.x + arg.vector.x, y: c.y + arg.vector.y }, input.getRadius(), input.getStartAngle(), input.getEndAngle(), input.isCounterClockwise());
+    }
     const c = op === 'mirror' ? mirrorPt({ x: input.getCenter().x, y: input.getCenter().y }, arg.A, arg.B, arg.C)
       : op === 'rotate' ? rotatePt(input.getCenter(), arg.center, arg.angle)
         : scalePt(input.getCenter(), arg.center, arg.ratio);
@@ -164,6 +203,10 @@ export function buildTransformed(kernel: IKernel, input: GeoElement, op: TransOp
     return new GeoRay(input.kernel, new GeoPoint(input.kernel, new GeoVec3D(so.x, so.y, 1)), new GeoPoint(input.kernel, new GeoVec3D(eo.x, eo.y, 1)));
   }
   if (input instanceof GeoRegularPolygon) {
+    if (op === 'translate') {
+      const c = input.getCenter();
+      return new GeoRegularPolygon(input.kernel, { x: c.x + arg.vector.x, y: c.y + arg.vector.y }, input.getRadius(), input.getSides());
+    }
     const c = op === 'mirror' ? mirrorPt({ x: input.getCenter().x, y: input.getCenter().y }, arg.A, arg.B, arg.C)
       : op === 'rotate' ? rotatePt(input.getCenter(), arg.center, arg.angle)
         : scalePt(input.getCenter(), arg.center, arg.ratio);
@@ -184,3 +227,5 @@ export function buildTransformed(kernel: IKernel, input: GeoElement, op: TransOp
   }
   return input;
 }
+
+export type { TransOp };

@@ -37,6 +37,7 @@ import { AlgoHyperbola } from '../algo/AlgoHyperbola';
 import { AlgoParabola } from '../algo/AlgoParabola';
 import { AlgoConicFivePoints } from '../algo/AlgoConicFivePoints';
 import { AlgoCompass } from '../algo/AlgoCompass';
+import { AnimationType } from '../geo/GeoNumeric';
 import { CoordinateSystem } from '../core/CoordinateSystem';
 
 /**
@@ -58,6 +59,7 @@ interface SerializedElement {
   intervalMax?: number;
   animationSpeed?: number;
   animationIncrement?: number;
+  animationType?: number;
   style?: Record<string, unknown>;        // P2-1: 对象的样式属性
 }
 
@@ -152,6 +154,7 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
             fillColor: el.fillColor,
             labelVisible: el.labelVisible,
             labelMode: el.labelMode,
+            visible: el.visible,
           },
         };
       }
@@ -165,6 +168,7 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
           intervalMax: el.intervalMax,
           animationSpeed: el.animationSpeed,
           animationIncrement: el.animationIncrement,
+          animationType: el.animationType,
           style: {
             strokeColor: el.strokeColor,
             strokeWidth: el.strokeWidth,
@@ -172,6 +176,7 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
             fillColor: el.fillColor,
             labelVisible: el.labelVisible,
             labelMode: el.labelMode,
+            visible: el.visible,
           },
         };
       }
@@ -184,9 +189,10 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
           strokeColor: el.strokeColor,
           strokeWidth: el.strokeWidth,
           strokeDash: el.strokeDash ? [...el.strokeDash] : [],
-          fillColor: el.fillColor,
-          labelVisible: el.labelVisible,
-          labelMode: el.labelMode,
+            fillColor: el.fillColor,
+            labelVisible: el.labelVisible,
+            labelMode: el.labelMode,
+            visible: el.visible,
         },
       };
     });
@@ -247,6 +253,7 @@ export function deserialize(kernel: Kernel, json: string): { coord?: CoordinateS
       num.intervalMax = el.intervalMax ?? 2 * Math.PI;
       num.animationSpeed = el.animationSpeed ?? 1;
       num.animationIncrement = el.animationIncrement ?? 0.01;
+      num.setAnimationType((el.animationType ?? AnimationType.OSCILLATING) as AnimationType);
     } else {
       throw new Error(`[ConstructionSerializer] unsupported independent element type: ${el.type}`);
     }
@@ -263,6 +270,7 @@ export function deserialize(kernel: Kernel, json: string): { coord?: CoordinateS
       if ('fillColor' in el.style) instance.fillColor = el.style.fillColor as string | null;
       if ('labelVisible' in el.style) instance.labelVisible = el.style.labelVisible as boolean;
       if ('labelMode' in el.style) instance.labelMode = el.style.labelMode as 'always' | 'mouse' | 'never';
+      if ('visible' in el.style) instance.visible = el.style.visible as boolean;
     }
     construction.addElement(instance);
     index.set(el.constIndex, instance);

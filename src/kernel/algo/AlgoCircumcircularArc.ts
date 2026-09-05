@@ -46,7 +46,7 @@ export class AlgoCircumcircularArc extends AlgoElement {
   getOutput(): GeoConicPart { return this.outputPart; }
 }
 
-function circumcircle(p1: GeoPoint, p2: GeoPoint, p3: GeoPoint): { cx: number; cy: number; r: number } {
+export function circumcircle(p1: GeoPoint, p2: GeoPoint, p3: GeoPoint): { cx: number; cy: number; r: number } {
   const ax = p1.getX(), ay = p1.getY();
   const bx = p2.getX(), by = p2.getY();
   const cx_ = p3.getX(), cy_ = p3.getY();
