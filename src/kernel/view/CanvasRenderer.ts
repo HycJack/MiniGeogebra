@@ -1,4 +1,4 @@
-import { IRenderer } from './IRenderer';
+import { IRenderer, TextItem } from './IRenderer';
 
 /**
  * P1-2: 基于 CanvasRenderingContext2D 的渲染后端实现。
@@ -62,6 +62,10 @@ export class CanvasRenderer implements IRenderer {
     this.ctx.fillText(text, x, y);
   }
   measureText(text: string): { width: number } { return { width: this.ctx.measureText(text).width }; }
+
+  // ---- text flush ----
+  /** Canvas2D 直接绘制文本，无累积队列。 */
+  flushTextQueue(): TextItem[] { return []; }
 
   // ---- lifecycle ----
   setLineDash(dash: number[]): void { this.lineDash = dash; }

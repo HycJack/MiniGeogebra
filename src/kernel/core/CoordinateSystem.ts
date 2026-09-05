@@ -109,8 +109,8 @@ export class CoordinateSystem {
     return new CoordinateSystem(
       width,
       height,
-      this.xZero + (width - this.width),
-      this.yZero + (height - this.height),
+      this.xZero + (width - this.width) / 2,
+      this.yZero + (height - this.height) / 2,
       this.xScale,
       this.yScale
     );

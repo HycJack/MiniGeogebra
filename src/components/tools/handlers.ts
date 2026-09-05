@@ -35,6 +35,16 @@ import {
   buildTransformed,
 } from '../../kernel/algo';
 import { AlgoRayTwoPoints } from '../../kernel/algo/AlgoRayTwoPoints';
+import {
+  AlgoVector, AlgoPolyLine, AlgoSemicircle, AlgoCircularSector,
+  AlgoCircumcircularArc, AlgoSlope, AlgoEllipse, AlgoHyperbola,
+  AlgoParabola, AlgoConicFivePoints, AlgoCompass,
+} from '../../kernel/algo';
+import { GeoConicPart } from '../../kernel/geo/GeoConicPart';
+import { GeoArc } from '../../kernel/geo/GeoArc';
+import { GeoVector } from '../../kernel/geo/GeoVector';
+import { GeoPolyLine } from '../../kernel/geo/GeoPolyLine';
+import { GeoRay } from '../../kernel/geo/GeoRay';
 
 // ---- 命中热区 ----
 const POINT_EPS = 10;   // 点热区（像素）
@@ -48,6 +58,9 @@ const TOOL_MODE_LIST: readonly ToolMode[] = [
   'distance', 'angle', 'area', 'tangent', 'locus',
   // Phase 2：新增几何与变换工具
   'ray', 'arc', 'regular_polygon', 'rotate', 'dilate', 'mirror',
+  // Phase 3：2D 功能扩展
+  'vector', 'polyline', 'semicircle', 'sector', 'circumcircular_arc',
+  'slope', 'ellipse', 'hyperbola', 'parabola', 'conic5', 'compass',
   'text', 'slider', 'button', 'checkbox',
 ] as const;
 
@@ -645,6 +658,152 @@ export const handlePointerDown = (
       };
       setUIElements?.([...(ctx.uiElements ?? []), newUIElement]);
       setEditingUIElement?.(id);
+      break;
+    }
+
+    // ============================================================
+    // Phase 3：2D 功能扩展
+    // ============================================================
+    case 'vector':
+      twoPointBuild(AlgoVector as any);
+      break;
+
+    case 'polyline': {
+      const pHit = hitPoint() ?? emptyClickNewPoint();
+      const pts = (ts.polylinePts as GeoPoint[]) ?? [];
+      if (pts.length > 1 && pHit === pts[0]) {
+        const pl = new AlgoPolyLine(kernel, [...pts]);
+        addAlgoAndNotify(pl);
+        (ts.polylinePts as any) = [];
+        clearSel();
+        setRenderRev(r => r + 1);
+      } else {
+        (ts.polylinePts as any) = [...pts, pHit];
+        setRenderRev(r => r + 1);
+      }
+      break;
+    }
+
+    case 'semicircle':
+      twoPointBuild(AlgoSemicircle as any);
+      break;
+
+    case 'sector': {
+      const picks = [...((ts.sectorPicks as any) ?? [])];
+      const picked = hitPoint();
+      picks.push(picked ?? emptyClickNewPoint());
+      if (picks.length >= 3) {
+        const [c, s, e] = picks.slice(0, 3) as GeoPoint[];
+        const algo = new AlgoCircularSector(kernel, c, s, e);
+        addAlgoAndNotify(algo);
+        (ts.sectorPicks as any) = [];
+        clearSel();
+        setRenderRev(r => r + 1);
+      } else {
+        (ts.sectorPicks as any) = picks;
+        setRenderRev(r => r + 1);
+      }
+      break;
+    }
+
+    case 'circumcircular_arc': {
+      const picks = [...((ts.circArcPicks as any) ?? [])];
+      const picked = hitPoint();
+      picks.push(picked ?? emptyClickNewPoint());
+      if (picks.length >= 3) {
+        const [a, b, c] = picks.slice(0, 3) as GeoPoint[];
+        const algo = new AlgoCircumcircularArc(kernel, a, b, c);
+        addAlgoAndNotify(algo);
+        (ts.circArcPicks as any) = [];
+        clearSel();
+        setRenderRev(r => r + 1);
+      } else {
+        (ts.circArcPicks as any) = picks;
+        setRenderRev(r => r + 1);
+      }
+      break;
+    }
+
+    case 'slope': {
+      const obj = hitObject();
+      if (obj instanceof GeoLine) {
+        const algo = new AlgoSlope(kernel, obj);
+        algo.getOutput().label = 'm';
+        kernel.getConstruction().addElement(algo);
+        kernel.getConstruction().addElement(algo.getOutput());
+        algo.compute();
+        clearSel();
+        setRenderRev(r => r + 1);
+      }
+      break;
+    }
+
+    case 'ellipse':
+    case 'hyperbola':
+    case 'parabola': {
+      const pHit = hitPoint();
+      if (pHit) {
+        const current = [...selectedElements, pHit];
+        if (mode === 'parabola' && current.length === 2) {
+          const line = elements.slice().reverse().find(el => el instanceof GeoLine) as GeoLine | undefined;
+          if (line) {
+            const algo = new AlgoParabola(kernel, current[0] as GeoPoint, line);
+            addAlgoAndNotify(algo);
+            clearSel();
+            setRenderRev(r => r + 1);
+            break;
+          }
+        }
+        if (current.length === 3 && current.every(e => e instanceof GeoPoint)) {
+          const [f1, f2, p] = current as GeoPoint[];
+          const algo = mode === 'ellipse'
+            ? new AlgoEllipse(kernel, f1, f2, p)
+            : mode === 'hyperbola'
+            ? new AlgoHyperbola(kernel, f1, f2, p)
+            : new AlgoParabola(kernel, f1, new GeoLine(kernel, 0, 1, -f2.getY()));
+          addAlgoAndNotify(algo);
+          clearSel();
+          setRenderRev(r => r + 1);
+        } else {
+          setSelectedElements(current);
+          setRenderRev(r => r + 1);
+        }
+      }
+      break;
+    }
+
+    case 'conic5': {
+      const pHit = hitPoint();
+      if (pHit) {
+        const current = [...selectedElements, pHit];
+        if (current.length === 5 && current.every(e => e instanceof GeoPoint)) {
+          const algo = new AlgoConicFivePoints(kernel, current as GeoPoint[]);
+          addAlgoAndNotify(algo);
+          clearSel();
+          setRenderRev(r => r + 1);
+        } else {
+          setSelectedElements(current);
+          setRenderRev(r => r + 1);
+        }
+      }
+      break;
+    }
+
+    case 'compass': {
+      const pHit = hitPoint();
+      if (pHit) {
+        const current = [...selectedElements, pHit];
+        if (current.length === 3 && current.every(e => e instanceof GeoPoint)) {
+          const [a, b, c] = current as GeoPoint[];
+          const algo = new AlgoCompass(kernel, a, b, c);
+          addAlgoAndNotify(algo);
+          clearSel();
+          setRenderRev(r => r + 1);
+        } else {
+          setSelectedElements(current);
+          setRenderRev(r => r + 1);
+        }
+      }
       break;
     }
 

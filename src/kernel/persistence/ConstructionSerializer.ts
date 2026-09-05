@@ -26,6 +26,17 @@ import { AlgoAngle } from '../algo/AlgoAngle';
 import { AlgoArea } from '../algo/AlgoArea';
 import { AlgoTangent } from '../algo/AlgoTangent';
 import { AlgoLocus } from '../algo/AlgoLocus';
+import { AlgoVector } from '../algo/AlgoVector';
+import { AlgoPolyLine } from '../algo/AlgoPolyLine';
+import { AlgoSemicircle } from '../algo/AlgoSemicircle';
+import { AlgoCircularSector } from '../algo/AlgoCircularSector';
+import { AlgoCircumcircularArc } from '../algo/AlgoCircumcircularArc';
+import { AlgoSlope } from '../algo/AlgoSlope';
+import { AlgoEllipse } from '../algo/AlgoEllipse';
+import { AlgoHyperbola } from '../algo/AlgoHyperbola';
+import { AlgoParabola } from '../algo/AlgoParabola';
+import { AlgoConicFivePoints } from '../algo/AlgoConicFivePoints';
+import { AlgoCompass } from '../algo/AlgoCompass';
 import { CoordinateSystem } from '../core/CoordinateSystem';
 
 /**
@@ -104,6 +115,17 @@ function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[]): AlgoEle
     case 'AlgoArea':                 return new AlgoArea(kernel, inputs[0]);
     case 'AlgoTangent':              return new AlgoTangent(kernel, asConic(0), asPoint(1));
     case 'AlgoLocus':                return new AlgoLocus(kernel, inputs[1] as import('../geo/GeoPoint').GeoPoint, inputs[0] as import('../geo/GeoPoint').GeoPoint);
+    case 'AlgoVector':              return new AlgoVector(kernel, asPoint(0), asPoint(1));
+    case 'AlgoSemicircle':          return new AlgoSemicircle(kernel, asPoint(0), asPoint(1));
+    case 'AlgoPolyLine':            return new AlgoPolyLine(kernel, inputs as import('../geo/GeoPoint').GeoPoint[]);
+    case 'AlgoCircularSector':      return new AlgoCircularSector(kernel, asPoint(0), asPoint(1), asPoint(2));
+    case 'AlgoCircumcircularArc':   return new AlgoCircumcircularArc(kernel, asPoint(0), asPoint(1), asPoint(2));
+    case 'AlgoSlope':               return new AlgoSlope(kernel, asLine(0));
+    case 'AlgoEllipse':             return new AlgoEllipse(kernel, asPoint(0), asPoint(1), asPoint(2));
+    case 'AlgoHyperbola':           return new AlgoHyperbola(kernel, asPoint(0), asPoint(1), asPoint(2));
+    case 'AlgoParabola':            return new AlgoParabola(kernel, asPoint(0), asLine(1));
+    case 'AlgoConicFivePoints':     return new AlgoConicFivePoints(kernel, inputs as import('../geo/GeoPoint').GeoPoint[]);
+    case 'AlgoCompass':             return new AlgoCompass(kernel, asPoint(0), asPoint(1), asPoint(2));
     default:
       throw new Error(`[ConstructionSerializer] unknown algorithm type: ${type}`);
   }

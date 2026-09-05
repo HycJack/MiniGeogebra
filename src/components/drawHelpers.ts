@@ -8,17 +8,19 @@
 
 import { IRenderer } from '../kernel/view/IRenderer';
 import { CoordinateSystem } from '../kernel/core/CoordinateSystem';
-import { ConstructionElement } from '../kernel/core/ConstructionElement';
 import { GeoPoint } from '../kernel/geo/GeoPoint';
 import { GeoLine } from '../kernel/geo/GeoLine';
 import { GeoSegment } from '../kernel/geo/GeoSegment';
 import { GeoPolygon } from '../kernel/geo/GeoPolygon';
 import { GeoConic } from '../kernel/geo/GeoConic';
 import { GeoLocus } from '../kernel/geo/GeoLocus';
+import { GeoArc } from '../kernel/geo/GeoArc';
+import { GeoConicPart } from '../kernel/geo/GeoConicPart';
+import { GeoVector } from '../kernel/geo/GeoVector';
+import { GeoPolyLine } from '../kernel/geo/GeoPolyLine';
+import { GeoRay } from '../kernel/geo/GeoRay';
 import { GeoElement } from '../kernel/geo/GeoElement';
-import { GeoNumeric } from '../kernel/geo/GeoNumeric';
 import { WorldPoint } from './tools/types';
-import { lineWorldEndpoints, lineFromTwoPoints } from './tools/hitTests';
 
 export interface DrawBounds { minX: number; maxX: number; minY: number; maxY: number; }
 
@@ -44,8 +46,28 @@ export function drawGrid(renderer: IRenderer, wScreen: number, hScreen: number, 
   const firstY = Math.floor(startY / step) * step;
 
   if (showGrid) {
-    renderer.strokeStyle = '#e5e7eb';
+    // 次级网格（细分主格 5 份，色更淡）
+    const minorStep = step / 5;
+    const minorFirstX = Math.floor(startX / minorStep) * minorStep;
+    const minorFirstY = Math.floor(startY / minorStep) * minorStep;
+    renderer.strokeStyle = 'rgba(180, 179, 186, 0.24)';
     renderer.lineWidth = 1 / coord.xScale;
+    for (let x = minorFirstX; x <= endX; x += minorStep) {
+      if (Math.abs(x / step - Math.round(x / step)) < 1e-9) continue;
+      renderer.beginPath();
+      renderer.moveTo(x, startY);
+      renderer.lineTo(x, endY);
+      renderer.stroke();
+    }
+    for (let y = minorFirstY; y <= endY; y += minorStep) {
+      if (Math.abs(y / step - Math.round(y / step)) < 1e-9) continue;
+      renderer.beginPath();
+      renderer.moveTo(startX, y);
+      renderer.lineTo(endX, y);
+      renderer.stroke();
+    }
+    // 主网格
+    renderer.strokeStyle = '#b4b3ba';
     for (let x = firstX; x <= endX; x += step) {
       renderer.beginPath();
       renderer.moveTo(x, startY);
@@ -61,33 +83,89 @@ export function drawGrid(renderer: IRenderer, wScreen: number, hScreen: number, 
   }
 
   if (showAxes) {
-    renderer.strokeStyle = '#9ca3af';
+    renderer.strokeStyle = '#1c1c1f';
     renderer.lineWidth = 2 / coord.xScale;
-    if (0 >= startX && 0 <= endX) {
+    const tickLength = 5 / coord.xScale;
+    const arrowLen = 8 / coord.xScale;
+    const arrowHalf = 3.5 / coord.xScale;
+    const xInView = 0 >= startX && 0 <= endX;
+    const yInView = 0 >= startY && 0 <= endY;
+    if (xInView) {
       renderer.beginPath();
       renderer.moveTo(0, startY);
       renderer.lineTo(0, endY);
       renderer.stroke();
+      // Y 轴正方向箭头（向下）
+      renderer.beginPath();
+      renderer.moveTo(-arrowHalf, endY - arrowLen);
+      renderer.lineTo(0, endY);
+      renderer.lineTo(arrowHalf, endY - arrowLen);
+      renderer.stroke();
     }
-    if (0 >= startY && 0 <= endY) {
+    if (yInView) {
       renderer.beginPath();
       renderer.moveTo(startX, 0);
       renderer.lineTo(endX, 0);
       renderer.stroke();
+      // X 轴正方向箭头（向右）
+      renderer.beginPath();
+      renderer.moveTo(endX - arrowLen, -arrowHalf);
+      renderer.lineTo(endX, 0);
+      renderer.lineTo(endX - arrowLen, arrowHalf);
+      renderer.stroke();
     }
 
-    renderer.fillStyle = '#6b7280';
-    renderer.font = `${10 / coord.xScale}px sans-serif`;
+    // 主刻度短线（GeoGebra 风格：X 轴纵向短线，Y 轴横向短线）
+    renderer.lineWidth = 1 / coord.xScale;
+    for (let x = firstX; x <= endX + 1e-9; x += step) {
+      if (!xInView || Math.abs(x) < 1e-10) continue;
+      renderer.beginPath();
+      renderer.moveTo(x, -tickLength / 2);
+      renderer.lineTo(x, tickLength / 2);
+      renderer.stroke();
+    }
+    for (let y = firstY; y <= endY + 1e-9; y += step) {
+      if (!yInView || Math.abs(y) < 1e-10) continue;
+      renderer.beginPath();
+      renderer.moveTo(-tickLength / 2, y);
+      renderer.lineTo(tickLength / 2, y);
+      renderer.stroke();
+    }
+
+    // 次级刻度：比主刻度更短，跟主/次网格保持同一节奏
+    const minorTickStep = step / 5;
+    const minorTickLength = 3 / coord.xScale;
+    for (let x = Math.floor(startX / minorTickStep) * minorTickStep; x <= endX + 1e-9; x += minorTickStep) {
+      if (!xInView || Math.abs(x) < 1e-10 || Math.abs(x / step - Math.round(x / step)) < 1e-9) continue;
+      renderer.beginPath();
+      renderer.moveTo(x, -minorTickLength / 2);
+      renderer.lineTo(x, minorTickLength / 2);
+      renderer.stroke();
+    }
+    for (let y = Math.floor(startY / minorTickStep) * minorTickStep; y <= endY + 1e-9; y += minorTickStep) {
+      if (!yInView || Math.abs(y) < 1e-10 || Math.abs(y / step - Math.round(y / step)) < 1e-9) continue;
+      renderer.beginPath();
+      renderer.moveTo(-minorTickLength / 2, y);
+      renderer.lineTo(minorTickLength / 2, y);
+      renderer.stroke();
+    }
+
+    renderer.fillStyle = '#1c1c1f';
+    renderer.font = `${12 / coord.xScale}px sans-serif`;
     renderer.textAlign = 'center';
     renderer.textBaseline = 'top';
-    for (let x = firstX; x <= endX; x += step) {
+    const xLabelEvery = Math.max(1, Math.ceil(28 / (step * coord.xScale)));
+    for (let x = firstX, labelIndex = 0; x <= endX; x += step, labelIndex++) {
+      if (labelIndex % xLabelEvery !== 0) continue;
       if (Math.abs(x) > 1e-10) {
         renderer.fillText(parseFloat(x.toPrecision(4)).toString(), x, 4 / coord.xScale);
       }
     }
     renderer.textAlign = 'right';
     renderer.textBaseline = 'middle';
-    for (let y = firstY; y <= endY; y += step) {
+    const yLabelEvery = Math.max(1, Math.ceil(20 / (step * coord.yScale)));
+    for (let y = firstY, labelIndex = 0; y <= endY; y += step, labelIndex++) {
+      if (labelIndex % yLabelEvery !== 0) continue;
       if (Math.abs(y) > 1e-10) {
         renderer.fillText(parseFloat(y.toPrecision(4)).toString(), -4 / coord.xScale, y);
       }
@@ -132,9 +210,13 @@ export function drawPoint(renderer: IRenderer, p: GeoPoint, selected: boolean, s
   if (!p.labelVisible || p.labelMode !== 'always') return;
   const label = p.label || p.id;
   renderer.font = `bold ${14 / scale}px sans-serif`;
+  renderer.textAlign = 'left';
   renderer.fillStyle = selected ? '#1e40af' : '#1f2937';
   renderer.textBaseline = 'bottom';
-  renderer.fillText(label, x + 15, y - 15);
+  // Label offsets are screen-space: convert them back to world units because
+  // the whole 2D canvas is already transformed by the current view scale.
+  const labelOffset = (baseRadius + (selected ? 8 : 4)) / scale;
+  renderer.fillText(label, x + labelOffset, y - labelOffset);
 }
 
 /** 直线（贯穿整个视野）。 */
@@ -192,35 +274,72 @@ export function drawPolygon(renderer: IRenderer, poly: GeoPolygon, selected: boo
   renderer.stroke();
 }
 
-/** 圆（圆锥曲线）。 */
+/** 圆锥曲线（圆 / 椭圆 / 双曲线 / 抛物线）。 */
 export function drawConic(renderer: IRenderer, c: GeoConic, selected: boolean, scale: number): void {
   if (!c.isDefined()) return;
-  const center = c.getCenter();
-  const r = c.getRadius();
-  if (r <= 0) return;
-
-  if (selected) {
-    renderer.beginPath();
-    renderer.arc(center.x, center.y, r + 4 / scale, 0, 2 * Math.PI);
-    renderer.strokeStyle = 'rgba(59, 130, 246, 0.3)';
-    renderer.lineWidth = 6 / scale;
-    renderer.stroke();
-  }
 
   const stroke = c.strokeColor ?? c.defaultStrokeColor;
   const baseWidth = c.strokeWidth ?? c.defaultLineWidth;
   renderer.strokeStyle = selected ? '#3b82f6' : stroke;
   renderer.lineWidth = (selected ? baseWidth * 2 : baseWidth) / scale;
+
+  if (c.isCircle()) {
+    // Fast path for circles: use arc()
+    const center = c.getCenter();
+    const r = c.getRadius();
+    if (r <= 0) return;
+
+    if (selected) {
+      renderer.beginPath();
+      renderer.arc(center.x, center.y, r + 4 / scale, 0, 2 * Math.PI);
+      renderer.strokeStyle = 'rgba(59, 130, 246, 0.3)';
+      renderer.lineWidth = 6 / scale;
+      renderer.stroke();
+      renderer.strokeStyle = '#3b82f6';
+      renderer.lineWidth = baseWidth * 2 / scale;
+    }
+
+    renderer.beginPath();
+    renderer.arc(center.x, center.y, r, 0, 2 * Math.PI);
+    renderer.stroke();
+
+    if (selected && c.labelVisible && c.labelMode === 'always') {
+      const label = c.label || c.id;
+      renderer.font = `bold ${14 / scale}px sans-serif`;
+      renderer.fillStyle = '#1e40af';
+      renderer.textBaseline = 'bottom';
+      renderer.fillText(label, center.x + r + 10 / scale, center.y);
+    }
+    return;
+  }
+
+  // General conic path: sample points along the curve
+  const pts = c.samplePoints(360);
+  if (pts.length < 2) return;
+
+  if (selected) {
+    renderer.strokeStyle = 'rgba(59, 130, 246, 0.3)';
+    renderer.lineWidth = 6 / scale;
+    renderer.beginPath();
+    renderer.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) renderer.lineTo(pts[i].x, pts[i].y);
+    renderer.stroke();
+    renderer.strokeStyle = '#3b82f6';
+    renderer.lineWidth = baseWidth * 2 / scale;
+  }
+
   renderer.beginPath();
-  renderer.arc(center.x, center.y, r, 0, 2 * Math.PI);
+  renderer.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) renderer.lineTo(pts[i].x, pts[i].y);
   renderer.stroke();
 
   if (selected && c.labelVisible && c.labelMode === 'always') {
     const label = c.label || c.id;
+    const center = c.getCenter();
     renderer.font = `bold ${14 / scale}px sans-serif`;
     renderer.fillStyle = '#1e40af';
     renderer.textBaseline = 'bottom';
-    renderer.fillText(label, center.x + r + 10 / scale, center.y);
+    renderer.fillText(label, center.x + 10 / scale, center.y);
   }
 }
 
@@ -244,65 +363,108 @@ export function drawLocus(renderer: IRenderer, locus: GeoLocus, selected: boolea
   }
 }
 
-// ---- Phase 2：射线 / 弧 / 正多边形的纯绘制 ----
-
-/** 射线：从原点 P0 经过 P1 向外无限延伸（视口内截断），并在起点处画实心标记。 */
-export function drawRay(renderer: IRenderer, ray: any, selected: boolean, scale: number, bounds: DrawBounds): void {
-  if (!ray.isDefined()) return;
-  const p0 = ray.getStartPoint();
-  const p1 = ray.getSecondPoint();
-  const stroke = ray.strokeColor ?? ray.defaultStrokeColor;
-  const baseWidth = ray.strokeWidth ?? ray.defaultLineWidth;
-  const w = (selected ? baseWidth * 2 : baseWidth) / scale;
-
-  const { a, b, c } = lineFromTwoPoints(p0, p1);
-  const dirs = lineWorldEndpoints(a, b, c, bounds);
-  const dirVec = { x: p1.x - p0.x, y: p1.y - p0.y };
-  const len2 = dirVec.x * dirVec.x + dirVec.y * dirVec.y;
-  const pts: WorldPoint[] = [{ x: p0.x, y: p0.y }];
-  if (dirs && len2 > 0) {
-    const ts: number[] = [];
-    [dirs.p0, dirs.p1].forEach(ep => {
-      const t = ((ep.x - p0.x) * dirVec.x + (ep.y - p0.y) * dirVec.y) / len2;
-      if (t >= 0) ts.push(t);
-    });
-    ts.sort((x, y) => x - y);
-    if (ts.length > 0) pts.push({ x: p0.x + (dirVec.x / len2) * ts[ts.length - 1], y: p0.y + (dirVec.y / len2) * ts[ts.length - 1] });
-  }
+/** 向量（带箭头的线段）。 */
+export function drawVector(renderer: IRenderer, v: GeoVector, selected: boolean, scale: number): void {
+  if (!v.isDefined()) return;
+  const sx = v.startX, sy = v.startY, ex = v.endX, ey = v.endY;
+  const stroke = v.strokeColor ?? v.defaultStrokeColor;
+  const baseWidth = v.strokeWidth ?? v.defaultLineWidth;
   renderer.strokeStyle = selected ? '#3b82f6' : stroke;
-  renderer.lineWidth = w;
+  renderer.lineWidth = (selected ? baseWidth * 2 : baseWidth) / scale;
   renderer.beginPath();
-  renderer.moveTo(pts[0].x, pts[0].y);
-  for (let i = 1; i < pts.length; i++) renderer.lineTo(pts[i].x, pts[i].y);
+  renderer.moveTo(sx, sy);
+  renderer.lineTo(ex, ey);
   renderer.stroke();
-  // 起点标记
-  renderer.fillStyle = selected ? '#1e3a8a' : stroke;
+  // 箭头
+  const angle = Math.atan2(ey - sy, ex - sx);
+  const headLen = 12 / scale;
+  const a1 = angle + Math.PI - Math.PI / 6;
+  const a2 = angle + Math.PI + Math.PI / 6;
   renderer.beginPath();
-  renderer.arc(p0.x, p0.y, 4 / scale, 0, 2 * Math.PI);
-  renderer.fill();
+  renderer.moveTo(ex, ey);
+  renderer.lineTo(ex + headLen * Math.cos(a1), ey + headLen * Math.sin(a1));
+  renderer.moveTo(ex, ey);
+  renderer.lineTo(ex + headLen * Math.cos(a2), ey + headLen * Math.sin(a2));
+  renderer.stroke();
 }
 
-/** 圆弧：圆心+起止角的部分圆弧（fill 时为扇形）。 */
-export function drawArc(renderer: IRenderer, arc: any, selected: boolean, scale: number): void {
+/** 折线。 */
+export function drawPolyLine(renderer: IRenderer, pl: GeoPolyLine, selected: boolean, scale: number): void {
+  if (!pl.isDefined() || pl.vertices.length < 2) return;
+  const stroke = pl.strokeColor ?? pl.defaultStrokeColor;
+  const baseWidth = pl.strokeWidth ?? pl.defaultLineWidth;
+  renderer.strokeStyle = selected ? '#3b82f6' : stroke;
+  renderer.lineWidth = (selected ? baseWidth * 2 : baseWidth) / scale;
+  renderer.beginPath();
+  renderer.moveTo(pl.vertices[0].getX(), pl.vertices[0].getY());
+  for (let i = 1; i < pl.vertices.length; i++) {
+    renderer.lineTo(pl.vertices[i].getX(), pl.vertices[i].getY());
+  }
+  renderer.stroke();
+}
+
+/** 圆弧（GeoArc 和 GeoConicPart ARC 类型）。 */
+export function drawArc(renderer: IRenderer, arc: GeoArc, selected: boolean, scale: number): void {
   if (!arc.isDefined()) return;
-  const cx = arc.getCenter().x, cy = arc.getCenter().y;
+  const center = arc.getCenter();
   const r = arc.getRadius();
   if (r <= 0) return;
-
-  if (selected) {
-    renderer.beginPath();
-    renderer.arc(cx, cy, r + 4 / scale, 0, 2 * Math.PI);
-    renderer.strokeStyle = 'rgba(59, 130, 246, 0.3)';
-    renderer.lineWidth = 6 / scale;
-    renderer.stroke();
-  }
-
   const stroke = arc.strokeColor ?? arc.defaultStrokeColor;
   const baseWidth = arc.strokeWidth ?? arc.defaultLineWidth;
   renderer.strokeStyle = selected ? '#3b82f6' : stroke;
   renderer.lineWidth = (selected ? baseWidth * 2 : baseWidth) / scale;
   renderer.beginPath();
-  renderer.arc(cx, cy, r, arc.getStartAngle(), arc.getEndAngle(), !!arc.isCounterClockwise());
+  renderer.arc(center.x, center.y, r, arc.getStartAngle(), arc.getEndAngle(), arc.isCounterClockwise());
+  renderer.stroke();
+}
+
+/** 圆锥曲线片段（扇形 / 弓形 / 弧）。 */
+export function drawConicPart(renderer: IRenderer, cp: GeoConicPart, selected: boolean, scale: number): void {
+  if (!cp.isDefined()) return;
+  const center = cp.getCenter();
+  const r = cp.getRadius();
+  if (r <= 0) return;
+  const stroke = cp.strokeColor ?? cp.defaultStrokeColor;
+  const baseWidth = cp.strokeWidth ?? cp.defaultLineWidth;
+  const sa = cp.getStartAngle(), ea = cp.getEndAngle(), ccw = cp.isCounterClockwise();
+
+  if (cp.isSector()) {
+    renderer.fillStyle = cp.fillColor ?? cp.defaultFillColor ?? 'rgba(59,130,246,0.15)';
+    renderer.beginPath();
+    renderer.moveTo(center.x, center.y);
+    renderer.arc(center.x, center.y, r, sa, ea, ccw);
+    renderer.closePath();
+    renderer.fill();
+  }
+
+  renderer.strokeStyle = selected ? '#3b82f6' : stroke;
+  renderer.lineWidth = (selected ? baseWidth * 2 : baseWidth) / scale;
+  renderer.beginPath();
+  renderer.arc(center.x, center.y, r, sa, ea, ccw);
+  renderer.stroke();
+
+  if (cp.getPartType() === 2) { // SEGMENT
+    renderer.beginPath();
+    renderer.moveTo(center.x + r * Math.cos(sa), center.y + r * Math.sin(sa));
+    renderer.lineTo(center.x + r * Math.cos(ea), center.y + r * Math.sin(ea));
+    renderer.stroke();
+  }
+}
+
+/** 射线。 */
+export function drawRay(renderer: IRenderer, ray: GeoRay, selected: boolean, bounds: DrawBounds, scale: number): void {
+  if (!ray.isDefined()) return;
+  const sp = ray.getStartPoint();
+  const dp = ray.getSecondPoint();
+  const dx = dp.getX() - sp.getX(), dy = dp.getY() - sp.getY();
+  if (Math.hypot(dx, dy) < 1e-12) return;
+  const stroke = ray.strokeColor ?? ray.defaultStrokeColor;
+  const baseWidth = ray.strokeWidth ?? ray.defaultLineWidth;
+  renderer.strokeStyle = selected ? '#3b82f6' : stroke;
+  renderer.lineWidth = (selected ? baseWidth * 2 : baseWidth) / scale;
+  renderer.beginPath();
+  renderer.moveTo(sp.getX(), sp.getY());
+  renderer.lineTo(sp.getX() + 10000 * dx, sp.getY() + 10000 * dy);
   renderer.stroke();
 }
 
@@ -320,7 +482,6 @@ export function renderPreviews(mode: string, selectedElements: readonly GeoEleme
   renderer.lineWidth = 1 / coord.xScale;
 
   const isPoint = (el: any): el is GeoPoint => el instanceof GeoPoint;
-  const isLine = (el: any): el is GeoLine => el instanceof GeoLine;
 
   if (mode === 'segment' && selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
     const p1 = selectedElements[0] as GeoPoint;
@@ -429,70 +590,6 @@ export function renderPreviews(mode: string, selectedElements: readonly GeoEleme
       }
     }
   }
+  renderer.setLineDash([]);
   renderer.restore();
-}
-
-// ---- Phase 2：测量数值在图形区标注 ----
-
-/** 为距离/角度/面积测量在图形区生成标注标签。 */
-export function drawMeasurementLabels(elements: readonly ConstructionElement[], renderer: IRenderer, scale: number, bounds: DrawBounds): void {
-  const getAlgoOutputMap = (els: readonly ConstructionElement[]) => {
-    const map = new Map<any, any>();
-    for (const e of els) {
-      const pe = (e as any).parentAlgo;
-      if (pe) {
-        const out = pe.getOutput?.();
-        if (out && out !== e) map.set(out.id, pe);
-      }
-    }
-    return map;
-  };
-  const algoMap = getAlgoOutputMap(elements);
-  const eps = 5 / scale;
-
-  for (const el of elements) {
-    if (!(el instanceof GeoNumeric)) continue;
-    const algo = algoMap.get(el.id);
-    if (!algo) continue;
-    const type = algo.getClassName?.() ?? '';
-    const v = el.getValue();
-    if (!Number.isFinite(v)) continue;
-    if (!(type === 'AlgoDistance' || type === 'AlgoAngle' || type === 'AlgoArea')) continue;
-
-    let anchor: WorldPoint | undefined;
-    if (type === 'AlgoDistance') {
-      const [a, b] = algo.getInput?.() ?? [];
-      if (a instanceof GeoPoint && b instanceof GeoPoint) anchor = { x: (a.getX() + b.getX()) / 2, y: (a.getY() + b.getY()) / 2 };
-      else if (a instanceof GeoLine && b instanceof GeoPoint) {
-        const { a: A, b: B, c: C } = a as GeoLine;
-        const d = A * A + B * B;
-        anchor = { x: (B * (B * b.getX() - A * b.getY()) - A * C) / d, y: (A * (-B * b.getX() + A * b.getY()) - B * C) / d };
-      }
-    } else if (type === 'AlgoAngle') {
-      const [_, p2] = algo.getInput?.() ?? [];
-      if (p2 instanceof GeoPoint) anchor = { x: p2.getX(), y: p2.getY() };
-    } else if (type === 'AlgoArea') {
-      const [target] = algo.getInput?.() ?? [];
-      if (target instanceof GeoPolygon && target.vertices.length >= 3) {
-        let sx = 0, sy = 0;
-        for (const v of target.vertices) { sx += v.getX(); sy += v.getY(); }
-        anchor = { x: sx / target.vertices.length, y: sy / target.vertices.length };
-      } else if (target instanceof GeoConic) {
-        const { x, y } = (target as GeoConic).getCenter();
-        anchor = { x, y };
-      }
-    }
-    if (!anchor) continue;
-
-    let label: string;
-    if (type === 'AlgoDistance') label = parseFloat(v.toFixed(2)).toString();
-    else if (type === 'AlgoAngle') label = `${parseFloat((v * 180 / Math.PI).toFixed(1))}\u00B0`;
-    else label = parseFloat(v.toFixed(2)).toString();
-
-    const off = 20 / scale;
-    renderer.font = `${11 / scale}px sans-serif`;
-    renderer.textBaseline = 'bottom';
-    renderer.fillStyle = '#1f2937';
-    renderer.fillText(label, anchor.x + off, anchor.y - off);
-  }
 }

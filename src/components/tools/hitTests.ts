@@ -10,6 +10,11 @@ import { GeoLine } from '../../kernel/geo/GeoLine';
 import { GeoSegment } from '../../kernel/geo/GeoSegment';
 import { GeoConic } from '../../kernel/geo/GeoConic';
 import { GeoPolygon } from '../../kernel/geo/GeoPolygon';
+import { GeoConicPart } from '../../kernel/geo/GeoConicPart';
+import { GeoArc } from '../../kernel/geo/GeoArc';
+import { GeoVector } from '../../kernel/geo/GeoVector';
+import { GeoPolyLine } from '../../kernel/geo/GeoPolyLine';
+import { GeoRay } from '../../kernel/geo/GeoRay';
 import { GeoElement } from '../../kernel/geo/GeoElement';
 import { WorldPoint } from './types';
 
@@ -36,8 +41,26 @@ export function hitScreenObject(els: readonly ConstructionElement[], x: number, 
   // 2. 命中其他几何对象
   for (let i = els.length - 1; i >= 0; i--) {
     const el = els[i];
-    if (el instanceof GeoSegment) {
+    if (el instanceof GeoConicPart || el instanceof GeoArc) {
+      const r = (el as GeoConic).getRadius();
+      const center = (el as GeoConic).getCenter();
+      const d = Math.abs(Math.hypot(x - center.x, y - center.y) - r);
+      if (d < 5 / scale) return el;
+    } else if (el instanceof GeoVector) {
+      const v = el as GeoVector;
+      const dx = v.endX - v.startX, dy = v.endY - v.startY;
+      const len2 = dx * dx + dy * dy;
+      if (len2 > 0) {
+        const t = Math.max(0, Math.min(1, ((x - v.startX) * dx + (y - v.startY) * dy) / len2));
+        const px = v.startX + t * dx, py = v.startY + t * dy;
+        if (Math.hypot(x - px, y - py) < 5 / scale) return el;
+      }
+    } else if (el instanceof GeoPolyLine) {
+      if ((el as GeoPolyLine).isOnPath({ getX: () => x, getY: () => y } as any, 5 / scale)) return el;
+    } else if (el instanceof GeoSegment) {
       if ((el as any).isOnPath({ getX: () => x, getY: () => y }, 5 / scale)) return el;
+    } else if (el instanceof GeoRay) {
+      if ((el as GeoRay).isOnPath({ getX: () => x, getY: () => y } as any, 5 / scale)) return el;
     } else if (el instanceof GeoLine) {
       const len = Math.hypot(el.a, el.b);
       if (len === 0) continue;

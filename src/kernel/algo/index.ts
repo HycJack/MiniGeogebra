@@ -1,3 +1,14 @@
+export { AlgoVector } from './AlgoVector';
+export { AlgoPolyLine } from './AlgoPolyLine';
+export { AlgoSemicircle } from './AlgoSemicircle';
+export { AlgoCircularSector } from './AlgoCircularSector';
+export { AlgoCircumcircularArc } from './AlgoCircumcircularArc';
+export { AlgoSlope } from './AlgoSlope';
+export { AlgoEllipse } from './AlgoEllipse';
+export { AlgoHyperbola } from './AlgoHyperbola';
+export { AlgoParabola } from './AlgoParabola';
+export { AlgoConicFivePoints } from './AlgoConicFivePoints';
+export { AlgoCompass } from './AlgoCompass';
 export { AlgoLineTwoPoints } from './AlgoLineTwoPoints';
 export { AlgoSegmentTwoPoints } from './AlgoSegmentTwoPoints';
 export { AlgoMidpoint } from './AlgoMidpoint';

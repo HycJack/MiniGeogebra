@@ -6,6 +6,18 @@
  * 设计选择：属性与方法混合 —— 样式字段沿用 Canvas2D 的"setter 式"风格（便于视图层直写），
  * 路径/动作/生命周期用方法，保持命令流清晰。
  */
+
+/** 批量化文本队列项（WebGL 后端通过 overlay Canvas2D 渲染）。 */
+export interface TextItem {
+  text: string;
+  x: number;
+  y: number;
+  font: string;
+  fillStyle: string;
+  textBaseline: CanvasTextBaseline;
+  textAlign: CanvasTextAlign;
+}
+
 export interface IRenderer {
   // ---- 画布状态 / 变换 ----
   save(): void;
@@ -38,6 +50,8 @@ export interface IRenderer {
   // ---- 文本 ----
   fillText(text: string, x: number, y: number): void;
   measureText(text: string): { width: number };
+  /** 返回并清空本帧累积的文本队列（Canvas2D 后端直接绘制，返回空数组）。 */
+  flushTextQueue(): TextItem[];
 
   // ---- 生命周期 / 视口 ----
   setLineDash(dash: number[]): void;

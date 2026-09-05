@@ -153,4 +153,7 @@ export class SvgRenderer implements IRenderer {
   private _escape(s: string): string {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
+
+  /** SVG 后端不需要文本队列（直接生成 <text> 元素）。 */
+  flushTextQueue(): import('./IRenderer').TextItem[] { return []; }
 }

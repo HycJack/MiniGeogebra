@@ -60,7 +60,19 @@ export type ToolMode =
   | 'regular_polygon'
   | 'rotate'
   | 'dilate'
-  | 'mirror';
+  | 'mirror'
+  // Phase 3：2D 功能扩展
+  | 'vector'
+  | 'polyline'
+  | 'semicircle'
+  | 'sector'
+  | 'circumcircular_arc'
+  | 'slope'
+  | 'ellipse'
+  | 'hyperbola'
+  | 'parabola'
+  | 'conic5'
+  | 'compass';
 
 // -------------------------------------------------------------------
 // 工具上下文：视图把共享资源注入这里，避免事件处理器产生巨大的 props 树
@@ -90,7 +102,7 @@ export interface ToolContext {
   undo?: () => void;
   redo?: () => void;
   // --- 副作用 ----
-  recordNumericChange?: (numeric: GeoNumeric, newValue: number) => void;
+  recordNumericChange?: (numeric: GeoNumeric, oldValue: number, newValue: number) => void;
   recordRename?: (element: any, newLabel: string) => void;
   recordStyleChange?: (element: GeoElement, changes: Record<string, unknown>) => void;
   // ---- 框选状态（move 工具）----
