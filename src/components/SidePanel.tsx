@@ -6,7 +6,9 @@ import { GeoPolygon } from '../kernel/geo/GeoPolygon';
 import { GeoConic } from '../kernel/geo/GeoConic';
 import { GeoNumeric } from '../kernel/geo/GeoNumeric';
 import { CoordinateSystem } from '../kernel/core/CoordinateSystem';
+import { ConstructionElement } from '../kernel/core/ConstructionElement';
 import { SliderControl } from './SliderControl';
+import AlgebraInputBar from './AlgebraInputBar';
 import { Menu, Sliders, Square } from 'lucide-react';
 import type { TFunction } from '../i18n/LanguageContext';
 
@@ -22,9 +24,14 @@ interface SidePanelProps {
   t: TFunction;
 }
 
-const SidePanel: React.FC<SidePanelProps> = ({
+interface SidePanelWithHandlersProps extends SidePanelProps {
+  onAlgebraElementsCreated: (elements: ConstructionElement[]) => void;
+}
+
+const SidePanel: React.FC<SidePanelWithHandlersProps> = ({
   kernel, panelTab, setPanelTab, selectedElements, coord,
-  recordStyleChange, notifyNumericChange, renderRev, t
+  recordStyleChange, notifyNumericChange, renderRev, t,
+  onAlgebraElementsCreated,
 }) => {
   // renderRev 只用于让约束点参数在动画循环中随构造刷新重新计算。
   void renderRev;
@@ -62,6 +69,11 @@ const SidePanel: React.FC<SidePanelProps> = ({
 
       {panelTab === 'algebra' && (
         <>
+          <AlgebraInputBar
+            kernel={kernel}
+            onElementsCreated={onAlgebraElementsCreated}
+            t={t}
+          />
           <div className="flex-1 overflow-y-auto p-2 space-y-1">
             {kernel.getConstruction().getElements().map(el => {
               let typeName = el.getClassName();

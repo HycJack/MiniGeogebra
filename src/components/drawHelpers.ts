@@ -19,6 +19,7 @@ import { GeoConicPart } from '../kernel/geo/GeoConicPart';
 import { GeoVector } from '../kernel/geo/GeoVector';
 import { GeoPolyLine } from '../kernel/geo/GeoPolyLine';
 import { GeoRay } from '../kernel/geo/GeoRay';
+import { GeoFunction } from '../kernel/geo/GeoFunction';
 import { GeoElement } from '../kernel/geo/GeoElement';
 import { WorldPoint } from './tools/types';
 
@@ -360,6 +361,44 @@ export function drawLocus(renderer: IRenderer, locus: GeoLocus, selected: boolea
       renderer.lineTo(samples[i].x, samples[i].y);
     }
     renderer.stroke();
+  }
+}
+
+/** 显式函数曲线（输入栏 / 代数视图创建）。 */
+export function drawFunction(
+  renderer: IRenderer, fn: GeoFunction, selected: boolean,
+  bounds: DrawBounds, scale: number, pixelWidth: number,
+): void {
+  if (!fn.isDefined() || fn.visible === false) return;
+  const samples = fn.updateSamples(bounds.minX, bounds.maxX, pixelWidth);
+  if (samples.length < 2) return;
+  const stroke = fn.strokeColor ?? fn.defaultStrokeColor;
+  const baseWidth = fn.strokeWidth ?? fn.defaultLineWidth;
+  renderer.strokeStyle = selected ? '#3b82f6' : stroke;
+  renderer.lineWidth = (selected ? baseWidth * 2 : baseWidth) / scale;
+
+  let drawing = false;
+  renderer.beginPath();
+  for (const sample of samples) {
+    if (!Number.isFinite(sample.y)) {
+      drawing = false;
+      continue;
+    }
+    if (!drawing) {
+      renderer.moveTo(sample.x, sample.y);
+      drawing = true;
+    } else {
+      renderer.lineTo(sample.x, sample.y);
+    }
+  }
+  renderer.stroke();
+
+  if (selected && fn.labelVisible && fn.labelMode === 'always') {
+    renderer.fillStyle = '#1e40af';
+    renderer.font = `bold ${14 / scale}px sans-serif`;
+    renderer.textAlign = 'left';
+    renderer.textBaseline = 'bottom';
+    renderer.fillText(fn.label || fn.id, bounds.minX + 10 / scale, bounds.minY + 20 / scale);
   }
 }
 

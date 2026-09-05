@@ -21,6 +21,7 @@ import { AlgoMidpoint } from '../kernel/algo/AlgoMidpoint';
 import { ConstructionElement } from '../kernel/core/ConstructionElement';
 import { GeoElement } from '../kernel/geo/GeoElement';
 import { GeoLocus } from '../kernel/geo/GeoLocus';
+import { GeoFunction } from '../kernel/geo/GeoFunction';
 import { AlgoPointOnConic } from '../kernel/algo/AlgoPointOnConic';
 import { AlgoPointOnLine } from '../kernel/algo/AlgoPointOnLine';
 import { AlgoPointOnSegment } from '../kernel/algo/AlgoPointOnSegment';
@@ -30,7 +31,7 @@ import { IRenderer, TextItem } from '../kernel/view/IRenderer';
 import { createRenderer } from '../kernel/view/WebGLRendererFallback';
 import { serialize as serializeConstruction, deserialize as deserializeConstruction, downloadJSON } from '../kernel/persistence/ConstructionSerializer';
 import { toolHandlers, clearToolState } from './tools/handlers';
-import { drawGrid, drawPoint, drawLine, drawSegment, drawPolygon, drawConic, drawLocus, renderPreviews, drawVector, drawPolyLine, drawArc, drawConicPart, drawRay } from './drawHelpers';
+import { drawGrid, drawPoint, drawLine, drawSegment, drawPolygon, drawConic, drawLocus, drawFunction, renderPreviews, drawVector, drawPolyLine, drawArc, drawConicPart, drawRay } from './drawHelpers';
 import { useLanguage } from '../i18n/LanguageContext';
 import { Undo2, Redo2, Globe, ZoomIn, ZoomOut, Home } from 'lucide-react';
 import { ToolMode } from './tools/types';
@@ -168,6 +169,15 @@ export const GeometryCanvas: React.FC = () => {
     }
   }, [selectedElements, editingLabel, recordRename]);
 
+  const handleAlgebraElementsCreated = useCallback((elements: ConstructionElement[]) => {
+    const construction = kernel.getConstruction();
+    elements.forEach(element => construction.addElement(element));
+    construction.updateAllAlgorithms();
+    addCommand({ type: 'add', elements });
+    setSelectedElements(elements.filter((element): element is GeoElement => element instanceof GeoElement));
+    setRenderRev(value => value + 1);
+  }, [kernel, addCommand]);
+
   const snapshotStyle = useCallback((el: GeoElement): Record<string, unknown> => ({
     strokeColor: el.strokeColor, strokeWidth: el.strokeWidth, strokeDash: el.strokeDash ? [...el.strokeDash] : [],
     fillColor: el.fillColor, labelVisible: el.labelVisible, labelMode: el.labelMode, visible: el.visible,
@@ -229,6 +239,7 @@ export const GeometryCanvas: React.FC = () => {
       else if (el instanceof GeoConic) drawConic(renderer, el, false, coord.xScale);
     });
     elements.forEach(el => { if (el instanceof GeoLocus) drawLocus(renderer, el, false, coord.xScale); });
+    elements.forEach(el => { if (el instanceof GeoFunction) drawFunction(renderer, el, false, bounds, coord.xScale, (bounds.maxX - bounds.minX) * coord.xScale); });
     elements.forEach(el => { if (el instanceof GeoPolyLine) drawPolyLine(renderer, el, false, coord.xScale); });
     elements.forEach(el => { if (el instanceof GeoVector) drawVector(renderer, el, false, coord.xScale); });
     elements.forEach(el => {
@@ -371,6 +382,7 @@ export const GeometryCanvas: React.FC = () => {
       else if (el instanceof GeoArc) drawArc(renderer, el, selectedElements.includes(el), coord.xScale);
       else if (el instanceof GeoConic) drawConic(renderer, el, selectedElements.includes(el), coord.xScale);
       else if (el instanceof GeoLocus) drawLocus(renderer, el, selectedElements.includes(el), coord.xScale);
+      else if (el instanceof GeoFunction) drawFunction(renderer, el, selectedElements.includes(el), coord.visibleWorldBounds(), coord.xScale, canvas.width / dpr);
       else if (el instanceof GeoPolyLine) drawPolyLine(renderer, el, selectedElements.includes(el), coord.xScale);
       else if (el instanceof GeoVector) drawVector(renderer, el, selectedElements.includes(el), coord.xScale);
       else if (el instanceof GeoSegment) drawSegment(renderer, el, selectedElements.includes(el), coord.xScale);
@@ -555,7 +567,7 @@ export const GeometryCanvas: React.FC = () => {
 
       {/* ── Main Content ──────────────────────────────────────── */}
       <div className="flex flex-1 overflow-hidden relative">
-        <SidePanel kernel={kernel} panelTab={panelTab} setPanelTab={setPanelTab} selectedElements={selectedElements} coord={coord} recordStyleChange={recordStyleChange} notifyNumericChange={notifyNumericChange} renderRev={renderRev} t={t} />
+        <SidePanel kernel={kernel} panelTab={panelTab} setPanelTab={setPanelTab} selectedElements={selectedElements} coord={coord} recordStyleChange={recordStyleChange} notifyNumericChange={notifyNumericChange} renderRev={renderRev} t={t} onAlgebraElementsCreated={handleAlgebraElementsCreated} />
 
         {/* Canvas Area */}
         <div className="flex-1 relative bg-white z-0" ref={containerRef}>

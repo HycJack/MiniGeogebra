@@ -278,4 +278,19 @@ export class Construction {
       index++;
     }
   }
+
+  getNextFunctionLabel(additionalLabels?: Set<string>): string {
+    const existingLabels = new Set(this.elements.map(e => (e as any).label).filter(l => l));
+    if (additionalLabels) additionalLabels.forEach(l => existingLabels.add(l));
+    const labels = ['f', 'g', 'h', 'p', 'q', 'r', 's', 't'];
+    let index = 0;
+    while (true) {
+      const suffix = Math.floor(index / labels.length);
+      const label = suffix === 0
+        ? labels[index % labels.length]
+        : `${labels[index % labels.length]}_${suffix}`;
+      if (!existingLabels.has(label)) return label;
+      index++;
+    }
+  }
 }
