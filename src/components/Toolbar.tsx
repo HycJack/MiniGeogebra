@@ -58,6 +58,8 @@ import modeReflectAboutCircle from '../assets/icons/mode_reflectaboutcircle.svg'
 import modeRotateAroundPoint from '../assets/icons/mode_rotatearoundpoint.svg';
 import modeTranslateByVector from '../assets/icons/mode_translatebyvector.svg';
 import modeDilateFromPoint from '../assets/icons/mode_dilatefrompoint.svg';
+import modeShear from '../assets/icons/mode_shear.svg';
+import modeStretch from '../assets/icons/mode_stretch.svg';
 import modeShowHideObject from '../assets/icons/mode_showhideobject.svg';
 import modeShowHideLabel from '../assets/icons/mode_showhidelabel.svg';
 import modeDelete from '../assets/icons/mode_delete.svg';
@@ -230,7 +232,7 @@ const Toolbar: React.FC<ToolbarProps> = ({
       ] }],
     },
     {
-      id: 'transforms', title: 'transformTools', icon: svgIcon(modeReflectAboutLine, 20), activeModes: ['mirror_line', 'mirror_point', 'mirror_circle', 'rotate', 'translate_vector', 'dilate'],
+      id: 'transforms', title: 'transformTools', icon: svgIcon(modeReflectAboutLine, 20), activeModes: ['mirror_line', 'mirror_point', 'mirror_circle', 'rotate', 'translate_vector', 'dilate', 'shear', 'stretch'],
       subgroups: [
         { label: 'reflectionTools', items: [
           { mode: 'mirror_line', label: 'mirrorLine', icon: svgIcon(modeReflectAboutLine) },
@@ -241,6 +243,10 @@ const Toolbar: React.FC<ToolbarProps> = ({
           { mode: 'rotate', label: 'rotate', icon: svgIcon(modeRotateAroundPoint) },
           { mode: 'translate_vector', label: 'translateByVector', icon: svgIcon(modeTranslateByVector) },
           { mode: 'dilate', label: 'dilate', icon: svgIcon(modeDilateFromPoint) },
+        ] },
+        { label: 'affineTransforms', items: [
+          { mode: 'shear', label: 'shear', icon: svgIcon(modeShear) },
+          { mode: 'stretch', label: 'stretch', icon: svgIcon(modeStretch) },
         ] },
       ],
     },

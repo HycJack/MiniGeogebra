@@ -33,6 +33,7 @@ import {
   AlgoRegularPolygon, AlgoCircleCenter,
   buildTransformed,
 } from '../../kernel/algo';
+import { shearStretchMatrix } from '../../kernel/algo/AlgoRotate';
 import { AlgoRayTwoPoints } from '../../kernel/algo/AlgoRayTwoPoints';
 import {
   AlgoVector, AlgoPolyLine, AlgoSemicircle, AlgoCircularSector,
@@ -57,7 +58,7 @@ const TOOL_MODE_LIST: readonly ToolMode[] = [
   'angle_bisector', 'polygon',
   'distance', 'angle', 'area', 'tangent', 'locus',
   // Phase 2：新增几何与变换工具
-  'ray', 'arc', 'regular_polygon', 'rotate', 'dilate', 'mirror',
+  'ray', 'arc', 'regular_polygon', 'rotate', 'dilate', 'mirror', 'shear', 'stretch',
   // Phase 3：2D 功能扩展
   'vector', 'polyline', 'semicircle', 'sector', 'circumcircular_arc', 'circumcircular_sector',
   'slope', 'ellipse', 'hyperbola', 'parabola', 'conic5', 'compass',
@@ -609,7 +610,66 @@ export const handlePointerDown = (
       return;
     }
 
-    case 'mirror': {
+    case 'mirror':
+    case 'shear':
+    case 'stretch': {
+      if (mode !== 'mirror') {
+        if (ts.inputs?.length) {
+          if (!ts.transformRef) {
+            const axisObject = hitObject();
+            if (axisObject instanceof GeoLine) {
+              ts.transformRef = { kind: 'line', axis: { a: axisObject.a, b: axisObject.b, c: axisObject.c } };
+            } else if (!ts.refStart) {
+              ts.refStart = { x: point.x, y: point.y };
+            } else {
+              ts.transformRef = { kind: 'line', axis: lineFromTwoPoints(ts.refStart, { x: point.x, y: point.y }) };
+            }
+            if (!ts.transformRef) return;
+          }
+
+          const raw = window.prompt(t(mode === 'shear' ? 'shearFactorPrompt' : 'stretchFactorPrompt'), '1');
+          if (raw === null) return;
+          const factor = Number(raw);
+          if (!isFinite(factor)) return;
+
+          try {
+            const matrix = shearStretchMatrix(
+              ts.transformRef.axis.a, ts.transformRef.axis.b, ts.transformRef.axis.c,
+              factor, mode,
+            );
+            const outs: ConstructionElement[] = [];
+            for (const { el } of ts.inputs) outs.push(buildTransformed(kernel, el, mode, { matrix }));
+            outs.forEach(out => { kernel.getConstruction().addElement(out); notifyUpdate(out); });
+            clearSel();
+            setRenderRev(r => r + 1);
+            ts.inputs = []; ts.transformRef = null; ts.refStart = null;
+          } catch {
+            // Degenerate axes stay in the current step so the user can pick another line.
+          }
+          return;
+        }
+
+        if (selectedElements.length > 0) {
+          ts.inputs = selectedElements.map(el => {
+            let ref: { x: number; y: number };
+            if (el instanceof GeoPoint) ref = { x: el.getX(), y: el.getY() };
+            else if (el instanceof GeoConic) { const c = el.getCenter(); ref = { x: c.x, y: c.y }; }
+            else ref = { x: point.x, y: point.y };
+            return { el, ref };
+          });
+          clearSel();
+          return;
+        }
+
+        const source = hitObject() ?? hitPoint() ?? emptyClickNewPoint();
+        ts.inputs = [{
+          el: source,
+          ref: source instanceof GeoPoint ? { x: source.getX(), y: source.getY() } : { x: point.x, y: point.y },
+        }];
+        clearSel();
+        return;
+      }
+
       if ((!ts.inputs || ts.inputs.length === 0) && selectedElements.length === 0) {
         ts.inputs = [{ el: hitPoint() ?? emptyClickNewPoint(), ref: { x: point.x, y: point.y } }];
         setSelectedElements([]);

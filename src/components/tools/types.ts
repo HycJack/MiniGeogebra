@@ -62,6 +62,8 @@ export type ToolMode =
   | 'rotate'
   | 'dilate'
   | 'mirror'
+  | 'shear'
+  | 'stretch'
   // Phase 3：2D 功能扩展
   | 'vector'
   | 'polyline'
