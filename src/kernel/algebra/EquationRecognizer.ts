@@ -1,5 +1,12 @@
 import { Kernel } from '../core/Kernel';
 import { ConstructionElement } from '../core/ConstructionElement';
+import { GeoPoint } from '../geo/GeoPoint';
+import { GeoVec3D } from '../core/GeoVec3D';
+import { AlgoLineTwoPoints } from '../algo/AlgoLineTwoPoints';
+import { AlgoSegmentTwoPoints } from '../algo/AlgoSegmentTwoPoints';
+import { AlgoRayTwoPoints } from '../algo/AlgoRayTwoPoints';
+import { AlgoCircleCenterPoint } from '../algo/AlgoCircleCenterPoint';
+import { AlgoVector } from '../algo/AlgoVector';
 import { GeoNumeric } from '../geo/GeoNumeric';
 import { parseExpression } from './ExpressionParser';
 import { evaluate } from './ExpressionEvaluator';
@@ -21,6 +28,30 @@ const splitAtTopLevelEquals = (input: string): [string, string] | null => {
 const parseFunctionHeader = (left: string): { label: string; variableName: string } | null => {
   const match = /^([a-zA-Z_][a-zA-Z0-9_]*)\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\)$/.exec(left);
   return match ? { label: match[1], variableName: match[2] } : null;
+};
+
+const COMMAND_ARITY: Record<string, number> = {
+  Point: 2,
+  Line: 2,
+  Segment: 2,
+  Ray: 2,
+  Circle: 2,
+  Vector: 2,
+};
+
+const assignNextLabel = <T extends { label: string }>(element: T, labels: Set<string>, nextLabel: () => string): void => {
+  if (!element.label) element.label = nextLabel();
+  labels.add(element.label);
+};
+
+/** Parse a coordinate tuple string "(x,y)" into a GeoPoint, or return null. */
+const tryParseCoordTuple = (text: string, kernel: Kernel): GeoPoint | null => {
+  const m = /^\(([^,]+),([^,]+)\)$/.exec(text.trim());
+  if (!m) return null;
+  const x = evaluate(parseExpression(m[1].trim()), new Map());
+  const y = evaluate(parseExpression(m[2].trim()), new Map());
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return new GeoPoint(kernel, new GeoVec3D(x, y, 1));
 };
 
 export function parseAlgebraInput(kernel: Kernel, input: string): ConstructionElement[] {
@@ -64,9 +95,17 @@ export function parseAlgebraInput(kernel: Kernel, input: string): ConstructionEl
 
     if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(leftText)) {
       if (existingLabels.has(leftText)) throw new Error(`Label "${leftText}" already exists`);
+
+      // Bug fix: A=(x,y) — detect coordinate tuple before parseExpression
+      const coordPoint = tryParseCoordTuple(rightText, kernel);
+      if (coordPoint) {
+        coordPoint.label = leftText;
+        return [coordPoint];
+      }
+
       const dependencies = makeNumericDependencies(expression);
       if (dependencies.length > 0) {
-        const algo = new AlgoDependentNumeric(kernel, expression, dependencies);
+        const algo = new AlgoDependentNumeric(kernel, expression, dependencies, rightText);
         algo.getOutput().label = leftText;
         return [algo, algo.getOutput()];
       }
@@ -81,6 +120,76 @@ export function parseAlgebraInput(kernel: Kernel, input: string): ConstructionEl
     throw new Error('Definitions must use f(x), y, or a numeric label');
   }
 
+  // GeoGebra-style command input: Point(x,y), Segment(A,B), Circle(A,B), Line(A,B), etc.
+  const commandMatch = /^([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)$/.exec(raw);
+  if (commandMatch && COMMAND_ARITY[commandMatch[1]]) {
+    const name = commandMatch[1];
+    const argsText = commandMatch[2].trim();
+    if (!argsText) throw new Error(`Command ${name} requires ${COMMAND_ARITY[name]} arguments`);
+    const args = argsText.split(/\s*,\s*/);
+    if (args.length !== COMMAND_ARITY[name]) {
+      throw new Error(`Command ${name} requires ${COMMAND_ARITY[name]} arguments`);
+    }
+
+    // Bug fix: Point(x,y) — arguments are numeric expressions, not point labels.
+    // Handle this before the common point-parsing loop which would fail on bare numbers.
+    if (name === 'Point') {
+      const px = evaluate(parseExpression(args[0]), new Map());
+      const py = evaluate(parseExpression(args[1]), new Map());
+      if (!Number.isFinite(px) || !Number.isFinite(py)) throw new Error('Invalid coordinate');
+      const point = new GeoPoint(kernel, new GeoVec3D(px, py, 1));
+      assignNextLabel(point, existingLabels, () => construction.getNextPointLabel(existingLabels));
+      return [point];
+    }
+
+    // For Line/Segment/Ray/Circle/Vector, resolve args to existing points or inline coordinates.
+    const points: GeoPoint[] = args.map(argText => {
+      const coordinate = /^\(([^,]+),([^,]+)\)$/.exec(argText.trim());
+      if (coordinate) {
+        const x = evaluate(parseExpression(coordinate[1].trim()), new Map());
+        const y = evaluate(parseExpression(coordinate[2].trim()), new Map());
+        if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('Invalid coordinate');
+        const point = new GeoPoint(kernel, new GeoVec3D(x, y, 1));
+        assignNextLabel(point, existingLabels, () => construction.getNextPointLabel(existingLabels));
+        return point;
+      }
+      const label = argText.trim();
+      const point = construction.getElements().find(
+        el => el instanceof GeoPoint && (el as GeoPoint).label === label,
+      );
+      if (!point) throw new Error(`Unknown point "${label}"`);
+      return point as GeoPoint;
+    });
+
+    switch (name) {
+      case 'Line': {
+        const algo = new AlgoLineTwoPoints(kernel, points[0], points[1]);
+        assignNextLabel(algo.getOutput(), existingLabels, () => construction.getNextLineLabel(existingLabels));
+        return [algo, algo.getOutput()];
+      }
+      case 'Segment': {
+        const algo = new AlgoSegmentTwoPoints(kernel, points[0], points[1]);
+        assignNextLabel(algo.getOutput(), existingLabels, () => construction.getNextLineLabel(existingLabels));
+        return [algo, algo.getOutput()];
+      }
+      case 'Ray': {
+        const algo = new AlgoRayTwoPoints(kernel, points[0], points[1]);
+        assignNextLabel(algo.getOutput(), existingLabels, () => construction.getNextLineLabel(existingLabels));
+        return [algo, algo.getOutput()];
+      }
+      case 'Circle': {
+        const algo = new AlgoCircleCenterPoint(kernel, points[0], points[1]);
+        assignNextLabel(algo.getOutput(), existingLabels, () => construction.getNextCircleLabel(existingLabels));
+        return [algo, algo.getOutput()];
+      }
+      case 'Vector': {
+        const algo = new AlgoVector(kernel, points[0], points[1]);
+        assignNextLabel(algo.getOutput(), existingLabels, () => construction.getNextLineLabel(existingLabels));
+        return [algo, algo.getOutput()];
+      }
+    }
+  }
+
   const expression = parseExpression(raw);
   const variables = collectVariables(expression);
   const numericDependencies = makeNumericDependencies(expression, ['x', 'y']);
@@ -93,7 +202,7 @@ export function parseAlgebraInput(kernel: Kernel, input: string): ConstructionEl
   if (variables.size === 0 || numericDependencies.length > 0) {
     const nextLabel = construction.getNextNumericLabel(existingLabels);
     if (numericDependencies.length > 0) {
-      const algo = new AlgoDependentNumeric(kernel, expression, numericDependencies);
+        const algo = new AlgoDependentNumeric(kernel, expression, numericDependencies, raw);
       algo.getOutput().label = nextLabel;
       return [algo, algo.getOutput()];
     }

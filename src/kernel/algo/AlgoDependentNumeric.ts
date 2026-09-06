@@ -8,9 +8,16 @@ import { evaluate } from '../algebra/ExpressionEvaluator';
 
 export class AlgoDependentNumeric extends AlgoElement {
   private outputNumeric: GeoNumeric;
+  private expressionText: string;
 
-  constructor(kernel: IKernel, private expression: ExpressionNode, private dependencies: GeoNumeric[]) {
+  constructor(
+    kernel: IKernel,
+    private expression: ExpressionNode,
+    private dependencies: GeoNumeric[],
+    expressionText = '',
+  ) {
     super(kernel);
+    this.expressionText = expressionText;
     this.outputNumeric = new GeoNumeric(kernel, NaN);
     this.outputNumeric.intervalMin = -10;
     this.outputNumeric.intervalMax = 10;
@@ -31,4 +38,6 @@ export class AlgoDependentNumeric extends AlgoElement {
   }
 
   getOutput(): GeoNumeric { return this.outputNumeric; }
+
+  getExpressionText(): string { return this.expressionText; }
 }

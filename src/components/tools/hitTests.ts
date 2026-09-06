@@ -16,6 +16,7 @@ import { GeoVector } from '../../kernel/geo/GeoVector';
 import { GeoPolyLine } from '../../kernel/geo/GeoPolyLine';
 import { GeoRay } from '../../kernel/geo/GeoRay';
 import { GeoElement } from '../../kernel/geo/GeoElement';
+import { GeoFunction } from '../../kernel/geo/GeoFunction';
 import { WorldPoint } from './types';
 
 /** 点命中：返回最顶层（逆序第一个命中）的点。 */
@@ -27,6 +28,65 @@ export function hitScreenPoint(els: readonly ConstructionElement[], x: number, y
     }
   }
   return undefined;
+}
+
+/** 在函数采样折线上判断 (x, y) 是否足够接近曲线。 */
+export function isPointOnFunction(
+  fn: GeoFunction,
+  x: number,
+  y: number,
+  eps: number,
+  bounds?: { minX: number; maxX: number; pixelWidth: number },
+): boolean {
+  const minX = bounds?.minX ?? Math.min(-100, x - 100);
+  const maxX = bounds?.maxX ?? Math.max(100, x + 100);
+  const pixelWidth = bounds?.pixelWidth ?? 1600;
+  const samples = fn.updateSamples(minX, maxX, pixelWidth);
+  for (let i = 0; i < samples.length - 1; i++) {
+    const ax = samples[i].x;
+    const ay = samples[i].y;
+    const bx = samples[i + 1].x;
+    const by = samples[i + 1].y;
+    if (!Number.isFinite(ay) || !Number.isFinite(by)) continue;
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    if (len2 === 0) continue;
+    let t = ((x - ax) * dx + (y - ay) * dy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    if (Math.hypot(x - (ax + t * dx), y - (ay + t * dy)) <= eps) return true;
+  }
+  return false;
+}
+
+/** 求函数曲线上离 (x, y) 最近的参数 x；无有效采样时返回 NaN。 */
+export function functionParameterAt(
+  fn: GeoFunction,
+  x: number,
+  y: number,
+  bounds: { minX: number; maxX: number; pixelWidth: number },
+): number {
+  const samples = fn.updateSamples(bounds.minX, bounds.maxX, bounds.pixelWidth);
+  let bestX = NaN;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < samples.length - 1; i++) {
+    const ax = samples[i].x;
+    const ay = samples[i].y;
+    const bx = samples[i + 1].x;
+    const by = samples[i + 1].y;
+    if (!Number.isFinite(ay) || !Number.isFinite(by)) continue;
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    if (len2 === 0) continue;
+    const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / len2));
+    const distance = Math.hypot(x - (ax + t * dx), y - (ay + t * dy));
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestX = ax + t * (bx - ax);
+    }
+  }
+  return bestDistance === Number.POSITIVE_INFINITY ? NaN : bestX;
 }
 
 /** 通用对象命中：点优先；其次线段、直线、圆、多边形。 */
@@ -71,6 +131,8 @@ export function hitScreenObject(els: readonly ConstructionElement[], x: number, 
       const center = el.getCenter();
       const d = Math.abs(Math.hypot(x - center.x, y - center.y) - r);
       if (d < 5 / scale) return el;
+    } else if (el instanceof GeoFunction) {
+      if (isPointOnFunction(el, x, y, 5 / scale)) return el;
     } else if (el instanceof GeoPolygon) {
       if ((el as any).isInRegionXY(x, y)) return el;
     }

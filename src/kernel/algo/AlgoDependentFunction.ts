@@ -39,6 +39,10 @@ export class AlgoDependentFunction extends AlgoElement {
 
   getOutput(): GeoFunction { return this.outputFunction; }
 
+  getExpressionText(): string { return this.expressionText; }
+
+  getVariableName(): string { return this.variableName; }
+
   getCommandDescription(): string {
     return this.expressionText;
   }

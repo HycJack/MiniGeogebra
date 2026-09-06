@@ -38,37 +38,47 @@ import { AlgoHyperbola } from '../algo/AlgoHyperbola';
 import { AlgoParabola } from '../algo/AlgoParabola';
 import { AlgoConicFivePoints } from '../algo/AlgoConicFivePoints';
 import { AlgoCompass } from '../algo/AlgoCompass';
+import { AlgoPointOnFunction } from '../algo/AlgoPointOnFunction';
+import { AlgoDependentFunction } from '../algo/AlgoDependentFunction';
+import { AlgoDependentNumeric } from '../algo/AlgoDependentNumeric';
+import { parseAlgebraInput } from '../algebra/EquationRecognizer';
+import { GeoFunction } from '../geo/GeoFunction';
 import { AnimationType } from '../geo/GeoNumeric';
 import { CoordinateSystem } from '../core/CoordinateSystem';
 
 /**
- * 构造的序列化 / 反序列化（持久化、导入导出）。
+ * Serialization / Deserialization for constructions.
  *
- * 设计要点（对标 GeoGebra .ggb / JSXGraph JessieCode 的“重放语义”）：
- *   - 只保存“自由元素”（独立点、滑块）+ “算法链”；派生几何对象由算法重算得到，不占存储；
- *   - 用 constIndex 作为引用键，反序列化时按 constIndex 升序重建，保证依赖拓扑序不变；
- *   - view（坐标系状态）一并保存，打开文件时还原现场。
+ * Design (aligned with GeoGebra replay semantics):
+ *   - Save independent elements + algorithm chain; derived objects are recomputed.
+ *   - constIndex as reference key; deserialization rebuilds in constIndex ascending order.
+ *   - view (coordinate system state) is saved alongside.
+ *   - AlgoDependentFunction/Numeric use expression-based reconstruction.
+ *   - Algo outputs are registered in the index map for downstream algorithm inputs.
  */
 
 interface SerializedElement {
   type: string;
   constIndex: number;
   label: string;
-  coords?: [number, number, number];      // GeoPoint
-  value?: number;                          // GeoNumeric
+  coords?: [number, number, number];
+  value?: number;
   intervalMin?: number;
   intervalMax?: number;
   animationSpeed?: number;
   animationIncrement?: number;
   animationType?: number;
-  style?: Record<string, unknown>;        // P2-1: 对象的样式属性
+  style?: Record<string, unknown>;
 }
 
 interface SerializedAlgorithm {
   type: string;
   constIndex: number;
-  inputs: number[];           // 输入元素的 constIndex
-  outputLabels: string[];     // 输出几何对象的 label（恢复用户自定义命名）
+  inputs: number[];
+  outputLabels: string[];
+  outputIndices: number[];
+  expressionText?: string;
+  variableName?: string;
 }
 
 export interface ConstructionJSON {
@@ -87,9 +97,9 @@ export interface ConstructionJSON {
 }
 
 const GENERATOR = 'MiniGeogebra';
-const VERSION = 1;
+const VERSION = 2;
 
-/** 工厂：按类型重建算法实例（正常构造，input 已存在于 map 中） */
+/** Factory: rebuild algorithm instance by type (inputs already exist in map) */
 function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[]): AlgoElement {
   const asPoint = (n: number) => inputs[n] as import('../geo/GeoPoint').GeoPoint;
   const asConic = (n: number) => inputs[n] as import('../geo/GeoConic').GeoConic;
@@ -114,6 +124,7 @@ function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[]): AlgoEle
     case 'AlgoPointOnSegment':       return new AlgoPointOnSegment(kernel, asSegment(0), inputs[1] as GeoNumeric);
     case 'AlgoPointOnConic':         return new AlgoPointOnConic(kernel, asConic(0), inputs[1] as GeoNumeric);
     case 'AlgoPointOnPolyLine':      return new AlgoPointOnPolyLine(kernel, asPolyLine(0), inputs[1] as GeoNumeric);
+    case 'AlgoPointOnFunction':     return new AlgoPointOnFunction(kernel, inputs[0] as import('../geo/GeoFunction').GeoFunction, inputs[1] as GeoNumeric);
     case 'AlgoTranslate':            return new AlgoTranslate(kernel, inputs[0], inputs[1] as import('../geo/GeoVector').GeoVector);
     case 'AlgoDistance':             return new AlgoDistance(kernel, inputs[0], inputs[1]);
     case 'AlgoAngle':                return new AlgoAngle(kernel, asPoint(0), asPoint(1), asPoint(2));
@@ -136,7 +147,7 @@ function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[]): AlgoEle
   }
 }
 
-/** 序列化为 JSON 字符串 */
+/** Serialize to JSON string */
 export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
   const construction = kernel.getConstruction();
   const elements = construction.getElements();
@@ -183,7 +194,6 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
           },
         };
       }
-      // 其他独立元素（如自由向量/多边形）按需扩展
       return {
         type: el.getClassName(),
         constIndex: el.constIndex,
@@ -203,12 +213,23 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
   const algorithms: SerializedAlgorithm[] = construction.getElements()
     .filter((el): el is AlgoElement => el instanceof AlgoElement)
     .sort((a, b) => a.constIndex - b.constIndex)
-    .map(algo => ({
-      type: algo.getClassName(),
-      constIndex: algo.constIndex,
-      inputs: algo.getInput().map(i => i.constIndex),
-      outputLabels: algo.getGeoElements().map(o => o.label),
-    }));
+    .map(algo => {
+      const sa: SerializedAlgorithm = {
+        type: algo.getClassName(),
+        constIndex: algo.constIndex,
+        inputs: algo.getInput().map(i => i.constIndex),
+        outputLabels: algo.getGeoElements().map(o => o.label),
+        outputIndices: algo.getGeoElements().map(o => o.constIndex),
+      };
+      // Persist expression info for function/numeric dependency algorithms
+      if (algo instanceof AlgoDependentFunction) {
+        sa.expressionText = algo.getExpressionText();
+        sa.variableName = algo.getVariableName();
+      } else if (algo instanceof AlgoDependentNumeric) {
+        sa.expressionText = algo.getExpressionText();
+      }
+      return sa;
+    });
 
   const data: ConstructionJSON = {
     version: VERSION,
@@ -231,19 +252,19 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
   return JSON.stringify(data, null, 2);
 }
 
-/** 从 JSON 字符串重建构造，并返回重建后的坐标系（若有） */
+/** Deserialize from JSON string and return the restored coordinate system (if any) */
 export function deserialize(kernel: Kernel, json: string): { coord?: CoordinateSystem } {
   const data = JSON.parse(json) as ConstructionJSON;
   const construction = kernel.getConstruction();
   construction.clear();
 
-  if (data.version !== VERSION) {
-    console.warn(`[ConstructionSerializer] version mismatch: expected ${VERSION}, got ${data.version}`);
+  if (data.version > VERSION) {
+    console.warn(`[ConstructionSerializer] file version ${data.version} is newer than supported ${VERSION}`);
   }
 
   const index = new Map<number, GeoElement>();
 
-  // 1) 重建自由元素（按 constIndex 升序，保证后续算法引用时目标已存在）
+  // 1) Rebuild independent elements (ascending constIndex ensures downstream refs exist)
   for (const el of [...data.independentElements].sort((a, b) => a.constIndex - b.constIndex)) {
     let instance: GeoElement;
     if (el.type === 'GeoPoint') {
@@ -261,7 +282,7 @@ export function deserialize(kernel: Kernel, json: string): { coord?: CoordinateS
       throw new Error(`[ConstructionSerializer] unsupported independent element type: ${el.type}`);
     }
     instance.label = el.label;
-    // P2-1: 恢复对象的样式属性
+    // Restore style
     if (el.style) {
       if ('strokeColor' in el.style) instance.strokeColor = el.style.strokeColor as string | null;
       if ('strokeWidth' in el.style) instance.strokeWidth = el.style.strokeWidth as number | null;
@@ -279,8 +300,35 @@ export function deserialize(kernel: Kernel, json: string): { coord?: CoordinateS
     index.set(el.constIndex, instance);
   }
 
-  // 2) 重建算法链（按 constIndex 升序 = 原构造拓扑序）
+  // 2) Rebuild algorithm chain (ascending constIndex = original topology order)
   for (const a of [...data.algorithms].sort((a, b) => a.constIndex - b.constIndex)) {
+    // Expression-based reconstruction for function/numeric dependency algorithms
+    if (a.expressionText && (a.type === 'AlgoDependentFunction' || a.type === 'AlgoDependentNumeric')) {
+      try {
+        const label = a.outputLabels[0] || '';
+        let algInput: string;
+        if (a.type === 'AlgoDependentFunction' && a.variableName) {
+          algInput = `${label}(${a.variableName}) = ${a.expressionText}`;
+        } else {
+          algInput = `${label} = ${a.expressionText}`;
+        }
+        const elements = parseAlgebraInput(kernel, algInput);
+        for (const el of elements) {
+          construction.addElement(el);
+          if (el instanceof AlgoElement) {
+            for (const out of el.getGeoElements()) {
+              index.set(out.constIndex, out);
+            }
+          } else if (el instanceof GeoElement) {
+            index.set(el.constIndex, el);
+          }
+        }
+        continue;
+      } catch (e) {
+        console.warn(`[ConstructionSerializer] failed to reconstruct expression algo, falling back: ${e}`);
+      }
+    }
+
     const inputs = a.inputs.map(ci => index.get(ci)).filter((x): x is GeoElement => x !== undefined);
     if (inputs.length !== a.inputs.length) {
       console.warn(`[ConstructionSerializer] algo ${a.type} missing inputs, skipping`);
@@ -288,17 +336,27 @@ export function deserialize(kernel: Kernel, json: string): { coord?: CoordinateS
     }
     const algo = createAlgo(kernel, a.type, inputs);
     construction.addElement(algo);
-    // 恢复输出对象的 label（用户自定义命名）
+    // Restore output labels and register outputs in index map
     const outputs = algo.getGeoElements();
     a.outputLabels.forEach((lbl, i) => {
       if (outputs[i]) outputs[i].label = lbl;
     });
+    // Register outputs by their saved constIndex so downstream algos can reference them
+    if (a.outputIndices) {
+      a.outputIndices.forEach((ci, i) => {
+        if (outputs[i]) index.set(ci, outputs[i]);
+      });
+    }
+    // Also register by the algorithm's own output indices as fallback for old files
+    outputs.forEach((o) => {
+      if (!index.has(o.constIndex)) index.set(o.constIndex, o);
+    });
   }
 
-  // 3) 全场重算，让所有派生对象到位
+  // 3) Full recompute so all derived objects are in place
   construction.updateAllAlgorithms();
 
-  // 4) 恢复视图
+  // 4) Restore view
   let coord: CoordinateSystem | undefined;
   if (data.view) {
     const v = data.view;
@@ -308,7 +366,7 @@ export function deserialize(kernel: Kernel, json: string): { coord?: CoordinateS
   return { coord };
 }
 
-/** 触发浏览器下载 JSON 文件 */
+/** Trigger browser download of JSON file */
 export function downloadJSON(filename: string, json: string) {
   const blob = new Blob([json], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
