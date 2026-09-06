@@ -158,13 +158,13 @@ describe('AlgoTangent —— 圆（原实现行为不回归）', () => {
     const { lines } = build(CIRCLE_UNIT, 2, 0);
     expect(lines).toHaveLength(2);
     // 切点 (0.5, ±√3/2)，切线 0.5x ± (√3/2)y = 1
-    const ys = [Math.sqrt(3) / 2, -Math.sqrt(3) / 2];
-    for (let i = 0; i < 2; i++) {
-      expect(Math.abs(lines[i].a - 0.5)).toBeLessThan(EPS);
-      expect(Math.abs(Math.abs(lines[i].b) - ys[0])).toBeLessThan(EPS);
-      expect(Math.abs(lines[i].c + 1)).toBeLessThan(EPS);
-      // 与原实现结论一致：圆心到切线距离 = r
-      expect(Math.abs(Math.abs(lines[i].c) / Math.hypot(lines[i].a, lines[i].b) - 1)).toBeLessThan(EPS);
+    // 直线系数只定义到正数倍，所以比较尺度不变的方向向量 + 带符号距离
+    for (const l of lines) {
+      const n = normalizeLine(l.a, l.b, l.c);
+      expect(Math.abs(n.ux - 0.5)).toBeLessThan(EPS);
+      expect(Math.abs(Math.abs(n.uy) - Math.sqrt(3) / 2)).toBeLessThan(EPS);
+      expect(Math.abs(Math.abs(n.d) - 1)).toBeLessThan(EPS); // 圆心到切线距离 = r
+      expect(passesThrough(l.a, l.b, l.c, 2, 0)).toBe(true);
     }
   });
 });
