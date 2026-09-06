@@ -51,7 +51,7 @@ import { AlgoPointOnFunction } from '../../kernel/algo/AlgoPointOnFunction';
 
 // ---- 命中热区 ----
 const POINT_EPS = 10;   // 点热区（像素）
-const OBJ_EPS = 5;      // 线/曲线热区（世界单位像素当量）
+const OBJ_EPS = 5;      // 线/曲线热区（像素）
 
 /** 工具模式调度表（不含 UI 元素工具：text/slider/button/checkbox，由 GeometryCanvas 单独处理）。 */
 const TOOL_MODE_LIST: readonly ToolMode[] = [
@@ -83,9 +83,11 @@ export const handlePointerDown = (
   // 隐藏对象不参与普通命中，但 show/hide 工具仍可用 hitAny* 找到它。
   const visibleElements = elements.filter(el => (el as GeoElement).visible !== false);
   const hitPoint = () => hitScreenPoint(visibleElements, point.x, point.y, POINT_EPS / coord.xScale);
-  const hitObject = () => hitScreenObject(visibleElements, point.x, point.y, OBJ_EPS / coord.xScale);
+  // hitScreenObject 的第三个参数是“每世界单位多少像素”（即 coord.xScale），
+  // 内部自持像素热区；不能传世界 eps（OBJ_EPS / xScale），否则命中半径随 xScale² 漂移。
+  const hitObject = () => hitScreenObject(visibleElements, point.x, point.y, coord.xScale);
   const hitAnyPoint = () => hitScreenPoint(elements, point.x, point.y, POINT_EPS / coord.xScale);
-  const hitAnyObject = () => hitScreenObject(elements, point.x, point.y, OBJ_EPS / coord.xScale);
+  const hitAnyObject = () => hitScreenObject(elements, point.x, point.y, coord.xScale);
 
   const notifyUpdate = (obj: any) => {
     const algo = obj?.parentAlgo ?? obj;

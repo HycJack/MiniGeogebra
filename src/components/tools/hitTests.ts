@@ -1,7 +1,13 @@
 /**
  * 几何命中测试（Typed）——替代原 GeometryCanvas 中大量 `as any` 的硬编码检测。
  *
- * eps 单位：世界坐标。调用方把像素级阈值先换算为 `5 / coord.xScale` 传入即可。
+ * 两种阈值约定，切勿混用：
+ *   - 接 `eps` 的函数（hitScreenPoint / hitSegment / hitLine / hitCircle /
+ *     isPointOnFunction）：eps 单位是**世界坐标**。调用方把像素级阈值先换算为
+ *     `pixelEps / coord.xScale` 传入。
+ *   - hitScreenObject 接的 `scale`：**每世界单位多少像素**（即 `coord.xScale`）。
+ *     它内部自持像素热区（点 10px、线/曲线 5px），调用方**不能**再传世界 eps，
+ *     否则命中半径会随 xScale² 漂移（缩放后成倍偏离）。
  */
 
 import { ConstructionElement } from '../../kernel/core/ConstructionElement';

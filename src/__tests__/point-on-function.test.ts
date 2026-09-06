@@ -3,6 +3,8 @@ import { Kernel } from '../kernel/core/Kernel';
 import { GeoNumeric } from '../kernel/geo/GeoNumeric';
 import { GeoFunction } from '../kernel/geo/GeoFunction';
 import { GeoPoint } from '../kernel/geo/GeoPoint';
+import { GeoLine } from '../kernel/geo/GeoLine';
+import { GeoVec3D } from '../kernel/core/GeoVec3D';
 import { parseExpression } from '../kernel/algebra/ExpressionParser';
 import { AlgoPointOnFunction } from '../kernel/algo/AlgoPointOnFunction';
 import { functionParameterAt, hitScreenObject, isPointOnFunction } from '../components/tools/hitTests';
@@ -151,5 +153,48 @@ describe('hitScreenObject', () => {
     expect(hitScreenObject([fn], -40, 1600, scale)).toBe(fn);
     expect(hitScreenObject([fn], 3, 9.5, scale)).toBeUndefined();
     expect(hitScreenObject([fn], -40, 0, scale)).toBeUndefined();
+  });
+});
+
+/**
+ * 契约锁定：hitScreenObject 的第三个参数是“每世界单位多少像素”（coord.xScale）。
+ * 命中半径必须是以像素为单位的常量，不能随缩放漂移。
+ *
+ * handlers.ts 曾经错传 `OBJ_EPS / coord.xScale`（世界 eps），导致内部阈值变成
+ * `5 / (5/xScale) = xScale` 世界单位，即 `xScale²` 像素——放大 50 倍后命中半径
+ * 变成 5000 像素，整块画布都能“命中”任意一条线。以下用例就是那个 bug 的回归网。
+ */
+describe('hitScreenObject —— 命中半径随缩放保持恒定（像素常量）', () => {
+  const SCALES = [1, 10, 100, 500];
+
+  it.each(SCALES)('线：scale=%i 时 1px 偏移命中、6px 偏移落空', scale => {
+    const kernel = makeKernel();
+    const line = new GeoLine(kernel, 0, 1, 0); // y = 0
+    const els = [line];
+
+    expect(hitScreenObject(els, 0, 1 / scale, scale)).toBe(line);
+    expect(hitScreenObject(els, 50, 1 / scale, scale)).toBe(line);
+    expect(hitScreenObject(els, 0, 6 / scale, scale)).toBeUndefined();
+  });
+
+  it.each(SCALES)('点：scale=%i 时命中热区为 10px', scale => {
+    const kernel = makeKernel();
+    const p = new GeoPoint(kernel, new GeoVec3D(0, 0, 1));
+    // 只放点：不要同位置放线，否则会被线的 5px 热区抢先命中
+    const els = [p];
+
+    expect(hitScreenObject(els, 1 / scale, 0, scale)).toBe(p);
+    expect(hitScreenObject(els, 9 / scale, 0, scale)).toBe(p);
+    expect(hitScreenObject(els, 11 / scale, 0, scale)).toBeUndefined();
+  });
+
+  it('同一处点击在不同缩放下结论一致（5px 处始终落空）', () => {
+    const kernel = makeKernel();
+    const line = new GeoLine(kernel, 0, 1, 0);
+    const els = [line];
+
+    for (const scale of [2, 25, 250]) {
+      expect(hitScreenObject(els, 0, 5.5 / scale, scale), `scale=${scale}`).toBeUndefined();
+    }
   });
 });
