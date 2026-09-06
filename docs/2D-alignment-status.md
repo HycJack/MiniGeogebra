@@ -102,10 +102,16 @@
    同类问题应下沉到算法本身修正。
 6. **`Definition` 不支持「标签 = 命令」混合式** —— `l1 = Line(A, B)` 这类 GeoGebra 常见写法
    目前被当成算术表达式，报 `Unknown function "Line"`。支持它需要在定义分支里先尝试命令解析。
-7. **`hitScreenObject` 的 scale/eps 契约错配** —— `handlers.ts` 把 `OBJ_EPS / coord.xScale`
-   （世界坐标单位）传给了把它当像素尺度用的命中函数，缩放后命中半径成倍偏移。
-8. **函数上取点的驱动滑块无标签** —— `handlers.ts` 的 point_on_object 分支构造
-   `new GeoNumeric(kernel, x)` 后未赋 `getNextNumericLabel()`，滑块在代数视图里无名。
+9. **v1 格式存档无 `outputIndices`** —— 无法重建「派生对象→派生对象」链（如 A、B → M=Midpoint(A,B) → N=Midpoint(A,M)）。
+10. **`AlgoDependentFunction` 兜底分支缺失** —— `variableName !== 'x'` 的依赖函数会落到
+    `createAlgo`，而后者没有 `AlgoDependentFunction` 分支，导入时报 unknown algorithm type。
+7. ~~**`hitScreenObject` 的 scale/eps 契约错配**~~ —— ✅ 已修复：
+   `handlers.ts` 改传 `coord.xScale`（而非 `OBJ_EPS / coord.xScale`），并在
+   `hitTests.ts` 顶部注释里区分「eps=世界单位」与「scale=像素/单位」两种约定；
+   `point-on-function.test.ts` 新增 9 例锁定「命中半径是像素常量」契约。
+8. ~~**函数上取点的驱动滑块无标签**~~ —— ✅ 已修复：抽出
+   `createParameterPointOnFunction()`（与 `createParameterPointOnPath` 对齐），
+   参数补 `getNextNumericLabel()`；新增 3 例测试（标签非空、不重复、前向依赖可达）。
 9. **v1 格式存档无 `outputIndices`** —— 无法重建「派生对象→派生对象」链（如 A、B → M=Midpoint(A,B) → N=Midpoint(A,M)）。
 10. **`AlgoDependentFunction` 兜底分支缺失** —— `variableName !== 'x'` 的依赖函数会落到
     `createAlgo`，而后者没有 `AlgoDependentFunction` 分支，导入时报 unknown algorithm type。
@@ -122,11 +128,12 @@
 | `derivative.test.ts` | 15 | 常数、幂法则（含 x=0 处退化式）、多项式、乘积法则、商法则、异变量当常数、中心差分交叉验证、三角/对数/指数/根号/绝对值、链式法则、多参函数导数为零、`expressionToString` 往返等价与括号优先级 |
 | `algebra-commands.test.ts` | 29 | `Midpoint` / `Distance` / `Slope` / `Vector(分量)` / `Vector(两点)` / `Intersection`（含平行线报错）/ `Circle(A,r)`（含表达式半径与非法半径）/ `Circle(A,B,C)` / `PointOnLine` / `Derivative`（含滑块传导与自由函数）/ `Root`（无区间/区间/起点/无根/滑块）/ `Extremum`（两点与单调）/ `Integral`（定积分/反向/无定义区间）/ 未知函数报错 / 参数个数 / 数字参数解析 |
 | `algebra-commands-regression.test.ts` | 18 | 基本点线圆命令、错误路径、内联坐标元组（原 KNOWN BUG）、坐标元组定义式（原 KNOWN BUG） |
-| `point-on-function.test.ts` | 11 | 函数上取点、参数同步、`isPointOnFunction` 命中/未命中 |
+| `point-on-function.test.ts` | 23 | 函数上取点、参数同步、`isPointOnFunction` 命中/未命中、`hitScreenObject` 命中半径随缩放恒定（线/点/跨缩放一致性，共 9 例）、`createParameterPointOnFunction` 参数标签非空且不重复且前向依赖可达 |
+| `dependency-cycle.test.ts` | 7 | `isDependentOn` 线性链 / 菱形 / 无关算法、二元游离环与自环不死循环、环与真实依赖共存时终止且不漏报、`getDependentAlgorithms` 不把游离环误报为依赖 |
 | `serializer-roundtrip.test.ts` | 16 | v2 序列化往返，含表达式重建与派生链（中点/平行线/垂线） |
 | `frontend-logic.test.ts` | 17 | 键盘缩放/平移映射、工具指引文案、上下文菜单行为 |
 
 其余：`algebra.test.ts` (8)、`phase3-algos.test.ts` (36)、`conic-geometry.test.ts` (19)、`shear-stretch.test.ts` (7)、`animation.test.ts` (4)、`point-on-path.test.ts` (3)、`animation-manager.test.ts` (1)。
 
-全套合计：`npx vitest run` → **16 个文件 / 237 项测试全绿**。
+全套合计：`npx vitest run` → **17 个文件 / 256 项测试全绿**。
 运行：`npx vitest run`。类型检查：`npx tsc --noEmit`（零错误）。
