@@ -39,6 +39,7 @@ import { AlgoParabola } from '../algo/AlgoParabola';
 import { AlgoConicFivePoints } from '../algo/AlgoConicFivePoints';
 import { AlgoCompass } from '../algo/AlgoCompass';
 import { AlgoPointOnFunction } from '../algo/AlgoPointOnFunction';
+import { AlgoRayTwoPoints } from '../algo/AlgoRayTwoPoints';
 import { AlgoDependentFunction } from '../algo/AlgoDependentFunction';
 import { AlgoDependentNumeric } from '../algo/AlgoDependentNumeric';
 import { parseAlgebraInput } from '../algebra/EquationRecognizer';
@@ -125,6 +126,7 @@ function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[]): AlgoEle
     case 'AlgoPointOnConic':         return new AlgoPointOnConic(kernel, asConic(0), inputs[1] as GeoNumeric);
     case 'AlgoPointOnPolyLine':      return new AlgoPointOnPolyLine(kernel, asPolyLine(0), inputs[1] as GeoNumeric);
     case 'AlgoPointOnFunction':     return new AlgoPointOnFunction(kernel, inputs[0] as import('../geo/GeoFunction').GeoFunction, inputs[1] as GeoNumeric);
+    case 'AlgoRayTwoPoints':        return new AlgoRayTwoPoints(kernel, asPoint(0), asPoint(1));
     case 'AlgoTranslate':            return new AlgoTranslate(kernel, inputs[0], inputs[1] as import('../geo/GeoVector').GeoVector);
     case 'AlgoDistance':             return new AlgoDistance(kernel, inputs[0], inputs[1]);
     case 'AlgoAngle':                return new AlgoAngle(kernel, asPoint(0), asPoint(1), asPoint(2));
@@ -313,16 +315,19 @@ export function deserialize(kernel: Kernel, json: string): { coord?: CoordinateS
           algInput = `${label} = ${a.expressionText}`;
         }
         const elements = parseAlgebraInput(kernel, algInput);
+        const outputs: GeoElement[] = [];
         for (const el of elements) {
           construction.addElement(el);
-          if (el instanceof AlgoElement) {
-            for (const out of el.getGeoElements()) {
-              index.set(out.constIndex, out);
-            }
-          } else if (el instanceof GeoElement) {
-            index.set(el.constIndex, el);
+          const produced = el instanceof AlgoElement ? el.getGeoElements() : el instanceof GeoElement ? [el] : [];
+          for (const out of produced) {
+            if (!outputs.includes(out)) outputs.push(out);
           }
         }
+        // Rebuilding assigns fresh constIndices, but downstream algorithms still reference
+        // the saved ones — so register the outputs under their saved outputIndices.
+        (a.outputIndices ?? []).forEach((ci, i) => {
+          if (outputs[i]) index.set(ci, outputs[i]);
+        });
         continue;
       } catch (e) {
         console.warn(`[ConstructionSerializer] failed to reconstruct expression algo, falling back: ${e}`);
@@ -347,6 +352,9 @@ export function deserialize(kernel: Kernel, json: string): { coord?: CoordinateS
         if (outputs[i]) index.set(ci, outputs[i]);
       });
     }
+    // Derived outputs belong in the element list too: rendering and hit-testing both
+    // iterate getElements(), so an unregistered output would silently vanish on import.
+    outputs.forEach(output => construction.addElement(output));
     // Also register by the algorithm's own output indices as fallback for old files
     outputs.forEach((o) => {
       if (!index.has(o.constIndex)) index.set(o.constIndex, o);

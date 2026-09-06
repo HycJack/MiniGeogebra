@@ -142,9 +142,56 @@ export class GeoConic extends GeoElement implements Path {
   }
 
   /**
-   * Sample points along the conic.
-   * For centered conics: ray-casting from center.
-   * For parabolas: parametric sampling along the axis direction.
+   * 射线求交：自锚点 (h, k) 出发、方向角为 theta 的射线与圆锥曲线的交点参数 t（> 0）。
+   * 椭圆/圆至多一个正根；双曲线可能返回两支的解；无交点返回空数组。
+   * 由 `pointAtAngle` 与采样共用，避免两处重复的二次方程推导。
+   */
+  private rayIntersections(theta: number, h: number, k: number): number[] {
+    const [A, B, C, D, E, F] = this.coeffs;
+    const dx = Math.cos(theta);
+    const dy = Math.sin(theta);
+    const a = A * dx * dx + B * dx * dy + C * dy * dy;
+    const b = 2 * A * h * dx + B * (h * dy + k * dx) + 2 * C * k * dy + D * dx + E * dy;
+    const cVal = A * h * h + B * h * k + C * k * k + D * h + E * k + F;
+
+    if (Math.abs(a) < 1e-12) {
+      if (Math.abs(b) <= 1e-12) return [];
+      const t = -cVal / b;
+      return t > 1e-6 ? [t] : [];
+    }
+
+    const disc = b * b - 4 * a * cVal;
+    if (disc < -1e-9) return [];
+    const sqrtDisc = Math.sqrt(Math.max(0, disc));
+    const t1 = (-b + sqrtDisc) / (2 * a);
+    const t2 = (-b - sqrtDisc) / (2 * a);
+    return [t1, t2].filter(t => t > 1e-6);
+  }
+
+  /**
+   * 求圆锥曲线上“自锚点出发、极角为 theta”的交点，取离锚点最近的一个。
+   *
+   * 锚点按类型选择：抛物线用顶点（无有限中心），其余用中心。
+   * 因此对圆、椭圆、双曲线、抛物线均给出解析解，而非采样近似。
+   * 射线未命中曲线时（如双曲线中某些方向两支都未穿过）返回 null。
+   */
+  pointAtAngle(theta: number): { x: number; y: number } | null {
+    const anchor = this.getConicType() === 'parabola' ? this.getVertex() : this.getCenter();
+    const dx = Math.cos(theta);
+    const dy = Math.sin(theta);
+    const candidates = this.rayIntersections(theta, anchor.x, anchor.y).sort((p, q) => p - q);
+    const t = candidates[0];
+    return t === undefined ? null : { x: anchor.x + t * dx, y: anchor.y + t * dy };
+  }
+
+  // ------------------------------------------------------------------
+  // 采样
+  // ------------------------------------------------------------------
+
+  /**
+   * 沿圆锥曲线采样点。
+   * 中心型圆锥曲线（圆/椭圆/双曲线）：自中心射线扫描；
+   * 抛物线：沿轴参数化。
    */
   samplePoints(nSamples = 360): { x: number; y: number }[] {
     const type = this.getConicType();
@@ -152,9 +199,8 @@ export class GeoConic extends GeoElement implements Path {
     return this.sampleCentered(nSamples);
   }
 
-  /** Ray-cast sampling for circle/ellipse/hyperbola. */
+  /** 射线扫描采样（圆 / 椭圆 / 双曲线），结果按极角升序排列。 */
   private sampleCentered(nSamples: number): { x: number; y: number }[] {
-    const [A, B, C, D, E, F] = this.coeffs;
     const { x: h, y: k } = this.getCenter();
     const allPts: { x: number; y: number; angle: number }[] = [];
 
@@ -162,25 +208,9 @@ export class GeoConic extends GeoElement implements Path {
       const theta = (2 * Math.PI * i) / nSamples;
       const dx = Math.cos(theta);
       const dy = Math.sin(theta);
-      const a = A * dx * dx + B * dx * dy + C * dy * dy;
-      const b = 2 * A * h * dx + B * (h * dy + k * dx) + 2 * C * k * dy + D * dx + E * dy;
-      const cVal = A * h * h + B * h * k + C * k * k + D * h + E * k + F;
-
-      if (Math.abs(a) < 1e-12) {
-        if (Math.abs(b) > 1e-12) {
-          const t = -cVal / b;
-          if (t > 0) allPts.push({ x: h + t * dx, y: k + t * dy, angle: theta });
-        }
-        continue;
+      for (const t of this.rayIntersections(theta, h, k)) {
+        allPts.push({ x: h + t * dx, y: k + t * dy, angle: theta });
       }
-
-      const disc = b * b - 4 * a * cVal;
-      if (disc < -1e-9) continue;
-      const sqrtDisc = Math.sqrt(Math.max(0, disc));
-      const t1 = (-b + sqrtDisc) / (2 * a);
-      const t2 = (-b - sqrtDisc) / (2 * a);
-      if (t1 > 1e-6) allPts.push({ x: h + t1 * dx, y: k + t1 * dy, angle: theta });
-      if (t2 > 1e-6) allPts.push({ x: h + t2 * dx, y: k + t2 * dy, angle: theta });
     }
 
     allPts.sort((p, q) => p.angle - q.angle);
@@ -227,29 +257,14 @@ export class GeoConic extends GeoElement implements Path {
   }
 
   private sampleCenteredFrom(h: number, k: number, nSamples: number): { x: number; y: number }[] {
-    const [A, B, C, D, E, F] = this.coeffs;
     const allPts: { x: number; y: number; angle: number }[] = [];
     for (let i = 0; i < nSamples; i++) {
       const theta = (2 * Math.PI * i) / nSamples;
       const dx = Math.cos(theta);
       const dy = Math.sin(theta);
-      const a = A * dx * dx + B * dx * dy + C * dy * dy;
-      const b = 2 * A * h * dx + B * (h * dy + k * dx) + 2 * C * k * dy + D * dx + E * dy;
-      const cVal = A * h * h + B * h * k + C * k * k + D * h + E * k + F;
-      if (Math.abs(a) < 1e-12) {
-        if (Math.abs(b) > 1e-12) {
-          const t = -cVal / b;
-          if (t > 0) allPts.push({ x: h + t * dx, y: k + t * dy, angle: theta });
-        }
-        continue;
+      for (const t of this.rayIntersections(theta, h, k)) {
+        allPts.push({ x: h + t * dx, y: k + t * dy, angle: theta });
       }
-      const disc = b * b - 4 * a * cVal;
-      if (disc < -1e-9) continue;
-      const sqrtDisc = Math.sqrt(Math.max(0, disc));
-      const t1 = (-b + sqrtDisc) / (2 * a);
-      const t2 = (-b - sqrtDisc) / (2 * a);
-      if (t1 > 1e-6) allPts.push({ x: h + t1 * dx, y: k + t1 * dy, angle: theta });
-      if (t2 > 1e-6) allPts.push({ x: h + t2 * dx, y: k + t2 * dy, angle: theta });
     }
     allPts.sort((p, q) => p.angle - q.angle);
     return allPts;

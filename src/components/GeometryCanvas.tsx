@@ -31,10 +31,15 @@ import { IRenderer, TextItem } from '../kernel/view/IRenderer';
 import { createRenderer } from '../kernel/view/WebGLRendererFallback';
 import { serialize as serializeConstruction, deserialize as deserializeConstruction, downloadJSON } from '../kernel/persistence/ConstructionSerializer';
 import { toolHandlers, clearToolState } from './tools/handlers';
-import { drawGrid, drawPoint, drawLine, drawSegment, drawPolygon, drawConic, drawLocus, drawFunction, renderPreviews, drawVector, drawPolyLine, drawArc, drawConicPart, drawRay } from './drawHelpers';
+import { drawGrid, drawPoint, drawLine, drawSegment, drawPolygon, drawConic, drawLocus, drawFunction, renderPreviews, drawVector, drawPolyLine, drawArc, drawConicPart, drawRay, drawHoverMarker } from './drawHelpers';
 import { useLanguage } from '../i18n/LanguageContext';
-import { Undo2, Redo2, Globe, ZoomIn, ZoomOut, Home } from 'lucide-react';
+import { Undo2, Redo2, Globe, ZoomIn, ZoomOut, Home, Trash2, Eye, EyeOff, Tag, MousePointerClick, Play, Pause } from 'lucide-react';
 import { ToolMode } from './tools/types';
+import { hitScreenObject, isPointOnFunction, functionParameterAt } from './tools/hitTests';
+import { resolveViewKey, formatHover } from './view/keyboardShortcuts';
+import { HoverTooltip } from './HoverTooltip';
+import { ContextMenu, type ContextMenuState } from './ContextMenu';
+import { ToolHintBar } from './ToolHintBar';
 
 import Toolbar from './Toolbar';
 import SidePanel from './SidePanel';
@@ -144,6 +149,12 @@ export const GeometryCanvas: React.FC = () => {
   const [dragStartState, setDragStartState] = useState<StateSnapshot | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
+  // ── 函数 hover 状态：屏幕位置 + 曲线上的吸附点（用于 tooltip + marker）──
+  const [functionHover, setFunctionHover] = useState<{ label: string; screenX: number; screenY: number; worldX: number; worldY: number; value: number } | null>(null);
+  const hoverRAF = useRef<number | null>(null);
+  const pendingHover = useRef<{ screenX: number; screenY: number; worldX: number; worldY: number } | null>(null);
+  // ── 右键菜单 ──
+  const [contextMenuState, setContextMenuState] = useState<ContextMenuState | null>(null);
 
   const addCommand = useCallback((cmd: Command) => {
     undoStack.current.push(cmd);
@@ -401,6 +412,11 @@ export const GeometryCanvas: React.FC = () => {
 
     renderPreviews(mode, selectedElements, mousePos, hoveredPoint, coord, renderer, radius, coord.visibleWorldBounds());
 
+    // 函数 hover 吸附点（在预览之上，避免被 preview 线段遮挡）
+    if (functionHover) {
+      drawHoverMarker(renderer, coord, functionHover.worldX, functionHover.worldY, '#3b82f6');
+    }
+
     renderer.frameCommit();
 
     // WebGL 文本通过 overlay Canvas2D 绘制
@@ -423,7 +439,7 @@ export const GeometryCanvas: React.FC = () => {
     }
 
     renderer.restore();
-  }, [view, renderRev, selectedElements, mousePos, mode, polygonPoints, radius, hoveredPoint, coord, showGrid, showAxes, renderer]);
+  }, [view, renderRev, selectedElements, mousePos, mode, polygonPoints, radius, hoveredPoint, coord, showGrid, showAxes, renderer, functionHover]);
 
   useEffect(() => { schedule(); }, [schedule]);
 
@@ -481,6 +497,35 @@ export const GeometryCanvas: React.FC = () => {
     const elements = kernel.getConstruction().getElements().filter(el => el.visible !== false);
     const hovered = elements.slice().reverse().find(el => el instanceof GeoPoint && Math.hypot(el.getX() - x, el.getY() - y) < 10 / coord.xScale) as GeoPoint | undefined;
     setHoveredPoint(hovered || null);
+    // 函数曲线 hover 数值提示：用 rAF 节流避免过频采样
+    pendingHover.current = { screenX, screenY, worldX: x, worldY: y };
+    if (hoverRAF.current === null) {
+      hoverRAF.current = requestAnimationFrame(() => {
+        hoverRAF.current = null;
+        const pending = pendingHover.current; if (!pending) return;
+        const dpr = window.devicePixelRatio || 1;
+        const bounds = coord.visibleWorldBounds();
+        const eps = 10 / coord.xScale;
+        const functions = kernel.getConstruction().getElements().filter(el => el instanceof GeoFunction && el.visible !== false) as GeoFunction[];
+        let bestFn: GeoFunction | null = null;
+        let bestDist = Infinity;
+        for (const fn of functions) {
+          if (isPointOnFunction(fn, pending.worldX, pending.worldY, eps, bounds)) {
+            const px = functionParameterAt(fn, pending.worldX, pending.worldY, { minX: bounds.minX, maxX: bounds.maxX, pixelWidth: Math.max(800, Math.round((bounds.maxX - bounds.minX) * coord.xScale / 2)) });
+            const py = Number.isFinite(px) ? fn.evaluateAt(px) : NaN;
+            const d = Math.hypot(pending.worldX - px, pending.worldY - py);
+            if (d < bestDist) { bestDist = d; bestFn = fn; }
+          }
+        }
+        if (bestFn) {
+          const px = functionParameterAt(bestFn, pending.worldX, pending.worldY, { minX: bounds.minX, maxX: bounds.maxX, pixelWidth: Math.max(800, Math.round((bounds.maxX - bounds.minX) * coord.xScale / 2)) });
+          const py = Number.isFinite(px) ? bestFn.evaluateAt(px) : NaN;
+          setFunctionHover({ label: bestFn.label || 'y', screenX: pending.screenX, screenY: pending.screenY, worldX: px, worldY: py, value: py });
+        } else {
+          setFunctionHover(null);
+        }
+      });
+    }
     if (isBoxSelecting && boxStartScreen) {
       setBoxEndScreen({ x: screenX, y: screenY });
       const ctx = overlayCanvasRef.current?.getContext('2d');
@@ -543,7 +588,59 @@ export const GeometryCanvas: React.FC = () => {
   }, [view]);
 
   useEffect(() => { const el = containerRef.current; if (!el) return; el.addEventListener('wheel', handleWheel, { passive: false }); return () => el.removeEventListener('wheel', handleWheel); }, [handleWheel]);
-  const handleContextMenu = (e: React.MouseEvent) => e.preventDefault();
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const screenX = e.clientX - rect.left;
+    const screenY = e.clientY - rect.top;
+    const world = coord.screenToWorld(screenX, screenY);
+    const els = kernel.getConstruction().getElements();
+    const hit = hitScreenObject(els, world.x, world.y, coord.xScale);
+    if (!hit) { setContextMenuState(null); return; }
+
+    const items = [] as import('./ContextMenu').ContextMenuItem[];
+    items.push({ id: 'delete', label: t('ctxDelete'), icon: Trash2, onClick: () => deleteWithDependents([hit]) });
+    items.push({ id: 'visibility', label: t('ctxToggleVisible'), icon: hit.visible === false ? EyeOff : Eye, onClick: () => recordStyleChange(hit, { visible: hit.visible === false }) });
+    items.push({ id: 'label', label: t('ctxToggleLabel'), icon: Tag, onClick: () => recordStyleChange(hit, { labelVisible: !hit.labelVisible }) });
+    items.push({ id: 'rename', label: t('ctxRename'), icon: Tag, onClick: () => {
+      const existing = kernel.getConstruction().getElements().filter(el => el !== hit).map(el => (el as any).label || '');
+      const raw = window.prompt(t('ctxRenamePrompt'), (hit as any).label || '');
+      if (raw === null) return;
+      const newName = raw.trim();
+      if (!newName) { alert(t('ctxRenameEmpty')); return; }
+      if (existing.includes(newName)) { alert(t('ctxRenameDuplicate')); return; }
+      recordRename(hit, newName); setRenderRev(r => r + 1);
+    } });
+    if (hit instanceof GeoFunction) {
+      items.push({ id: 'pointOnCurve', label: t('ctxCreatePointOnCurve'), icon: MousePointerClick, onClick: () => setMode('point_on_object') });
+    }
+    if ((hit instanceof GeoNumeric || hit instanceof GeoPoint) && hit.isAnimatable()) {
+      items.push({ id: 'animation', label: t('play'), icon: hit.isAnimating() ? Pause : Play, onClick: () => {
+        const am = kernel.getAnimationManager();
+        if (hit.isAnimating()) { am.stopAnimation(); hit.setAnimating(false); }
+        else { hit.setAnimating(true); am.addAnimatedGeo(hit); am.startAnimation(); }
+        setRenderRev(r => r + 1);
+      } });
+    }
+    setContextMenuState({ x: e.clientX, y: e.clientY, items });
+  };
+
+  // ── 键盘缩放 / 平移（画布容器获得焦点后生效）─────────────────
+  const handleCanvasKeyDown = (e: React.KeyboardEvent) => {
+    const target = e.target as HTMLElement;
+    // 不要拦截输入框、或已被上层处理的 Escape/Delete/Enter
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+    const res = resolveViewKey(e.key);
+    if (res.kind === 'none') return;
+    e.preventDefault();
+    if (res.kind === 'zoom' && res.factor) zoom(res.factor);
+    else if (res.kind === 'pan' && (res.dx || res.dy)) setCoord(prev => prev.panBy(res.dx || 0, res.dy || 0));
+    else if (res.kind === 'reset') {
+      const dpr = window.devicePixelRatio || 1;
+      setCoord(CoordinateSystem.centered(canvasSize.width / dpr, canvasSize.height / dpr, DEFAULT_SCALE));
+    }
+  };
 
   // ─── 构建 Toolbar props ────────────────────────────────────────────
   const toolbarProps = {
@@ -570,7 +667,13 @@ export const GeometryCanvas: React.FC = () => {
         <SidePanel kernel={kernel} panelTab={panelTab} setPanelTab={setPanelTab} selectedElements={selectedElements} coord={coord} recordStyleChange={recordStyleChange} notifyNumericChange={notifyNumericChange} renderRev={renderRev} t={t} onAlgebraElementsCreated={handleAlgebraElementsCreated} />
 
         {/* Canvas Area */}
-        <div className="flex-1 relative bg-white z-0" ref={containerRef}>
+        <div
+          className="flex-1 relative bg-white z-0 outline-none"
+          ref={containerRef}
+          tabIndex={0}
+          onKeyDown={handleCanvasKeyDown}
+          onMouseDown={e => { if (!e.currentTarget.contains(document.activeElement)) e.currentTarget.focus(); }}
+        >
           <canvas ref={overlayCanvasRef} className="absolute inset-0 pointer-events-none z-[5]" style={{ touchAction: 'none', display: view === '3d' ? 'none' : undefined }} />
           <canvas ref={textOverlayRef} width={canvasSize.width} height={canvasSize.height} className="absolute inset-0 pointer-events-none z-[4]" style={{ touchAction: 'none', display: view === '3d' ? 'none' : undefined }} />
           <canvas
@@ -600,16 +703,36 @@ export const GeometryCanvas: React.FC = () => {
             <CanvasOverlay uiElements={uiElements} setUIElements={setUIElements} editingUIElement={editingUIElement} setEditingUIElement={setEditingUIElement} draggingUIElement={draggingUIElement} setDraggingUIElement={setDraggingUIElement} coord={coord} />
           )}
 
+          {/* Hover tooltip for function curves */}
+          {view === '2d' && functionHover && (
+            <HoverTooltip
+              data={{
+                label: functionHover.label,
+                x: functionHover.worldX,
+                y: functionHover.value,
+                screenX: functionHover.screenX,
+                screenY: functionHover.screenY,
+                text: formatHover(functionHover.label, functionHover.worldX, functionHover.value),
+              }}
+            />
+          )}
+
           {/* Zoom Controls */}
           {view === '2d' && (
-            <div className="absolute bottom-6 right-6 flex flex-col shadow-lg rounded-lg overflow-hidden border border-gray-200 bg-white">
+            <div className="absolute bottom-8 right-6 flex flex-col shadow-lg rounded-lg overflow-hidden border border-gray-200 bg-white">
               <button className="w-10 h-10 flex items-center justify-center text-gray-600 hover:bg-gray-100 hover:text-blue-600 transition-colors border-b border-gray-100" onClick={() => zoom(1.2)} title={t('zoomIn')}><ZoomIn size={20} /></button>
               <button className="w-10 h-10 flex items-center justify-center text-gray-600 hover:bg-gray-100 hover:text-blue-600 transition-colors border-b border-gray-100" onClick={() => zoom(1 / 1.2)} title={t('zoomOut')}><ZoomOut size={20} /></button>
               <button className="w-10 h-10 flex items-center justify-center text-gray-600 hover:bg-gray-100 hover:text-blue-600 transition-colors" onClick={() => { const dpr = window.devicePixelRatio || 1; setCoord(CoordinateSystem.centered(canvasSize.width / dpr, canvasSize.height / dpr, DEFAULT_SCALE)); }} title={t('resetView')}><Home size={20} /></button>
             </div>
           )}
+
+          {/* Tool hint bar */}
+          {view === '2d' && <ToolHintBar mode={mode} />}
         </div>
       </div>
+
+      {/* Right-click context menu (fixed at viewport coordinates) */}
+      <ContextMenu state={contextMenuState} onClose={() => setContextMenuState(null)} />
     </div>
   );
 };

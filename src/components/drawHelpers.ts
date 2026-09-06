@@ -370,7 +370,9 @@ export function drawFunction(
   bounds: DrawBounds, scale: number, pixelWidth: number,
 ): void {
   if (!fn.isDefined() || fn.visible === false) return;
-  const samples = fn.updateSamples(bounds.minX, bounds.maxX, pixelWidth);
+  // 把可视 y 范围传给自适应采样器：采样密度、细分容差与渐近线判据
+  // 都以「一个屏幕高度有多少世界单位」为基准，而不是固定默认视高。
+  const samples = fn.updateSamples(bounds.minX, bounds.maxX, pixelWidth, bounds);
   if (samples.length < 2) return;
   const stroke = fn.strokeColor ?? fn.defaultStrokeColor;
   const baseWidth = fn.strokeWidth ?? fn.defaultLineWidth;
@@ -631,4 +633,28 @@ export function renderPreviews(mode: string, selectedElements: readonly GeoEleme
   }
   renderer.setLineDash([]);
   renderer.restore();
+}
+
+/**
+ * 在函数曲线上画一个 hover 吸附点标记。
+ * 世界坐标（与所有其它 draw* 函数一致），scale 用于反算线宽。
+ * 颜色默认高对比蓝，带一圈白色描边便于在暗/亮背景都可辨识。
+ */
+export function drawHoverMarker(
+  renderer: IRenderer,
+  coord: CoordinateSystem,
+  worldX: number,
+  worldY: number,
+  color: string = '#3b82f6',
+): void {
+  if (!Number.isFinite(worldX) || !Number.isFinite(worldY)) return;
+  const scale = coord.xScale;
+  const r = 5 / scale;
+  renderer.beginPath();
+  renderer.arc(worldX, worldY, r, 0, 2 * Math.PI);
+  renderer.fillStyle = color;
+  renderer.fill();
+  renderer.lineWidth = 2 / scale;
+  renderer.strokeStyle = '#ffffff';
+  renderer.stroke();
 }

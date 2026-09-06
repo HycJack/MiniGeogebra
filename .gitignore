@@ -7,3 +7,9 @@ coverage/
 .env*
 !.env.example
 package-lock.json
+
+# 手写调试页（非单元测；真测试在 src/__tests__/）
+test/
+
+# 人工导出的补丁产物
+*.patch

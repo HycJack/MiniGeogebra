@@ -43,6 +43,12 @@ export class AlgoDependentFunction extends AlgoElement {
 
   getVariableName(): string { return this.variableName; }
 
+  /** 原始 AST，供 Derivative / Extremum 等命令做符号变换。 */
+  getExpression(): ExpressionNode { return this.expression; }
+
+  /** 该函数依赖的自由数值（如 a = 3 中的 a）。 */
+  getDependencies(): GeoNumeric[] { return this.dependencies; }
+
   getCommandDescription(): string {
     return this.expressionText;
   }

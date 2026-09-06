@@ -140,7 +140,34 @@ export const translations = {
     axesAndPlane: '坐标轴+平面',
     rotateView: '自动旋转',
     rotateSpeed: '旋转速度',
-    navCubeTitle: '导航方块'
+    navCubeTitle: '导航方块',
+    // 右键菜单与 hover 提示
+    ctxDelete: '删除',
+    ctxToggleVisible: '显示/隐藏对象',
+    ctxToggleLabel: '显示/隐藏标签',
+    ctxRename: '重命名...',
+    ctxRenamePrompt: '请输入新标签',
+    ctxRenameEmpty: '标签不能为空',
+    ctxRenameDuplicate: '标签已存在',
+    ctxCreatePointOnCurve: '创建函数上的点',
+    // 工具引导文字（状态栏）
+    toolHintRotate: '先选择对象，再设置中心与旋转参考点',
+    toolHintDilate: '先选择对象，再设置中心与缩放参考点',
+    toolHintMirror: '先选择对象，再选择对称轴',
+    toolHintShear: '先选择对象，再选择剪切轴',
+    toolHintStretch: '先选择对象，再选择拉伸轴',
+    toolHintPan: '拖动平移视图',
+    toolHintZoomIn: '点击放大视图',
+    toolHintZoomOut: '点击缩小视图',
+    toolHintShowHide: '点击切换对象显示/隐藏',
+    toolHintShowHideLabel: '点击切换标签显示/隐藏',
+    toolHintDelete: '点击要删除的对象',
+    toolHintText: '点击画布插入文本',
+    toolHintSlider: '点击画布插入滑块',
+    toolHintButton: '点击画布插入按钮',
+    toolHintCheckbox: '点击画布插入复选框',
+    toolHintSemicircle: '点击圆弧的中点以创建半圆',
+    toolHintSector: '点击圆弧的中点以创建扇形'
   },
   en: {
     title: 'Mini GeoGebra',
@@ -282,7 +309,34 @@ export const translations = {
     planeYZ: 'YZ Plane Fill',
     rotateView: 'Auto Rotate',
     rotateSpeed: 'Rotation Speed',
-    navCubeTitle: 'Navigation Cube'
+    navCubeTitle: 'Navigation Cube',
+    // Right-click menu and hover tooltip
+    ctxDelete: 'Delete',
+    ctxToggleVisible: 'Show / Hide Object',
+    ctxToggleLabel: 'Show / Hide Label',
+    ctxRename: 'Rename…',
+    ctxRenamePrompt: 'Enter a new label',
+    ctxRenameEmpty: 'Label cannot be empty',
+    ctxRenameDuplicate: 'Label already exists',
+    ctxCreatePointOnCurve: 'Point on Curve',
+    // Tool hint bar
+    toolHintRotate: 'Select objects, then set center and rotation reference',
+    toolHintDilate: 'Select objects, then set center and scale reference',
+    toolHintMirror: 'Select objects, then pick the axis of reflection',
+    toolHintShear: 'Select objects, then pick the shear axis',
+    toolHintStretch: 'Select objects, then pick the stretch axis',
+    toolHintPan: 'Drag to pan the view',
+    toolHintZoomIn: 'Click to zoom in',
+    toolHintZoomOut: 'Click to zoom out',
+    toolHintShowHide: 'Click an object to toggle its visibility',
+    toolHintShowHideLabel: 'Click an object to toggle its label',
+    toolHintDelete: 'Click the object to delete',
+    toolHintText: 'Click on the canvas to insert text',
+    toolHintSlider: 'Click on the canvas to insert a slider',
+    toolHintButton: 'Click on the canvas to insert a button',
+    toolHintCheckbox: 'Click on the canvas to insert a checkbox',
+    toolHintSemicircle: 'Click the midpoint of the arc to make a semicircle',
+    toolHintSector: 'Click the midpoint of the arc to make a sector'
   }
 };
 
