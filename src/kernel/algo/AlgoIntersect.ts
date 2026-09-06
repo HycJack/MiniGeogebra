@@ -5,6 +5,7 @@ import { GeoPoint } from '../geo/GeoPoint';
 import { GeoLine } from '../geo/GeoLine';
 import { GeoConic } from '../geo/GeoConic';
 import { GeoVec3D } from '../core/GeoVec3D';
+import { intersectLineWithConic } from '../geo/conicSolve';
 
 export class AlgoIntersect extends AlgoElement {
   private outputPoints: GeoPoint[] = [];
@@ -79,42 +80,10 @@ export class AlgoIntersect extends AlgoElement {
   }
 
   private intersectLineConic(line: GeoLine, conic: GeoConic) {
-    // Line: ax + by + c = 0
-    // Conic: Ax^2 + Bxy + Cy^2 + Dx + Ey + F = 0
-    
-    // If b != 0, y = -(ax+c)/b. Substitute into conic.
-    // If b == 0, x = -c/a. Substitute.
-    
-    const [A, B, C, D, E, F] = conic.coeffs;
+    // 直线-圆锥求交的代入消元下沉到 conicSolve.intersectLineWithConic，
+    // 与 AlgoTangent 的切点弦求交共用同一份推导；这里只负责写入输出点。
     const { a, b, c } = line;
-    
-    let roots: {x: number, y: number}[] = [];
-
-    if (Math.abs(b) > 1e-9) {
-      // y = p x + q
-      const p = -a / b;
-      const q = -c / b;
-      
-      // A x^2 + B x (px+q) + C (px+q)^2 + D x + E (px+q) + F = 0
-      // x^2 (A + Bp + Cp^2) + x (Bq + 2Cpq + D + Ep) + (Cq^2 + Eq + F) = 0
-      
-      const qa = A + B*p + C*p*p;
-      const qb = B*q + 2*C*p*q + D + E*p;
-      const qc = C*q*q + E*q + F;
-      
-      roots = this.solveQuadratic(qa, qb, qc).map(x => ({ x, y: p*x + q }));
-    } else {
-      // Vertical line x = -c/a
-      const x = -c / a;
-      // A x^2 + B x y + C y^2 + D x + E y + F = 0
-      // C y^2 + y (Bx + E) + (Ax^2 + Dx + F) = 0
-      
-      const qa = C;
-      const qb = B*x + E;
-      const qc = A*x*x + D*x + F;
-      
-      roots = this.solveQuadratic(qa, qb, qc).map(y => ({ x, y }));
-    }
+    const roots = intersectLineWithConic(conic.coeffs, a, b, c);
 
     roots.forEach((pt, i) => {
       if (i < this.outputPoints.length) {
@@ -156,18 +125,6 @@ export class AlgoIntersect extends AlgoElement {
     // Create a temporary line for radical axis
     const radicalLine = new GeoLine(this.kernel, a, b, c);
     this.intersectLineConic(radicalLine, c1);
-  }
-
-  private solveQuadratic(a: number, b: number, c: number): number[] {
-    if (Math.abs(a) < 1e-9) {
-      if (Math.abs(b) < 1e-9) return [];
-      return [-c / b];
-    }
-    const delta = b*b - 4*a*c;
-    if (delta < 0) return [];
-    if (Math.abs(delta) < 1e-9) return [-b / (2*a)];
-    const sqrtDelta = Math.sqrt(delta);
-    return [(-b - sqrtDelta) / (2*a), (-b + sqrtDelta) / (2*a)];
   }
 
   getOutputPoints(): GeoPoint[] {

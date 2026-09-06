@@ -4,19 +4,33 @@ import { GeoPoint } from '../geo/GeoPoint';
 import { GeoLine } from '../geo/GeoLine';
 import { GeoConic } from '../geo/GeoConic';
 import { GeoVec3D } from '../core/GeoVec3D';
+import {
+  conicValue, dualLine, intersectLineWithConic, isConicDegenerate,
+} from '../geo/conicSolve';
 
 /**
- * 过定点作已知圆的切线 ——对标 GeoGebra `Tangent[Point, Circle]`。
+ * 过定点作已知圆锥曲线的切线 —— 对标 GeoGebra `Tangent[Point, Circle/Conic]`。
  *
- * 输入：conic（圆，非一般圆锥）、pointP（圆外或圆上的点）
+ * 输入：conic（任意非退化圆锥曲线：圆/椭圆/双曲线/抛物线，含旋转情形）、pointP
  * 输出：[切线 l1, 切线 l2, 切点 T1, 切点 T2]
- *   - 点在圆内：无实切线，全部置为 undefined；
- *   - 点在圆上：退化为一条切线（两输出重合为一个有效对），与尺规作图语义一致。
+ *   - 点在曲线上：退化为一条切线（第二对输出保持 undefined），与尺规作图语义一致；
+ *   - 点在曲线外：两条切线 + 两个切点；
+ *   - 点在曲线内（或双曲线两支之间等无实切线的情形）：全部置 undefined，
+ *     而不是把线画到错误位置；
+ *   - 退化圆锥曲线（空集、单点、一对直线）：全部 undefined。
  *
- * 几何推导（标准结果）：
- *   d^2 = |P - C|^2；切点弦中点 M = C + (r^2/d^2)(P - C)；
- *   半弦长 h = r*sqrt(d^2-r^2)/d；垂直单位向量 v = (-(py-cy), px-cx)/d；
- *   切点 T = M +/- h*v。由相似三角形 ~ 保证 |CT|=r 且 CT ⟂ PT。
+ * 算法（极线法）：对 A x² + B x y + C y² + D x + E y + F = 0，点 (u, v) 的对偶线
+ * （极线）为 `dualLine`，它与圆锥曲线的交点就是切点——按极线的定义，
+ * 极线与曲线相交的点恰好是「过该点的切线经过 (u, v)」的点。
+ * 因此整个流程只有两步：求交得切点、对切点再求一次对偶线得切线。
+ *
+ * 好处：对圆/椭圆/双曲线/抛物线**同一个公式**，无需按类型分支，也无需
+ * 判定「点在曲线内还是外」（无实切线自然表现为求交无实根）。
+ * 旧实现用「切点弦中点 + 垂直向量」的几何推导，只在 B=0 且 A=C 的圆上成立，
+ * 非圆直接 return —— 也就是椭圆/双曲线/抛物线切线长期缺失的原因。
+ *
+ * GeoGebra 用的是直径法（过中心作直径、求直径与曲线交点得切点），需要按类型
+ * 分派（抛物线无中心，另走 updateTangentParabola）。极线法在结果上等价且更短。
  */
 export class AlgoTangent extends AlgoElement {
   private readonly outputLines: GeoLine[] = [];
@@ -46,67 +60,59 @@ export class AlgoTangent extends AlgoElement {
     this.outputLines.forEach(l => l.setUndefined());
     this.outputPoints.forEach(p => p.setUndefined());
 
-    if (!this.conic.isDefined() || !this.pointP.isDefined()) {
-      return;
-    }
+    if (!this.conic.isDefined() || !this.pointP.isDefined()) return;
 
-    const [A, B, C, D, E, F] = this.conic.coeffs;
-    // 仅处理"圆"：B=0 且 A=C≠0
-    if (Math.abs(B) > 1e-9 || Math.abs(A - C) > 1e-9 || Math.abs(A) < 1e-9) {
-      return;
-    }
+    const coeffs = this.conic.coeffs;
+    const [A, B, C, D, E, F] = coeffs;
+    if (![A, B, C, D, E, F].every(Number.isFinite)) return;
 
-    const cx = -D / (2 * A);
-    const cy = -E / (2 * A);
-    const r2 = cx * cx + cy * cy - F / A;
-    if (r2 <= 0) return;
-    const r = Math.sqrt(r2);
+    // 相对容差基准：系数整体缩放不改变曲线的几何，判据必须跟着缩放
+    const mag = Math.max(
+      1, Math.abs(A), Math.abs(B), Math.abs(C), Math.abs(D), Math.abs(E), Math.abs(F),
+    );
+    if (isConicDegenerate(coeffs, mag)) return;
 
     const px = this.pointP.getX();
     const py = this.pointP.getY();
-    const dx = px - cx;
-    const dy = py - cy;
-    const d2 = dx * dx + dy * dy;
-    const d = Math.sqrt(d2);
+    if (!Number.isFinite(px) || !Number.isFinite(py)) return;
 
-    if (d < r - 1e-9) {
-      return; // 点在圆内，无实切线
+    // 点在曲线上：对偶线即切线，直接输出单条切线，
+    // 避免走「求交」路径在重根附近产生数值噪声
+    const valScale = mag * Math.max(1, px * px, py * py);
+    if (Math.abs(conicValue(coeffs, px, py)) <= 1e-9 * valScale) {
+      const [a, b, c] = dualLine(coeffs, px, py);
+      if (Math.abs(a) < 1e-12 && Math.abs(b) < 1e-12) return;
+      this.writePair(0, a, b, c, px, py);
+      return;
     }
 
-    // 切点弦中点 M = C + (r^2/d^2)(P - C)
-    const factor = r2 / d2;
-    const mx = cx + factor * dx;
-    const my = cy + factor * dy;
+    // 点在曲线外：对偶线是切点弦，与圆锥求交得切点
+    const [pa, pb, pc] = dualLine(coeffs, px, py);
+    if (Math.abs(pa) < 1e-12 && Math.abs(pb) < 1e-12) return; // 退化对偶线 ⟺ 无切线
 
-    // 半弦长 h = r*sqrt(d^2 - r^2)/d ；点在圆上时 h -> 0（退化）
-    const h = d <= 1e-12 ? 0 : (r * Math.sqrt(Math.max(0, d2 - r2))) / d;
+    intersectLineWithConic(coeffs, pa, pb, pc).forEach((t, i) => {
+      if (i >= 2) return;
+      const [a, b, c] = dualLine(coeffs, t.x, t.y);
+      if (Math.abs(a) < 1e-12 && Math.abs(b) < 1e-12) return;
+      this.writePair(i, a, b, c, t.x, t.y);
+    });
+  }
 
-    // 垂直单位向量 v = (-dy/d, dx/d)
-    const vx = -dy / d;
-    const vy = dx / d;
+  private writePair(
+    i: number,
+    a: number,
+    b: number,
+    c: number,
+    tx: number,
+    ty: number,
+  ): void {
+    const line = this.outputLines[i];
+    line.a = a;
+    line.b = b;
+    line.c = c;
+    line.setDefined();
 
-    const t1x = mx + h * vx;
-    const t1y = my + h * vy;
-    const t2x = mx - h * vx;
-    const t2y = my - h * vy;
-
-    const degenerate = h < 1e-9;
-
-    const setLineThrough = (l: GeoLine, x1: number, y1: number, x2: number, y2: number) => {
-      const a = y1 - y2;
-      const b = x2 - x1;
-      const c = -(a * x1 + b * y1);
-      l.a = a; l.b = b; l.c = c;
-      l.setDefined();
-    };
-
-    setLineThrough(this.outputLines[0], px, py, t1x, t1y);
-    this.outputPoints[0].setCoords(t1x, t1y, 1);
-
-    if (!degenerate) {
-      setLineThrough(this.outputLines[1], px, py, t2x, t2y);
-      this.outputPoints[1].setCoords(t2x, t2y, 1);
-    }
+    this.outputPoints[i].setCoords(tx, ty, 1);
   }
 
   getOutputLines(): GeoLine[] {

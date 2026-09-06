@@ -506,9 +506,10 @@ export const handlePointerDown = (
         const current = [...selectedElements, pHit];
         if (current.length === 2 && current[0] instanceof GeoPoint) {
           const clickedPoint = current[0];
-          const circle = elements.slice().reverse().find(el => el instanceof GeoConic) as GeoConic | undefined;
-          if (circle) {
-            const tan = new AlgoTangent(kernel, circle, clickedPoint);
+          // 支持任意圆锥曲线（圆/椭圆/双曲线/抛物线），取最上层的那个
+          const conic = elements.slice().reverse().find(el => el instanceof GeoConic) as GeoConic | undefined;
+          if (conic) {
+            const tan = new AlgoTangent(kernel, conic, clickedPoint);
             kernel.getConstruction().addElement(tan);
             tan.getOutputLines().forEach(l => kernel.getConstruction().addElement(l));
             tan.getOutputPoints().forEach(p => kernel.getConstruction().addElement(p));
