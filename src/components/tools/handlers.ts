@@ -16,14 +16,13 @@ import { GeoLine } from '../../kernel/geo/GeoLine';
 import { GeoSegment } from '../../kernel/geo/GeoSegment';
 import { GeoPolygon } from '../../kernel/geo/GeoPolygon';
 import { GeoConic } from '../../kernel/geo/GeoConic';
-import { GeoNumeric } from '../../kernel/geo/GeoNumeric';
 import { GeoLocus } from '../../kernel/geo/GeoLocus';
 import { GeoFunction } from '../../kernel/geo/GeoFunction';
 import { GeoVec3D } from '../../kernel/core/GeoVec3D';
 import { WorldPoint, ScreenPoint, ToolContext, ToolResult, ToolMode } from './types';
 import { hitScreenPoint, hitScreenObject, hitCircle, functionParameterAt, lineFromTwoPoints } from './hitTests';
 import {
-  createLabeledPoint, addPoint, createParameterPointOnPath,
+  createLabeledPoint, addPoint, createParameterPointOnPath, createParameterPointOnFunction,
   nextDistanceLabel, nextAngleLabel, nextAreaLabel,
 } from './createElements';
 import {
@@ -47,7 +46,6 @@ import { GeoVector } from '../../kernel/geo/GeoVector';
 import { GeoPolyLine } from '../../kernel/geo/GeoPolyLine';
 import { GeoRay } from '../../kernel/geo/GeoRay';
 import { GeoElement } from '../../kernel/geo/GeoElement';
-import { AlgoPointOnFunction } from '../../kernel/algo/AlgoPointOnFunction';
 
 // ---- 命中热区 ----
 const POINT_EPS = 10;   // 点热区（像素）
@@ -225,14 +223,8 @@ export const handlePointerDown = (
             pixelWidth: 1600,
           });
           if (!Number.isFinite(x)) break;
-          const param = new GeoNumeric(kernel, x);
-          construction.addElement(param);
-          const created = new AlgoPointOnFunction(kernel, obj, param);
-          construction.addElement(created);
-          construction.addElement(created.getOutput());
-          created.update();
-          notifyUpdate(created.getOutput());
-          setSelectedElements([created.getOutput()]);
+          const created = createParameterPointOnFunction(kernel, obj, x);
+          setSelectedElements([created.point]);
           setRenderRev(r => r + 1);
           break;
         }

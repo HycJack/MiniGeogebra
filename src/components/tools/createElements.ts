@@ -10,6 +10,7 @@ import { GeoNumeric } from '../../kernel/geo/GeoNumeric';
 import { GeoSegment } from '../../kernel/geo/GeoSegment';
 import { GeoLine } from '../../kernel/geo/GeoLine';
 import { GeoConic } from '../../kernel/geo/GeoConic';
+import { GeoFunction } from '../../kernel/geo/GeoFunction';
 import { GeoPolyLine } from '../../kernel/geo/GeoPolyLine';
 import { GeoVec3D } from '../../kernel/core/GeoVec3D';
 import { AlgoElement } from '../../kernel/algo/AlgoElement';
@@ -17,6 +18,7 @@ import { AlgoPointOnSegment } from '../../kernel/algo/AlgoPointOnSegment';
 import { AlgoPointOnLine } from '../../kernel/algo/AlgoPointOnLine';
 import { AlgoPointOnConic } from '../../kernel/algo/AlgoPointOnConic';
 import { AlgoPointOnPolyLine } from '../../kernel/algo/AlgoPointOnPolyLine';
+import { AlgoPointOnFunction } from '../../kernel/algo/AlgoPointOnFunction';
 
 /** 创建一个带唯一标签的独立点（A, B, C, D...）。 */
 export function createLabeledPoint(kernel: Kernel, x: number, y: number, z = 1): GeoPoint {
@@ -82,6 +84,29 @@ export function createParameterPointOnPath(
   kernel.getConstruction().addElement(point);
   algo.updateParameter(screenX, screenY);
   algo.compute();
+  kernel.notifyUpdate(point);
+  return { param, point, algo };
+}
+
+/**
+ * 在函数曲线上根据点击位置创建一个带参数的约束点。
+ * 参数（x 值）必须带唯一标签，否则代数视图与滑块面板里是个无名数值。
+ */
+export function createParameterPointOnFunction(
+  kernel: Kernel,
+  fn: GeoFunction,
+  x: number,
+): { param: GeoNumeric; point: GeoPoint; algo: AlgoPointOnFunction } {
+  const param = new GeoNumeric(kernel, x);
+  param.label = kernel.getConstruction().getNextNumericLabel();
+
+  const algo = new AlgoPointOnFunction(kernel, fn, param);
+  const point = algo.getOutput();
+
+  kernel.getConstruction().addElement(param);
+  kernel.getConstruction().addElement(algo);
+  kernel.getConstruction().addElement(point);
+  algo.update();
   kernel.notifyUpdate(point);
   return { param, point, algo };
 }

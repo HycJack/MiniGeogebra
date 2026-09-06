@@ -8,6 +8,7 @@ import { GeoVec3D } from '../kernel/core/GeoVec3D';
 import { parseExpression } from '../kernel/algebra/ExpressionParser';
 import { AlgoPointOnFunction } from '../kernel/algo/AlgoPointOnFunction';
 import { functionParameterAt, hitScreenObject, isPointOnFunction } from '../components/tools/hitTests';
+import { createParameterPointOnFunction } from '../components/tools/createElements';
 import { makeKernel } from './helpers';
 
 /** Register a free function (no driving slider) in the construction. */
@@ -196,5 +197,46 @@ describe('hitScreenObject —— 命中半径随缩放保持恒定（像素常�
     for (const scale of [2, 25, 250]) {
       expect(hitScreenObject(els, 0, 5.5 / scale, scale), `scale=${scale}`).toBeUndefined();
     }
+  });
+});
+
+describe('createParameterPointOnFunction —— 参数带唯一标签', () => {
+  it('生成的滑块有标签，避免代数视图出现无名数值', () => {
+    const kernel = makeKernel();
+    const fn = addFunction(kernel, 'x^2');
+
+    const { param, point, algo } = createParameterPointOnFunction(kernel, fn, 3);
+
+    expect(param.label).toBeDefined();
+    expect(param.label.length).toBeGreaterThan(0);
+    expect(param.getValue()).toBe(3);
+    expect(algo).toBeInstanceOf(AlgoPointOnFunction);
+    expect(point.parentAlgo).toBe(algo);
+    // 点在曲线上：x=3 → y=9
+    expect(point.getX()).toBeCloseTo(3, 6);
+    expect(point.getY()).toBeCloseTo(9, 6);
+  });
+
+  it('连续两次创建的参数标签不重复', () => {
+    const kernel = makeKernel();
+    const fn = addFunction(kernel, 'x');
+
+    const a = createParameterPointOnFunction(kernel, fn, 1);
+    const b = createParameterPointOnFunction(kernel, fn, 2);
+
+    expect(a.param.label).not.toBe(b.param.label);
+  });
+
+  it('三个元素都进了构造图，且拖动参数时下游能被增量更新找到', () => {
+    const kernel = makeKernel();
+    const fn = addFunction(kernel, 'x^2');
+
+    const { param, point, algo } = createParameterPointOnFunction(kernel, fn, 2);
+    const construction = kernel.getConstruction();
+
+    expect(construction.getElements()).toContain(param);
+    expect(construction.getElements()).toContain(point);
+    // 拖动参数时，增量更新应能通过前向依赖图找到下游算法
+    expect(construction.getForwardDependentAlgorithms(param)).toContain(algo);
   });
 });
