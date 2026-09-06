@@ -1,5 +1,7 @@
 # MiniGeogebra vs GeoGebra 2D 功能实现差异对比
 
+> **代码级深度分析见** [`mini_vs_geogebra_2d_deep_dive.md`](./mini_vs_geogebra_2d_deep_dive.md)（算法·约束·交互三个维度的具体实现差异，带代码引用）
+
 > 参考基准：GeoGebra 官方 Java 源码（`/Users/yicaohuang/Downloads/geogebra`）
 > 被分析项目：MiniGeogebra（`/Users/yicaohuang/Downloads/geogebra-like/MiniGeogebra`）
 > 分析日期：2026-09-06
