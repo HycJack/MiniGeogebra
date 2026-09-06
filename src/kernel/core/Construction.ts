@@ -128,13 +128,29 @@ export class Construction {
     return Array.from(dependent);
   }
 
-  /** 判断 algo 是否（直接/间接）依赖于 target */
+  /**
+   * 判断 algo 是否（直接/间接）依赖于 target。
+   * visited 集合既剪掉钻石依赖的重复子树，也保证依赖图出现环时立即终止
+   * 而非无限递归栈溢出（对应 GeoGebra 的 cycle 检测）。
+   */
   isDependentOn(algo: AlgoElement, target: ConstructionElement): boolean {
-    const inputs = algo.getInput();
-    for (const input of inputs) {
+    return this.traceDependency(algo, target, new Set());
+  }
+
+  private traceDependency(
+    algo: AlgoElement,
+    target: ConstructionElement,
+    visited: Set<AlgoElement>,
+  ): boolean {
+    // 已在本次遍历中出现过：要么是真环，要么是已判定为“不依赖 target”的菱形分支，
+    // 两种情况都可直接返回 false，不会漏报真实依赖。
+    if (visited.has(algo)) return false;
+    visited.add(algo);
+
+    for (const input of algo.getInput()) {
       if (input === target) return true;
       // 递归：若输入是某算法的输出，继续追溯
-      if (input.parentAlgo && this.isDependentOn(input.parentAlgo, target)) {
+      if (input.parentAlgo && this.traceDependency(input.parentAlgo, target, visited)) {
         return true;
       }
     }
