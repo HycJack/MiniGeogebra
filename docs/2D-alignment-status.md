@@ -102,9 +102,6 @@
    同类问题应下沉到算法本身修正。
 6. **`Definition` 不支持「标签 = 命令」混合式** —— `l1 = Line(A, B)` 这类 GeoGebra 常见写法
    目前被当成算术表达式，报 `Unknown function "Line"`。支持它需要在定义分支里先尝试命令解析。
-9. **v1 格式存档无 `outputIndices`** —— 无法重建「派生对象→派生对象」链（如 A、B → M=Midpoint(A,B) → N=Midpoint(A,M)）。
-10. **`AlgoDependentFunction` 兜底分支缺失** —— `variableName !== 'x'` 的依赖函数会落到
-    `createAlgo`，而后者没有 `AlgoDependentFunction` 分支，导入时报 unknown algorithm type。
 7. ~~**`hitScreenObject` 的 scale/eps 契约错配**~~ —— ✅ 已修复：
    `handlers.ts` 改传 `coord.xScale`（而非 `OBJ_EPS / coord.xScale`），并在
    `hitTests.ts` 顶部注释里区分「eps=世界单位」与「scale=像素/单位」两种约定；
@@ -115,6 +112,12 @@
 9. **v1 格式存档无 `outputIndices`** —— 无法重建「派生对象→派生对象」链（如 A、B → M=Midpoint(A,B) → N=Midpoint(A,M)）。
 10. **`AlgoDependentFunction` 兜底分支缺失** —— `variableName !== 'x'` 的依赖函数会落到
     `createAlgo`，而后者没有 `AlgoDependentFunction` 分支，导入时报 unknown algorithm type。
+11. ~~**椭圆/双曲线/抛物线切线缺失**~~ —— ✅ 已修复：`AlgoTangent` 改用**极线法**
+    （对偶线 `dualLine` 与圆锥求交得切点），对圆/椭圆/双曲线/抛物线同一个公式，
+    删掉了原先 `B=0 且 A=C` 的硬编码门禁；新增 `src/kernel/geo/conicSolve.ts` 存放
+    纯函数原语（`dualLine` / `conicValue` / `isConicDegenerate` / `intersectLineWithConic`），
+    与 `AlgoIntersect` 的直线-圆锥求交共用同一份代入消元。新增 `tangent.test.ts` 24 例，
+    用「切点在曲线上 + 切线过定点 + 代入判别式≈0」三条解析事实验证。
 
 ---
 
@@ -129,11 +132,15 @@
 | `algebra-commands.test.ts` | 29 | `Midpoint` / `Distance` / `Slope` / `Vector(分量)` / `Vector(两点)` / `Intersection`（含平行线报错）/ `Circle(A,r)`（含表达式半径与非法半径）/ `Circle(A,B,C)` / `PointOnLine` / `Derivative`（含滑块传导与自由函数）/ `Root`（无区间/区间/起点/无根/滑块）/ `Extremum`（两点与单调）/ `Integral`（定积分/反向/无定义区间）/ 未知函数报错 / 参数个数 / 数字参数解析 |
 | `algebra-commands-regression.test.ts` | 18 | 基本点线圆命令、错误路径、内联坐标元组（原 KNOWN BUG）、坐标元组定义式（原 KNOWN BUG） |
 | `point-on-function.test.ts` | 23 | 函数上取点、参数同步、`isPointOnFunction` 命中/未命中、`hitScreenObject` 命中半径随缩放恒定（线/点/跨缩放一致性，共 9 例）、`createParameterPointOnFunction` 参数标签非空且不重复且前向依赖可达 |
+| `tangent.test.ts` | 24 | `conicSolve` 纯函数（`dualLine` 可手工验算的切线、退化判定与系数缩放不敏感、直线-圆锥求交）、圆切线（圆上/圆外/圆内/圆心、单位圆从 (2,0) 的两条切线解析值）、椭圆切线（曲线上/外/内、旋转椭圆 B≠0）、双曲线切线（曲线上/两支外侧/两支之间无实切线、切点确实落在线上）、抛物线切线（开口向右/向上的解析切线、开口内侧无切线）、退化与异常输入（退化圆锥、未定义输入、NaN 不抛错） |
 | `dependency-cycle.test.ts` | 7 | `isDependentOn` 线性链 / 菱形 / 无关算法、二元游离环与自环不死循环、环与真实依赖共存时终止且不漏报、`getDependentAlgorithms` 不把游离环误报为依赖 |
 | `serializer-roundtrip.test.ts` | 16 | v2 序列化往返，含表达式重建与派生链（中点/平行线/垂线） |
 | `frontend-logic.test.ts` | 17 | 键盘缩放/平移映射、工具指引文案、上下文菜单行为 |
 
 其余：`algebra.test.ts` (8)、`phase3-algos.test.ts` (36)、`conic-geometry.test.ts` (19)、`shear-stretch.test.ts` (7)、`animation.test.ts` (4)、`point-on-path.test.ts` (3)、`animation-manager.test.ts` (1)。
 
-全套合计：`npx vitest run` → **17 个文件 / 256 项测试全绿**。
-运行：`npx vitest run`。类型检查：`npx tsc --noEmit`（零错误）。
+全套合计：`npx vitest run` → **18 个文件 / 280 项测试全绿**。
+运行：`npx vitest run`。类型检查：`./node_modules/.bin/tsc --noEmit`（零错误）。
+
+> 注：请直接用项目本地的 `./node_modules/.bin/tsc`，不要用 `npx tsc`——
+> 在非项目目录下 `npx tsc` 会去拉一个不相关的 `tsc` 包并照样打印成功，产生假阳性。

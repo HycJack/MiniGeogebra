@@ -212,17 +212,24 @@ MAX_PATH_RUNS = 10  — 限制路径追踪轮数
 #### MiniGeogebra：`src/kernel/algo/AlgoTangent.ts`
 
 ```
-仅处理圆 (B=0, A=C≠0):
-  d² = |P-C|²,  M = C + (r²/d²)(P-C)
-  h = r·√(d²-r²)/d,  v = (-dy/d, dx/d)
-  T = M ± h·v
-  点在内: 无实切线 (undefined)
-  点在圆上: h→0, 退化单切线
+极线法（对所有圆锥曲线同一个公式）：
+  1. isConicDegenerate() → 退化（空集/单点/一对直线）则全部 undefined
+  2. |F(P)| ≈ 0 → P 在曲线上，对偶线 dualLine(P) 即切线，输出单条
+  3. 否则 dualLine(P) 是切点弦：与圆锥求交得切点 T1, T2
+  4. 对每个切点再算一次 dualLine(T) 得切线
+  求交无实根 → 无实切线（圆内点 / 双曲线两支之间 / 抛物线开口内侧）
+对偶线公式：A x² + B x y + C y² + D x + E y + F = 0，
+  点 (u,v) 的对偶线 ax + by + c = 0，
+    a = A·u + (B/2)·v + D/2
+    b = (B/2)·u + C·v + E/2
+    c = (D/2)·u + (E/2)·v + F
+纯函数原语在 src/kernel/geo/conicSolve.ts，与 AlgoIntersect 共用。
 ```
 
-- 标准几何推导（切点弦中点 + 垂直向量）
-- 输出 2 条切线 + 2 个切点
-- **只处理圆**——椭圆/双曲线/抛物线切线未实现
+- 切线 = 曲线上点的对偶线；切点 = 外点极线与曲线的交点，两步共用同一个公式
+- 输出 2 条切线 + 2 个切点（点在曲线上时退化为 1 对，第二对保持 undefined）
+- 圆/椭圆/双曲线/抛物线均支持，含 B≠0 的旋转情形
+- 无需判定「点在曲线内还是外」：无实切线自然表现为求交无实根
 
 #### GeoGebra：`AlgoTangentLineND.java`（207 行）
 
@@ -244,12 +251,17 @@ MAX_PATH_RUNS = 10  — 限制路径追踪轮数
 
 | 项 | MiniGeogebra | GeoGebra |
 |---|---|---|
-| 适用范围 | 仅圆 | 所有圆锥曲线 |
-| 方法 | 代数推导（切点弦中点） | 几何构造（直径法） |
-| 抽象化 | 具体类 | 抽象类 + 子类 |
-| 退化处理 | 圆内点 → undefined | isDegenerate() → undefined |
+| 适用范围 | 所有圆锥曲线 | 所有圆锥曲线 |
+| 方法 | 极线法（对偶线求交，纯代数） | 几何构造（直径法） |
+| 抽象化 | 具体类 + 共享纯函数模块 | 抽象类 + 子类 |
+| 类型分支 | 无（统一公式） | 有（抛物线另走 updateTangentParabola） |
+| 退化处理 | isConicDegenerate() → undefined | isDegenerate() → undefined |
+| 内外判定 | 不判定（无实根自然表现） | 显式 checkUndefined() |
 
-**取舍评价**：MiniGeogebra 的圆切线实现正确且简洁。但**椭圆/双曲线/抛物线切线是明确缺口**——GeoGebra 的直径法可统一处理，MiniGeogebra 需要为每种圆锥曲线单独实现。这是算法维度的**最显著缺口之一**。
+**取舍评价**：两者对适用范围的覆盖已等价。MiniGeogebra 选极线法是因为它把所有圆锥类型
+收斂到同一个公式，省掉了 GeoGebra 那套「按类型分派 + 抛物线特殊分支」的开销；
+代价是几何直觉不如直径法直观（直径法可以直接看到切点是怎么被构造出来的）。
+旧版 MiniGeogebra 确实只有圆切线（`B=0 且 A=C` 之外的圆锥直接 return），那是本节原先的缺口。
 
 ---
 
@@ -386,7 +398,7 @@ Slope: 同
 | 点在曲线上 | 🟡 部分 | rayIntersections 解析解 | 无统一参数规范化 |
 | 圆锥曲线模型 | 🟡 部分 | 简洁 6 系数 | 缺矩阵表示、退化类型 |
 | 轨迹 | ✅ 等价 | 中位数跳跃检测 | 缺最近点定位 |
-| 切线 | ❌ 缺失 | 圆切线正确 | 缺椭圆/双曲线/抛物线切线 |
+| 切线 | ✅ 等价 | 极线法统一公式，无类型分支 | — |
 | 函数采样 | ✅ 等价+ | 自适应采样+渐近线检测 | 无符号表示 |
 | 数值积分 | 🟡 部分 | 奇点预扫描分段 | 无符号求解 |
 | 度量 | 🟡 部分 | — | 缺角度单位、区域面积 |
@@ -1205,7 +1217,7 @@ Hover:
 | 缺口 | 影响 | 建议优先级 |
 |---|---|---|
 | **圆锥-圆锥交点（quartic）** | 椭圆-椭圆/双曲线交点无法计算 | P0 |
-| **椭圆/双曲线/抛物线切线** | 只有圆切线，其他圆锥曲线切线缺失 | P0 |
+| ~~**椭圆/双曲线/抛物线切线**~~ | ✅ 已修复：`AlgoTangent` 改用极线法，统一公式覆盖所有圆锥类型（新增 `conicSolve.ts` 纯函数模块，切线回归测试 24 例） | ~~P0~~ |
 | **initForNearToRelationship** | 拖拽可能导致交点跳动 | P0 |
 | ~~**循环依赖检测**~~ | ✅ 已修复：`isDependentOn` 加 visited 剪枝，环上不再栈溢出（依赖环回归测试 7 例） | ~~P0~~ |
 | **统一参数规范化** | 点在路径上的参数类型专属，维护成本高 | P1 |
@@ -1237,11 +1249,12 @@ Hover:
 | 文件 | 关键内容 |
 |---|---|
 | `src/kernel/core/Kernel.ts` | 增量更新、微任务批处理、flushNow、withBatchedUpdates |
-| `src/kernel/core/Construction.ts` | forwardDeps 正向图、getForwardDependentAlgorithms、isDependentOn（无环检测）、deleteElementWithDependents |
-| `src/kernel/algo/AlgoIntersect.ts` | 交点算法（Cramer/radical axis） |
+| `src/kernel/core/Construction.ts` | forwardDeps 正向图、getForwardDependentAlgorithms、isDependentOn（visited 剪枝防环）、deleteElementWithDependents |
+| `src/kernel/algo/AlgoIntersect.ts` | 交点算法（Cramer/radical axis），直线-圆锥求交委托 conicSolve |
+| `src/kernel/geo/conicSolve.ts` | 圆锥纯函数原语：solveQuadratic、conicValue、isConicDegenerate、dualLine、intersectLineWithConic |
 | `src/kernel/geo/GeoConic.ts` | rayIntersections、pointAtAngle、samplePoints、getConicType |
 | `src/kernel/algo/AlgoLocus.ts` | 轨迹采样（120 份、中位数跳跃检测） |
-| `src/kernel/algo/AlgoTangent.ts` | 圆切线（切点弦中点+垂直向量） |
+| `src/kernel/algo/AlgoTangent.ts` | 过定点圆锥切线（极线法：对偶线求交得切点） |
 | `src/kernel/geo/GeoFunction.ts` | updateSamples（自适应采样） |
 | `src/kernel/algebra/Numerics.ts` | bisect/findRoots/findExtrema/integrate |
 | `src/kernel/core/Snap.ts` | 网格+点到点吸附 |
