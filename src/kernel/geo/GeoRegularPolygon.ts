@@ -50,6 +50,16 @@ export class GeoRegularPolygon extends GeoPolygon {
   getRadius(): number { return this._radius; }
   getSides(): number { return this._nSides; }
 
+  /** 原地更新中心/半径并重算顶点（供依赖重算使用），保持对象身份。 */
+  setGeometry(center: { x: number; y: number }, radius: number): void {
+    this._center = center;
+    this._radius = radius;
+    const vs = computeVertices(this.kernel, center, radius, this._nSides);
+    for (let i = 0; i < vs.length; i++) {
+      this.vertices[i].setCoords(vs[i].getX(), vs[i].getY(), 1);
+    }
+  }
+
   /** 代数描述：正 N 边形。 */
   getAlgebraDescription(): string {
     if (!this.isDefined()) return `${this.label}（未定义）`;

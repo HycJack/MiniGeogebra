@@ -773,9 +773,11 @@ export const handlePointerDown = (
         }
         const inputs = collectTransformInputs();
         for (const { el } of inputs) {
-          const out = buildTransformed(kernel, el, 'invert', ts.transformRef);
-          kernel.getConstruction().addElement(out);
-          notifyUpdate(out);
+          try {
+            const out = buildTransformed(kernel, el, 'invert', ts.transformRef);
+            kernel.getConstruction().addElement(out);
+            notifyUpdate(out);
+          } catch { /* 非圆圆锥曲线的反演像无法表示：跳过该对象 */ }
         }
       } else {
         if (!ts.transformRef) {
@@ -979,7 +981,7 @@ export const handlePointerDown = (
       const obj = hitObject();
       if (obj instanceof GeoLine) {
         const algo = new AlgoSlope(kernel, obj);
-        algo.getOutput().label = 'm';
+        algo.getOutput().label = kernel.getConstruction().getNextNumericLabel();
         kernel.getConstruction().addElement(algo);
         kernel.getConstruction().addElement(algo.getOutput());
         algo.compute();

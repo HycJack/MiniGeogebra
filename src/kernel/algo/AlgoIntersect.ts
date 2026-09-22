@@ -5,10 +5,19 @@ import { GeoPoint } from '../geo/GeoPoint';
 import { GeoLine } from '../geo/GeoLine';
 import { GeoConic } from '../geo/GeoConic';
 import { GeoVec3D } from '../core/GeoVec3D';
-import { intersectLineWithConic } from '../geo/conicSolve';
+import { intersectLineWithConic, intersectConicConic } from '../geo/conicSolve';
+
+interface Solution { x: number; y: number }
 
 export class AlgoIntersect extends AlgoElement {
   private outputPoints: GeoPoint[] = [];
+
+  // ---- 标签置换记忆（对标 GeoGebra AlgoIntersectAbstract）----
+  // lastPositions/age 在输出 undefined 期间也保留（GGB 的 D[]/age），
+  // 交点经过 undefined 区间后标签匹配不会失忆；perm 持久保存上次置换。
+  private lastPositions: (Solution | null)[] = [];
+  private undefinedAge: number[] = [];
+  private perm: number[] = [];
 
   constructor(
     kernel: IKernel,
@@ -21,7 +30,7 @@ export class AlgoIntersect extends AlgoElement {
     if (obj1 instanceof GeoLine && obj2 instanceof GeoLine) count = 1;
     else if (obj1 instanceof GeoLine && obj2 instanceof GeoConic) count = 2;
     else if (obj1 instanceof GeoConic && obj2 instanceof GeoLine) count = 2;
-    else if (obj1 instanceof GeoConic && obj2 instanceof GeoConic) count = 2; // Simplified, actually up to 4 for general conics, but 2 for circles
+    else if (obj1 instanceof GeoConic && obj2 instanceof GeoConic) count = 4;
 
     const usedLabels = new Set<string>();
     for (let i = 0; i < count; i++) {
@@ -31,7 +40,11 @@ export class AlgoIntersect extends AlgoElement {
       p.label = label;
       this.outputPoints.push(p);
     }
-    
+
+    this.lastPositions = new Array(count).fill(null);
+    this.undefinedAge = new Array(count).fill(0);
+    this.perm = new Array(count).fill(-1);
+
     this.setInputOutput();
   }
 
@@ -45,86 +58,196 @@ export class AlgoIntersect extends AlgoElement {
     this.outputPoints.forEach(p => p.setUndefined());
 
     if (!this.obj1.isDefined() || !this.obj2.isDefined()) {
+      this.bumpAges();
       return;
     }
 
+    let solutions: Solution[] = [];
     if (this.obj1 instanceof GeoLine && this.obj2 instanceof GeoLine) {
-      this.intersectLineLine(this.obj1, this.obj2);
+      solutions = this.solveLineLine(this.obj1, this.obj2);
     } else if (this.obj1 instanceof GeoLine && this.obj2 instanceof GeoConic) {
-      this.intersectLineConic(this.obj1, this.obj2);
+      solutions = this.solveLineConic(this.obj1, this.obj2);
     } else if (this.obj1 instanceof GeoConic && this.obj2 instanceof GeoLine) {
-      this.intersectLineConic(this.obj2, this.obj1);
+      solutions = this.solveLineConic(this.obj2, this.obj1);
     } else if (this.obj1 instanceof GeoConic && this.obj2 instanceof GeoConic) {
-      this.intersectConicConic(this.obj1, this.obj2);
+      solutions = intersectConicConic(this.obj1.coeffs, this.obj2.coeffs);
     }
+
+    // 标签连续性（对标 GeoGebra AlgoIntersectAbstract 的置换机制）：
+    // 拖动曲线时解本身在动，若始终按 x 排序写入输出点，两个交点会互换标签。
+    const assigned = this.matchToPrevious(solutions);
+
+    assigned.forEach((pt, i) => {
+      if (i >= this.outputPoints.length || !pt) return;
+      const p = this.outputPoints[i];
+      p.setCoords(pt.x, pt.y, 1);
+      p.setDefined();
+    });
+
+    this.updateMemory(assigned);
   }
 
-  private intersectLineLine(l1: GeoLine, l2: GeoLine) {
+  /** 输出全 undefined 时各槽位年龄 +1，位置记忆保留。 */
+  private bumpAges(): void {
+    this.undefinedAge = this.undefinedAge.map(age => age + 1);
+  }
+
+  /** 计算后更新位置/年龄/置换记忆。 */
+  private updateMemory(assigned: (Solution | null)[]): void {
+    this.lastPositions = this.outputPoints.map((p, i) => {
+      if (assigned[i]) return { x: p.getX(), y: p.getY() };
+      return this.lastPositions[i]; // undefined 槽位保留旧位置记忆
+    });
+    this.undefinedAge = this.outputPoints.map((_, i) => (assigned[i] ? 0 : this.undefinedAge[i] + 1));
+    this.perm = assigned.map(pt => (pt ? this.lastSolutionIndex.get(pt) ?? -1 : -1));
+  }
+
+  /** 本次分配中 solution 对象 → 原始下标（用于持久化 perm）。 */
+  private lastSolutionIndex = new Map<Solution, number>();
+
+  /**
+   * 把新解匹配到输出点上一次的位置，四层保护对标 GeoGebra setNearTo：
+   *   1. **eps 冻结**：两个新解几乎重合（近切点拖动）时沿用上次置换，防抖动；
+   *   2. **age 惩罚**：undefined 越久的槽位匹配代价越高（新解优先给"刚有效"的槽位）；
+   *   3. **互最近确认**：槽位与解互为最近邻的配对优先分配；
+   *   4. **持久记忆**：undefined 期间保留位置与 perm，恢复时不失忆。
+   */
+  private matchToPrevious(solutions: Solution[]): (Solution | null)[] {
+    const n = this.outputPoints.length;
+    const assigned: (Solution | null)[] = new Array(n).fill(null);
+    this.lastSolutionIndex = new Map(solutions.map((s, i) => [s, i]));
+
+    if (solutions.length === 0) return assigned;
+
+    const eps = this.freezeEpsilon(solutions);
+    const hasPrev = this.lastPositions.some(p => p !== null);
+
+    // 1) eps 冻结：新解两两几乎重合 → 沿用上次置换（perm 中记录原始解下标）
+    if (hasPrev && this.perm.some(i => i >= 0) && this.solutionsNearlyCoincident(solutions, eps)) {
+      const used = new Set<number>();
+      this.perm.forEach((solIdx, slot) => {
+        if (slot < n && solIdx >= 0 && solIdx < solutions.length && !used.has(solIdx)) {
+          assigned[slot] = solutions[solIdx];
+          used.add(solIdx);
+        }
+      });
+      // 置换没覆盖到的解按顺序填空槽
+      let cursor = 0;
+      for (let slot = 0; slot < n; slot++) {
+        if (assigned[slot]) continue;
+        while (cursor < solutions.length && used.has(cursor)) cursor++;
+        if (cursor >= solutions.length) break;
+        assigned[slot] = solutions[cursor];
+        used.add(cursor);
+        cursor++;
+      }
+      return assigned;
+    }
+
+    if (!hasPrev) {
+      // 首次计算：自然顺序
+      solutions.forEach((s, i) => { if (i < n) assigned[i] = s; });
+      return assigned;
+    }
+
+    // 2)+3) 代价表 = 距离 + age 惩罚；互最近对优先，其余贪心
+    const cost = (slot: number, solIdx: number): number => {
+      const prev = this.lastPositions[slot]!;
+      const base = Math.hypot(solutions[solIdx].x - prev.x, solutions[solIdx].y - prev.y);
+      return base + this.undefinedAge[slot] * eps;
+    };
+
+    const taken = new Set<number>();
+    // 互最近确认：slot 的最近解同时是该解的最近 slot
+    const mutualPairs: { slot: number; sol: number; d: number }[] = [];
+    for (let slot = 0; slot < n; slot++) {
+      if (!this.lastPositions[slot]) continue;
+      let best = -1, bestD = Infinity;
+      for (let s = 0; s < solutions.length; s++) {
+        const d = cost(slot, s);
+        if (d < bestD) { bestD = d; best = s; }
+      }
+      if (best < 0) continue;
+      // 该解的最近槽位是否也是本槽位
+      let backBest = -1, backD = Infinity;
+      for (let slot2 = 0; slot2 < n; slot2++) {
+        if (!this.lastPositions[slot2]) continue;
+        const d = cost(slot2, best);
+        if (d < backD) { backD = d; backBest = slot2; }
+      }
+      if (backBest === slot) mutualPairs.push({ slot, sol: best, d: bestD });
+    }
+    mutualPairs.sort((a, b) => a.d - b.d);
+    for (const pair of mutualPairs) {
+      if (assigned[pair.slot] || taken.has(pair.sol)) continue;
+      assigned[pair.slot] = solutions[pair.sol];
+      taken.add(pair.sol);
+    }
+    // 剩余槽位：贪心取最小代价
+    for (let slot = 0; slot < n; slot++) {
+      if (assigned[slot] || !this.lastPositions[slot]) continue;
+      let best = -1, bestD = Infinity;
+      for (let s = 0; s < solutions.length; s++) {
+        if (taken.has(s)) continue;
+        const d = cost(slot, s);
+        if (d < bestD) { bestD = d; best = s; }
+      }
+      if (best >= 0) { assigned[slot] = solutions[best]; taken.add(best); }
+    }
+    // 没匹配上的解按顺序填进剩余空槽
+    let cursor = 0;
+    for (let slot = 0; slot < n; slot++) {
+      if (assigned[slot]) continue;
+      while (cursor < solutions.length && taken.has(cursor)) cursor++;
+      if (cursor >= solutions.length) break;
+      assigned[slot] = solutions[cursor];
+      taken.add(cursor);
+      cursor++;
+    }
+    return assigned;
+  }
+
+  /** 新解两两间距是否全部小于 eps（近切点情形）。 */
+  private solutionsNearlyCoincident(solutions: Solution[], eps: number): boolean {
+    if (solutions.length < 2) return false;
+    for (let i = 0; i < solutions.length; i++) {
+      for (let j = i + 1; j < solutions.length; j++) {
+        if (Math.hypot(solutions[i].x - solutions[j].x, solutions[i].y - solutions[j].y) > eps) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  /** 冻结判定的 eps：与解的坐标量级成比例的世界距离。 */
+  private freezeEpsilon(solutions: Solution[]): number {
+    let mag = 1;
+    for (const s of solutions) mag = Math.max(mag, Math.abs(s.x), Math.abs(s.y));
+    return 1e-6 * mag;
+  }
+
+  private solveLineLine(l1: GeoLine, l2: GeoLine): Solution[] {
     const det = l1.a * l2.b - l2.a * l1.b;
-    if (Math.abs(det) < 1e-9) return; // Parallel
+    const mag = Math.max(Math.abs(l1.a), Math.abs(l1.b), Math.abs(l2.a), Math.abs(l2.b), 1);
+    if (Math.abs(det) < 1e-12 * mag * mag) return []; // 平行（相对容差）
 
     const x = (l1.b * l2.c - l2.b * l1.c) / det;
     const y = (l1.c * l2.a - l2.c * l1.a) / det;
-    
-    const p = this.outputPoints[0];
-    p.setCoords(x, y, 1);
-    p.setDefined();
-
-    // Check if it's on the segments
-    if (l1.getClassName() === 'GeoSegment' && !(l1 as any).isOnPath(p)) {
-      p.setUndefined();
-    }
-    if (l2.getClassName() === 'GeoSegment' && !(l2 as any).isOnPath(p)) {
-      p.setUndefined();
-    }
+    return [{ x, y }];
   }
 
-  private intersectLineConic(line: GeoLine, conic: GeoConic) {
+  private solveLineConic(line: GeoLine, conic: GeoConic): Solution[] {
     // 直线-圆锥求交的代入消元下沉到 conicSolve.intersectLineWithConic，
-    // 与 AlgoTangent 的切点弦求交共用同一份推导；这里只负责写入输出点。
+    // 与 AlgoTangent 的切点弦求交共用同一份推导。
     const { a, b, c } = line;
     const roots = intersectLineWithConic(conic.coeffs, a, b, c);
-
-    roots.forEach((pt, i) => {
-      if (i < this.outputPoints.length) {
-        const p = this.outputPoints[i];
-        p.setCoords(pt.x, pt.y, 1);
-        p.setDefined();
-        if (line.getClassName() === 'GeoSegment' && !(line as any).isOnPath(p)) {
-          p.setUndefined();
-        }
-      }
+    if (line.getClassName() !== 'GeoSegment') return roots;
+    // 有界线段：先过滤出落在线段上的解，避免"定义了又立刻 undefined"打乱匹配
+    return roots.filter(pt => {
+      const probe = new GeoPoint(this.kernel, new GeoVec3D(pt.x, pt.y, 1));
+      return (line as any).isOnPath(probe);
     });
-  }
-
-  private intersectConicConic(c1: GeoConic, c2: GeoConic) {
-    // Simplified for circles: subtract equations to get radical axis (line)
-    // Then intersect line with c1.
-    // Only works if A=C=1 and B=0 for both (circles).
-    // General conic intersection is quartic, too complex for this snippet.
-    // Assuming circles for now.
-    
-    const [A1, B1, C1, D1, E1, F1] = c1.coeffs;
-    const [A2, B2, C2, D2, E2, F2] = c2.coeffs;
-    
-    // Check if circles
-    if (Math.abs(B1) > 1e-9 || Math.abs(B2) > 1e-9) return; // Not handled
-    
-    // Normalize if A != 1
-    // Assume A=C.
-    
-    // Radical axis: (D1/A1 - D2/A2)x + (E1/A1 - E2/A2)y + (F1/A1 - F2/A2) = 0
-    // Let's assume A1=A2=1 for simplicity as our algorithms produce that.
-    
-    const a = D1 - D2;
-    const b = E1 - E2;
-    const c = F1 - F2;
-    
-    if (Math.abs(a) < 1e-9 && Math.abs(b) < 1e-9) return; // Concentric or same
-    
-    // Create a temporary line for radical axis
-    const radicalLine = new GeoLine(this.kernel, a, b, c);
-    this.intersectLineConic(radicalLine, c1);
   }
 
   getOutputPoints(): GeoPoint[] {

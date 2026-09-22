@@ -72,6 +72,7 @@ const SidePanel: React.FC<SidePanelWithHandlersProps> = ({
           <AlgebraInputBar
             kernel={kernel}
             onElementsCreated={onAlgebraElementsCreated}
+            viewBounds={coord.visibleWorldBounds()}
             t={t}
           />
           <div className="flex-1 overflow-y-auto p-2 space-y-1">
@@ -84,6 +85,7 @@ const SidePanel: React.FC<SidePanelWithHandlersProps> = ({
               else if (typeName === 'GeoPolygon') typeName = t('typePolygon');
               else if (typeName === 'GeoNumeric') typeName = t('typeNumeric');
               else if (typeName === 'GeoLocus') typeName = t('typeLocus');
+              else if (typeName === 'GeoText') typeName = t('typeText');
 
               return (
                 <div key={el.id} className="group flex flex-col p-2 rounded-lg hover:bg-gray-50 border border-transparent hover:border-gray-100 transition-colors">

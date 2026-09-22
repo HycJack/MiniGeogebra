@@ -6,6 +6,8 @@ import { GeoVec3D } from './GeoVec3D';
 
 export interface IKernel {
   notifyUpdate(element: ConstructionElement): void;
+  /** 只通知视图刷新，不触发内核重算（动画循环每帧已自行增量重算依赖链）。 */
+  notifyViewChanged(): void;
   getConstruction(): Construction;
   getAnimationManager(): any;
   withBatchedUpdates<T>(fn: () => T): T;

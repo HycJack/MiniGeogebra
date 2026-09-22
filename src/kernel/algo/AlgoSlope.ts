@@ -9,7 +9,9 @@ export class AlgoSlope extends AlgoElement {
   constructor(kernel: IKernel, private line: GeoLine) {
     super(kernel);
     this.outputValue = new GeoNumeric(kernel, 0);
-    this.outputValue.label = 'm';
+    // 标签不在此硬编码：连续两次 Slope 会得到同名 m。
+    // 代数输入路径由 EquationRecognizer.assignNextLabel 分配数字序列，
+    // 工具路径由 handlers 分配；序列化时经 outputLabels 保存/恢复。
     this.setInputOutput();
   }
 

@@ -67,14 +67,26 @@ export abstract class AlgoElement extends ConstructionElement {
    *   2. 否则 compute() 重算几何量；
    *   3. 通知每个输出 element 继续向下通知其依赖（输出一般是派生点/线）。
    * 子类若需要在“输入未定义”时保留特殊行为，可覆盖此方法。
+   *
+   * 重入保护：compute() 内部若通过 recomputeDependents 等路径再次触发自身
+   * （如 AlgoLocus 把 driver 注册为输入又主动重算 driver 的依赖链），
+   * 直接忽略本次重入，避免无限递归栈溢出。
    */
+  private updating = false;
+
   update(): void {
-    if (this.input.some(i => !i.isDefined())) {
-      this.output.forEach(o => o.setUndefined());
-      return;
+    if (this.updating) return;
+    this.updating = true;
+    try {
+      if (this.input.some(i => !i.isDefined())) {
+        this.output.forEach(o => o.setUndefined());
+        return;
+      }
+      this.compute();
+      this.output.forEach(o => o.update());
+    } finally {
+      this.updating = false;
     }
-    this.compute();
-    this.output.forEach(o => o.update());
   }
 
   getClassName(): string { return this.constructor.name; }

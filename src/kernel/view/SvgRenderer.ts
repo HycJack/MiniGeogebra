@@ -78,8 +78,24 @@ export class SvgRenderer implements IRenderer {
     let da = ea - sa;
     if (ccw) da = da % (2 * Math.PI);
     if (da <= 0) da += 2 * Math.PI;
-    const largeArc = da > Math.PI ? 1 : 0;
+    const sx = cx + r * Math.cos(sa);
+    const sy = cy + r * Math.sin(sa);
+    // Canvas 的 arc 在空路径上会以弧起点作为子路径起点；SVG 的 A 命令
+    // 需要显式 M，否则无效。已有子路径时（如扇形 moveTo 后接弧）保持连接语义。
+    if (!this.curD) {
+      this.curD = `M ${this._fmt(sx)} ${this._fmt(sy)}`;
+    }
     const sweep = ccw ? 0 : 1;
+    if (da >= 2 * Math.PI - 1e-9) {
+      // 全圆：SVG 规范中起终点重合的弧渲染为空，拆成两段半圆。
+      const half = sa + da / 2;
+      const mx = cx + r * Math.cos(half);
+      const my = cy + r * Math.sin(half);
+      this.curD += ` A ${this._fmt(r)} ${this._fmt(r)} 0 1 ${sweep} ${this._fmt(mx)} ${this._fmt(my)}`;
+      this.curD += ` A ${this._fmt(r)} ${this._fmt(r)} 0 1 ${sweep} ${this._fmt(sx)} ${this._fmt(sy)}`;
+      return;
+    }
+    const largeArc = da > Math.PI ? 1 : 0;
     const ex = cx + r * Math.cos(ea);
     const ey = cy + r * Math.sin(ea);
     this.curD += ` A ${this._fmt(r)} ${this._fmt(r)} 0 ${largeArc} ${sweep} ${this._fmt(ex)} ${this._fmt(ey)}`;

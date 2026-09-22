@@ -62,9 +62,24 @@ export class Kernel implements IKernel {
       return fn();
     } finally {
       this.inBatch = prev;
+      // 批次内进入 pendingUpdates 的更新在此统一冲刷，否则会一直滞留
+      // 到批次外下一次独立元素 notifyUpdate 才被顺带重算。
+      if (!prev && this.pendingUpdates.size > 0) {
+        this.flushNow();
+      }
       if (!prev && this.updateCallback) {
         this.updateCallback();
       }
+    }
+  }
+
+  /**
+   * 只触发视图刷新回调，不做任何内核重算。
+   * 动画循环等已经自行增量重算过依赖链的调用方使用，避免同一帧重复计算。
+   */
+  notifyViewChanged(): void {
+    if (this.updateCallback && !this.inBatch) {
+      this.updateCallback();
     }
   }
 
@@ -84,6 +99,11 @@ export class Kernel implements IKernel {
    */
   private flushPendingUpdates(): void {
     this.flushScheduled = false;
+    this.flushAffectedAlgorithms();
+  }
+
+  /** 收集依赖 pending 元素的算法，按构造序增量重算，然后清空 pending。 */
+  private flushAffectedAlgorithms(): void {
     if (this.pendingUpdates.size === 0) return;
 
     const affected = new Set<import('../algo/AlgoElement').AlgoElement>();
@@ -92,6 +112,7 @@ export class Kernel implements IKernel {
         affected.add(algo);
       }
     }
+    this.pendingUpdates.clear();
 
     const sorted = Array.from(affected).sort(
       (a, b) => a.constIndex - b.constIndex
@@ -99,23 +120,13 @@ export class Kernel implements IKernel {
     for (const algo of sorted) {
       algo.update();
     }
-    this.pendingUpdates.clear();
   }
 
   /**
    * 同步 flush pending updates（拖动等场景需要"本帧立即重算依赖"，不能等微任务）。
    */
   flushNow(): void {
-    if (!this.flushScheduled || this.pendingUpdates.size === 0) return;
     this.flushScheduled = false;
-    const affected = new Set<import('../algo/AlgoElement').AlgoElement>();
-    for (const el of this.pendingUpdates) {
-      for (const algo of this.construction.getForwardDependentAlgorithms(el)) {
-        affected.add(algo);
-      }
-    }
-    const sorted = Array.from(affected).sort((a, b) => a.constIndex - b.constIndex);
-    for (const algo of sorted) algo.update();
-    this.pendingUpdates.clear();
+    this.flushAffectedAlgorithms();
   }
 }

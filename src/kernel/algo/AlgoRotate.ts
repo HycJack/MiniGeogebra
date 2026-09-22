@@ -87,67 +87,118 @@ const transformLine = (l: GeoLine, op: TransOp, arg: any): GeoLine => {
   return new GeoLine(l.kernel, a, b, cc);
 };
 
+/** 中心参数：工具层传点击位置 {x,y}，也兼容 GeoPoint。 */
+const toCenter = (center: any): { x: number; y: number } =>
+  center instanceof GeoPoint ? { x: center.getX(), y: center.getY() } : center;
+
 export class AlgoRotate extends AlgoElement {
   private result: GeoElement;
   private source: GeoElement;
+  private center: { x: number; y: number };
+  // 活中心：GeoPoint 时注册为输入，移动中心会联动重算（对标 AlgoRotatePoint 的活引用）
+  private centerPoint: GeoPoint | null;
 
-  constructor(kernel: IKernel, source: GeoElement, private center: GeoPoint, private angle: number) {
+  constructor(kernel: IKernel, source: GeoElement, center: { x: number; y: number } | GeoPoint, private angle: number) {
     super(kernel);
     this.source = source;
-    this.result = buildTransformed(kernel, source, 'rotate', { center, angle });
+    this.centerPoint = center instanceof GeoPoint ? center : null;
+    this.center = toCenter(center);
+    this.result = buildTransformed(kernel, source, 'rotate', { center: this.center, angle });
     this.setInputOutput();
   }
 
   setInputOutput(): void {
-    this.input = [this.source];
+    this.input = this.centerPoint ? [this.source, this.centerPoint] : [this.source];
     this.setOutput([this.result]);
   }
 
   getOutput(): GeoElement { return this.result; }
 
-  compute(): void { this.result.setDefined(); }
+  // 序列化需要还原构造参数
+  getAngle(): number { return this.angle; }
+  getCenterCoords(): { x: number; y: number } { return this.center; }
+
+  compute(): void {
+    if (this.centerPoint) {
+      this.center = { x: this.centerPoint.getX(), y: this.centerPoint.getY() };
+    }
+    // 源对象/中心移动后原地重算，保持输出对象身份。
+    applyTransformed(this.result, this.source, 'rotate', { center: this.center, angle: this.angle });
+    this.result.setDefined();
+  }
 }
 
 export class AlgoDilate extends AlgoElement {
   private result: GeoElement;
   private source: GeoElement;
+  private center: { x: number; y: number };
+  private centerPoint: GeoPoint | null;
 
-  constructor(kernel: IKernel, source: GeoElement, private center: GeoPoint, private ratio: number) {
+  constructor(kernel: IKernel, source: GeoElement, center: { x: number; y: number } | GeoPoint, private ratio: number) {
     super(kernel);
     this.source = source;
-    this.result = buildTransformed(kernel, source, 'dilate', { center, ratio });
+    this.centerPoint = center instanceof GeoPoint ? center : null;
+    this.center = toCenter(center);
+    this.result = buildTransformed(kernel, source, 'dilate', { center: this.center, ratio });
     this.setInputOutput();
   }
 
   setInputOutput(): void {
-    this.input = [this.source];
+    this.input = this.centerPoint ? [this.source, this.centerPoint] : [this.source];
     this.setOutput([this.result]);
   }
 
   getOutput(): GeoElement { return this.result; }
 
-  compute(): void { this.result.setDefined(); }
+  getRatio(): number { return this.ratio; }
+  getCenterCoords(): { x: number; y: number } { return this.center; }
+
+  compute(): void {
+    if (this.centerPoint) {
+      this.center = { x: this.centerPoint.getX(), y: this.centerPoint.getY() };
+    }
+    applyTransformed(this.result, this.source, 'dilate', { center: this.center, ratio: this.ratio });
+    this.result.setDefined();
+  }
 }
 
 export class AlgoMirror extends AlgoElement {
   private result: GeoElement;
   private source: GeoElement;
+  private A: number;
+  private B: number;
+  private C: number;
+  // 活镜轴：GeoLine 时注册为输入，移动镜轴会联动重算（对标 AlgoMirror）
+  private axisLine: GeoLine | null;
 
-  constructor(kernel: IKernel, source: GeoElement, private A: number, private B: number, private C: number) {
+  constructor(kernel: IKernel, source: GeoElement, A: number, B: number, C: number, axisLine?: GeoLine) {
     super(kernel);
     this.source = source;
+    this.A = A; this.B = B; this.C = C;
+    this.axisLine = axisLine ?? null;
     this.result = buildTransformed(kernel, source, 'mirror', { A, B, C });
     this.setInputOutput();
   }
 
   setInputOutput(): void {
-    this.input = [this.source];
+    this.input = this.axisLine ? [this.source, this.axisLine] : [this.source];
     this.setOutput([this.result]);
   }
 
   getOutput(): GeoElement { return this.result; }
 
-  compute(): void { this.result.setDefined(); }
+  /** 镜像轴 ax+by+c=0 的系数（序列化还原用；活轴时为当前快照）。 */
+  getMirrorLine(): [number, number, number] { return [this.A, this.B, this.C]; }
+
+  compute(): void {
+    if (this.axisLine) {
+      this.A = this.axisLine.a;
+      this.B = this.axisLine.b;
+      this.C = this.axisLine.c;
+    }
+    applyTransformed(this.result, this.source, 'mirror', { A: this.A, B: this.B, C: this.C });
+    this.result.setDefined();
+  }
 }
 
 const sampleLimitedCircle = (
@@ -211,6 +262,138 @@ const transformConicCoeffs = (coeffs: number[], m: AffineMatrix): number[] => {
   ];
 };
 
+/** 把 rotate/dilate/mirror/translate/shear/stretch 统一表示成正向仿射矩阵 P' = M·P + T。 */
+const affineFor = (op: TransOp, arg: any): AffineMatrix | null => {
+  if (op === 'translate') {
+    return { a: 1, b: 0, c: 0, d: 1, tx: arg.vector.x, ty: arg.vector.y };
+  }
+  if (op === 'rotate') {
+    const cos = Math.cos(arg.angle), sin = Math.sin(arg.angle);
+    const cx = arg.center.x, cy = arg.center.y;
+    return { a: cos, b: -sin, c: sin, d: cos, tx: cx - cos * cx + sin * cy, ty: cy - sin * cx - cos * cy };
+  }
+  if (op === 'dilate') {
+    const r = arg.ratio, cx = arg.center.x, cy = arg.center.y;
+    return { a: r, b: 0, c: 0, d: r, tx: (1 - r) * cx, ty: (1 - r) * cy };
+  }
+  if (op === 'mirror') {
+    const d = arg.A * arg.A + arg.B * arg.B;
+    return {
+      a: (arg.B * arg.B - arg.A * arg.A) / d,
+      b: -2 * arg.A * arg.B / d,
+      c: -2 * arg.A * arg.B / d,
+      d: (arg.A * arg.A - arg.B * arg.B) / d,
+      tx: -2 * arg.A * arg.C / d,
+      ty: -2 * arg.B * arg.C / d,
+    };
+  }
+  if (op === 'shear' || op === 'stretch') return arg.matrix;
+  return null; // invert 不是仿射变换
+};
+
+/** 圆弧经仿射映射后的新圆心/半径/起止角（mirror 会翻转方向）。 */
+const mapArcGeometry = (
+  center: { x: number; y: number }, radius: number,
+  startAngle: number, endAngle: number, ccw: boolean,
+  op: TransOp, arg: any,
+): { center: { x: number; y: number }; radius: number; startAngle: number; endAngle: number; ccw: boolean } => {
+  const c2 = mapPoint(center, op, arg);
+  const p1 = mapPoint({ x: center.x + radius * Math.cos(startAngle), y: center.y + radius * Math.sin(startAngle) }, op, arg);
+  const p2 = mapPoint({ x: center.x + radius * Math.cos(endAngle), y: center.y + radius * Math.sin(endAngle) }, op, arg);
+  return {
+    center: c2,
+    radius: Math.hypot(p1.x - c2.x, p1.y - c2.y),
+    startAngle: Math.atan2(p1.y - c2.y, p1.x - c2.x),
+    endAngle: Math.atan2(p2.y - c2.y, p2.x - c2.x),
+    ccw: ccw !== (op === 'mirror'),
+  };
+};
+
+/**
+ * 把 source 经变换后的几何原地写入 result（对象身份不变，下游引用不失效）。
+ * 供 AlgoRotate/Dilate/Mirror/Translate 的 compute() 在依赖变化时重算使用。
+ */
+export function applyTransformed(result: GeoElement, source: GeoElement, op: TransOp, arg: any): void {
+  if (result instanceof GeoPoint && source instanceof GeoPoint) {
+    const out = mapPoint({ x: source.getX(), y: source.getY() }, op, arg);
+    result.setCoords(out.x, out.y, 1);
+    return;
+  }
+  if (result instanceof GeoNumeric && source instanceof GeoNumeric) {
+    result.setValue(source.getValue());
+    return;
+  }
+  if (result instanceof GeoSegment && source instanceof GeoSegment) {
+    const s1 = mapPoint({ x: source.startPoint.getX(), y: source.startPoint.getY() }, op, arg);
+    const s2 = mapPoint({ x: source.endPoint.getX(), y: source.endPoint.getY() }, op, arg);
+    result.startPoint.setCoords(s1.x, s1.y, 1);
+    result.endPoint.setCoords(s2.x, s2.y, 1);
+    return;
+  }
+  if (result instanceof GeoRay && source instanceof GeoRay) {
+    const s1 = mapPoint({ x: source.startPoint.getX(), y: source.startPoint.getY() }, op, arg);
+    const s2 = mapPoint({ x: source.secondPoint.getX(), y: source.secondPoint.getY() }, op, arg);
+    result.startPoint.setCoords(s1.x, s1.y, 1);
+    result.secondPoint.setCoords(s2.x, s2.y, 1);
+    return;
+  }
+  if (result instanceof GeoLine && source instanceof GeoLine) {
+    const pts = lineInterceptPts(source.a, source.b, source.c).map(p => mapPoint(p, op, arg));
+    const a = pts[1].y - pts[0].y;
+    const b = pts[0].x - pts[1].x;
+    const c = -a * pts[0].x - b * pts[0].y;
+    result.a = a; result.b = b; result.c = c;
+    return;
+  }
+  if (result instanceof GeoArc && source instanceof GeoArc) {
+    const g = mapArcGeometry(source.getCenter(), source.getRadius(), source.getStartAngle(), source.getEndAngle(), source.isCounterClockwise(), op, arg);
+    result.setGeometry(g.center, g.radius, g.startAngle, g.endAngle, g.ccw);
+    return;
+  }
+  if (result instanceof GeoConicPart && source instanceof GeoConicPart) {
+    const g = mapArcGeometry(source.getCenter(), source.getRadius(), source.getStartAngle(), source.getEndAngle(), source.isCounterClockwise(), op, arg);
+    result.coeffs = circleCoeffs(g.center.x, g.center.y, g.radius);
+    result.setParameters(g.startAngle, g.endAngle, g.ccw);
+    return;
+  }
+  if (result instanceof GeoRegularPolygon && source instanceof GeoRegularPolygon) {
+    const c2 = mapPoint(source.getCenter(), op, arg);
+    const v0 = source.vertices[0];
+    const v0m = mapPoint({ x: v0.getX(), y: v0.getY() }, op, arg);
+    result.setGeometry(c2, Math.hypot(v0m.x - c2.x, v0m.y - c2.y));
+    return;
+  }
+  if (result instanceof GeoPolygon && source instanceof GeoPolygon) {
+    source.vertices.forEach((v, i) => {
+      if (!result.vertices[i]) return;
+      const m = mapPoint({ x: v.getX(), y: v.getY() }, op, arg);
+      result.vertices[i].setCoords(m.x, m.y, 1);
+    });
+    return;
+  }
+  if (result instanceof GeoPolyLine && source instanceof GeoPolyLine) {
+    source.vertices.forEach((v, i) => {
+      if (!result.vertices[i]) return;
+      const m = mapPoint({ x: v.getX(), y: v.getY() }, op, arg);
+      result.vertices[i].setCoords(m.x, m.y, 1);
+    });
+    return;
+  }
+  if (result instanceof GeoLocus && source instanceof GeoLocus) {
+    result.samples = source.getSamples().map(({ x, y }) => mapPoint({ x, y }, op, arg));
+    result.segments = source.getSegments().slice();
+    return;
+  }
+  if (result instanceof GeoConic && source instanceof GeoConic) {
+    const m = affineFor(op, arg);
+    if (m) {
+      const nc = transformConicCoeffs(source.coeffs, m);
+      for (let i = 0; i < 6; i++) result.coeffs[i] = nc[i];
+    }
+    return;
+  }
+}
+
 /** 按类型重建经变换后的几何副本（变换对象自身不变）。 */
 export function buildTransformed(kernel: IKernel, input: GeoElement, op: TransOp, arg: any): GeoElement {
   if (input instanceof GeoPoint) return transformPoint(input, op, arg);
@@ -229,42 +412,30 @@ export function buildTransformed(kernel: IKernel, input: GeoElement, op: TransOp
   if (input instanceof GeoConicPart) {
     const limited = transformLimitedCircle(input, op, arg);
     if (limited) return limited;
-    if (op === 'translate') {
-      const c = input.getCenter();
-      return new GeoConic(kernel, circleCoeffs(c.x + arg.vector.x, c.y + arg.vector.y, input.getRadius()));
-    }
+    // mapPoint 覆盖全部非剪切/拉伸算子；圆心 + 边界角点映射后重建，
+    // dilate 会正确缩放半径，mirror 自动翻转方向。经过反演中心的圆退化为直线。
+    const c0 = input.getCenter();
     if (op === 'invert') {
-      const c = input.getCenter();
-      const sourceRadius = input.getRadius();
-      const dx = c.x - arg.center.x, dy = c.y - arg.center.y;
-      const centerDistance2 = dx * dx + dy * dy;
-      if (Math.abs(centerDistance2 - sourceRadius * sourceRadius) < 1e-9) {
-        // 经过反演中心的圆映射为直线。
+      const dx = c0.x - arg.center.x, dy = c0.y - arg.center.y;
+      const d2 = dx * dx + dy * dy;
+      if (Math.abs(d2 - input.getRadius() * input.getRadius()) < 1e-9) {
         return new GeoLine(kernel, dx, dy, -(arg.radius * arg.radius) / 2);
       }
-      const denominator = centerDistance2 - sourceRadius * sourceRadius;
-      const k = arg.radius * arg.radius / denominator;
-      const imageCenter = { x: arg.center.x + dx * k, y: arg.center.y + dy * k };
-      const imageRadius = arg.radius * arg.radius * sourceRadius / Math.abs(denominator);
-      return new GeoConic(kernel, circleCoeffs(imageCenter.x, imageCenter.y, imageRadius));
     }
-    const { x, y } = op === 'mirror' ? mirrorPt({ x: input.getCenter().x, y: input.getCenter().y }, arg.A, arg.B, arg.C)
-      : op === 'rotate' ? rotatePt(input.getCenter(), arg.center, arg.angle)
-        : scalePt(input.getCenter(), arg.center, arg.ratio);
-    const r = input.getRadius();
-    return new GeoConic(kernel, circleCoeffs(x, y, r));
+    const g = mapArcGeometry(
+      input.getCenter(), input.getRadius(),
+      input.getStartAngle(), input.getEndAngle(),
+      input.isCounterClockwise(), op, arg,
+    );
+    return new GeoConic(kernel, circleCoeffs(g.center.x, g.center.y, g.radius));
   }
   if (input instanceof GeoArc) {
     const limited = transformLimitedCircle(input, op, arg);
     if (limited) return limited;
-    if (op === 'translate') {
-      const c = input.getCenter();
-      return new GeoArc(kernel, { x: c.x + arg.vector.x, y: c.y + arg.vector.y }, input.getRadius(), input.getStartAngle(), input.getEndAngle(), input.isCounterClockwise());
-    }
-    const c = op === 'mirror' ? mirrorPt({ x: input.getCenter().x, y: input.getCenter().y }, arg.A, arg.B, arg.C)
-      : op === 'rotate' ? rotatePt(input.getCenter(), arg.center, arg.angle)
-        : scalePt(input.getCenter(), arg.center, arg.ratio);
-    return new GeoArc(kernel, { x: c.x, y: c.y }, input.getRadius(), input.getStartAngle(), input.getEndAngle(), input.isCounterClockwise());
+    // mapPoint 对 rotate/dilate/mirror/translate/invert 均有逐点定义，
+    // 圆心 + 两个边界角点映射后即可重建圆弧（mirror 自动翻转方向）。
+    const g = mapArcGeometry(input.getCenter(), input.getRadius(), input.getStartAngle(), input.getEndAngle(), input.isCounterClockwise(), op, arg);
+    return new GeoArc(kernel, g.center, g.radius, g.startAngle, g.endAngle, g.ccw);
   }
   if (input instanceof GeoRay) {
     const sp = { x: input.getStartPoint().getX(), y: input.getStartPoint().getY() };
@@ -300,8 +471,30 @@ export function buildTransformed(kernel: IKernel, input: GeoElement, op: TransOp
     const mapped = locus.getSamples().map(({ x, y }) => mapPoint({ x, y }, op, arg));
     return new GeoLocus(locus.kernel, mapped, locus.getSegments().slice());
   }
-  if (input instanceof GeoConic && (op === 'shear' || op === 'stretch')) {
-    return new GeoConic(input.kernel, transformConicCoeffs(input.coeffs, arg.matrix));
+  // 普通圆锥曲线（圆/椭圆/双曲线/抛物线）：旋转/缩放/镜像/平移/剪切/拉伸
+  // 都是仿射变换，统一用系数代入法；经过反演中心的圆退化为直线。
+  if (input instanceof GeoConic) {
+    if (op === 'invert') {
+      const c = input.getCenter();
+      const r = input.getApproxRadius();
+      const dx = c.x - arg.center.x, dy = c.y - arg.center.y;
+      const d2 = dx * dx + dy * dy;
+      if (r > 0 && Math.abs(d2 - r * r) < 1e-9) {
+        return new GeoLine(kernel, dx, dy, -(arg.radius * arg.radius) / 2);
+      }
+      if (r > 0 && input.isCircle()) {
+        const k = arg.radius * arg.radius / (d2 - r * r);
+        const imageCenter = { x: arg.center.x + dx * k, y: arg.center.y + dy * k };
+        const imageRadius = arg.radius * arg.radius * r / Math.abs(d2 - r * r);
+        return new GeoConic(kernel, circleCoeffs(imageCenter.x, imageCenter.y, imageRadius));
+      }
+      // 非圆圆锥曲线的反演像是四次曲线，超出现有 Geo 类型表示能力。
+      // 此前直接 return input（输出别名原对象）是语义错误，改为显式报错。
+      throw new Error(`Inversion is only supported for circles and points, not ${input.getClassName()}`);
+    }
+    const m = affineFor(op, arg);
+    if (m) return new GeoConic(input.kernel, transformConicCoeffs(input.coeffs, m));
+    return input;
   }
   if (op === 'shear' || op === 'stretch') {
     throw new Error(`Shear/stretch is not supported for ${input.getClassName?.() ?? input.constructor.name}`);

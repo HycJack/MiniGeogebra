@@ -45,6 +45,14 @@ export class GeoArc extends GeoConic {
   getEndAngle(): number { return this._endAngle; }
   isCounterClockwise(): boolean { return this._ccw; }
 
+  /** 原地更新圆弧几何（供依赖重算使用），保持对象身份以便下游引用不失效。 */
+  setGeometry(center: { x: number; y: number }, radius: number, startAngle: number, endAngle: number, counterClockwise: boolean): void {
+    this.coeffs = circleCoeffs(center.x, center.y, radius);
+    this._startAngle = startAngle;
+    this._endAngle = endAngle;
+    this._ccw = counterClockwise;
+  }
+
   getCenter(): { x: number; y: number } { return super.getCenter(); }
   getRadius(): number { return super.getRadius(); }
 

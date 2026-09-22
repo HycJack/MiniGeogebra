@@ -2,6 +2,7 @@ import { IKernel, Path, PathMover } from '../core/Interfaces';
 import { GeoElement } from './GeoElement';
 import { GeoVec3D } from '../core/GeoVec3D';
 import { GeoPoint } from './GeoPoint';
+import { analyzeConic, isConicDegenerate } from './conicSolve';
 
 export type ConicType = 'circle' | 'ellipse' | 'hyperbola' | 'parabola' | 'degenerate';
 
@@ -81,6 +82,12 @@ export class GeoConic extends GeoElement implements Path {
       const yv = (D * D - 4 * A * F) / (4 * A * E);
       return { x: xv, y: yv };
     }
+    // 旋转抛物线（B≠0）：走 analyzeConic 的完整旋转分析，
+    // 不再回退 (0,0)——pointAtAngle / PointOnConic / 采样共用本方法。
+    const canonical = analyzeConic(this.coeffs);
+    if (canonical && canonical.type === 'parabola' && canonical.vertex) {
+      return canonical.vertex;
+    }
     return { x: 0, y: 0 };
   }
 
@@ -133,7 +140,11 @@ export class GeoConic extends GeoElement implements Path {
   }
 
   getConicType(): ConicType {
-    const [A, B, C] = this.coeffs;
+    const [A, B, C, D, E, F] = this.coeffs;
+    // 退化（空集/单点/一对直线）优先判定：det3=0。此前退化曲线会被
+    // 误按椭圆/双曲线/抛物线处理（切线/取点/采样全部走错分支）。
+    const mag = Math.max(Math.abs(A), Math.abs(B), Math.abs(C), Math.abs(D), Math.abs(E), Math.abs(F), 1);
+    if (isConicDegenerate(this.coeffs, mag)) return 'degenerate';
     if (this.isCircle()) return 'circle';
     const disc = B * B - 4 * A * C;
     if (Math.abs(disc) < 1e-9) return 'parabola';
@@ -142,11 +153,29 @@ export class GeoConic extends GeoElement implements Path {
   }
 
   /**
+   * 圆/椭圆区域（内部判定）。
+   * 判据与系数整体符号无关：内部点与中心点的 F 值同号（此前硬编码
+   * "中心值 < 0"，同一曲线系数乘 −1 会把内外翻转）。
+   */
+  isInRegionXY(x0: number, y0: number): boolean {
+    const type = this.getConicType();
+    // 抛物线/双曲线/退化曲线没有有界内部，不做区域
+    if (type !== 'circle' && type !== 'ellipse') return false;
+    const [A, B, C, D, E, F] = this.coeffs;
+    const center = this.getCenter();
+    const valAt = (x: number, y: number) =>
+      A * x * x + B * x * y + C * y * y + D * x + E * y + F;
+    const centerVal = valAt(center.x, center.y);
+    if (Math.abs(centerVal) < 1e-12) return false;
+    return valAt(x0, y0) * centerVal >= 0;
+  }
+
+  /**
    * 射线求交：自锚点 (h, k) 出发、方向角为 theta 的射线与圆锥曲线的交点参数 t（> 0）。
    * 椭圆/圆至多一个正根；双曲线可能返回两支的解；无交点返回空数组。
    * 由 `pointAtAngle` 与采样共用，避免两处重复的二次方程推导。
    */
-  private rayIntersections(theta: number, h: number, k: number): number[] {
+  rayIntersections(theta: number, h: number, k: number): number[] {
     const [A, B, C, D, E, F] = this.coeffs;
     const dx = Math.cos(theta);
     const dy = Math.sin(theta);
@@ -195,6 +224,7 @@ export class GeoConic extends GeoElement implements Path {
    */
   samplePoints(nSamples = 360): { x: number; y: number }[] {
     const type = this.getConicType();
+    if (type === 'degenerate') return []; // 点/两直线/空集：不按曲线采样（两直线未来应走 GeoLine 表示）
     if (type === 'parabola') return this.sampleParabola(nSamples);
     return this.sampleCentered(nSamples);
   }

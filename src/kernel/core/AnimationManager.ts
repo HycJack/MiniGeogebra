@@ -61,8 +61,8 @@ export class AnimationManager {
         geos.forEach(geo => {
             const startValue = this.animationStartValues.get(geo);
             if (startValue !== undefined && typeof (geo as any).setValue === 'function') {
+                // setValue 内部会 notifyUpdate，微任务 flush 统一重算依赖链，无需再手动 recompute。
                 (geo as any).setValue(startValue);
-                this.kernel.recomputeDependents(geo);
             }
             geo.setAnimating(false);
         });
@@ -75,15 +75,17 @@ export class AnimationManager {
 
     private loop = () => {
         const now = performance.now();
-        const dt = now - this.lastTime;
+        let dt = now - this.lastTime;
         this.lastTime = now;
 
-        let currentFrameRate = 1000 / (dt || 16);
-        currentFrameRate = Math.max(AnimationManager.MIN_ANIMATION_FRAME_RATE, Math.min(AnimationManager.MAX_ANIMATION_FRAME_RATE, currentFrameRate));
+        // 用真实帧率标定步长：把测得帧率钳到 30 会让 60/120Hz 屏幕上动画成倍偏快
+        // （每帧步长 1/30 秒但每秒来 60/120 帧）。只保留下限，防止切后台后
+        // dt 巨大导致单帧跳变过大。
+        const currentFrameRate = Math.max(AnimationManager.MIN_ANIMATION_FRAME_RATE, 1000 / (dt || 16));
 
         let changed = false;
         const changedElements: GeoElement[] = [];
-        
+
         for (const geo of this.animatedGeos) {
             if ((geo as any).doAnimationStep) {
                 if ((geo as any as Animatable).doAnimationStep(currentFrameRate)) {
@@ -94,14 +96,12 @@ export class AnimationManager {
         }
 
         if (changed) {
-            // 使用增量算法更新：只更新依赖于变化元素的算法
+            // 增量重算依赖链；视图刷新只通知一次，不把滑块塞回 pendingUpdates
+            // （否则微任务 flush 会把同一条依赖链再算一遍）。
             for (const element of changedElements) {
                 this.kernel.getConstruction().updateDependentAlgorithms(element);
             }
-            
-            if (this.animatedGeos.length > 0) {
-                this.kernel.notifyUpdate(this.animatedGeos[0]);
-            }
+            this.kernel.notifyViewChanged();
         }
 
         // Play-once 动画可能移除最后一个对象；此时不要继续空转。

@@ -151,27 +151,31 @@ describe('integrate', () => {
     expect(integrate(x => x * x, 3, 3).value).toBe(0);
   });
 
-  it('skips a non-integrable endpoint by shrinking the interval', () => {
-    // 1/x 在 0 无定义：收缩到第一个有限探测点（0 到 2 的 512 等分网格上为 2/512），
-    // 积分 = ln(2 / (2/512)) = ln 512，远大于从 1 到 2 的 ln 2
+  it('reports a non-integrable endpoint as divergent (GeoGebra-aligned)', () => {
+    // 1/x 在 0 处发散（p=1）：对标 GeoGebra 应返回未定义，
+    // 而不是把区间收缩到探测点后给出伪收敛值（旧行为 ln 512）
     const result = integrate(x => 1 / x, 0, 2);
-    expect(Number.isFinite(result.value)).toBe(true);
-    expect(result.value).toBeGreaterThan(Math.LN2);
-    near(result.value, Math.log(512), 3);
+    expect(Number.isFinite(result.value)).toBe(false);
+    expect(result.converged).toBe(false);
   });
 
-  it('integrates the principal value around an interior singularity', () => {
-    // 1/(x-1) 在 x=1 无定义；奇点把区间切成两段，两侧贡献相互抵消
+  it('reports an interior 1/x singularity as divergent', () => {
+    // 1/(x-1) 在 x=1 两侧都发散（p=1）；柯西主值不是数值积分的语义
     const result = integrate(x => 1 / (x - 1), 0, 2);
-    expect(Number.isFinite(result.value)).toBe(true);
-    near(result.value, 0, 3);
+    expect(Number.isFinite(result.value)).toBe(false);
   });
 
-  it('sums both sides of an interior singularity', () => {
-    // |1/(x-1)| 两侧都发散为正，收缩后的分段积分应给出有限正值
+  it('reports |1/(x-1)| as divergent', () => {
+    // |1/(x-1)| 两侧发散为正（p=1）→ 未定义
     const result = integrate(x => Math.abs(1 / (x - 1)), 0, 2);
-    expect(Number.isFinite(result.value)).toBe(true);
-    expect(result.value).toBeGreaterThan(2 * Math.log(128));
+    expect(Number.isFinite(result.value)).toBe(false);
+  });
+
+  it('still integrates integrable endpoint singularities', () => {
+    // 1/√x 的 p=0.5、ln|x| 的 p≈0：可积奇点照常积分，不被误判发散
+    //（截断误差 ~2√step ≈ 0.09 / ~step·|ln step| ≈ 0.014，容差取 0.5）
+    near(integrate(x => 1 / Math.sqrt(x), 0, 1).value, 2, 0);
+    near(integrate(x => Math.log(x), 0, 1).value, -1, 0);
   });
 
   it('rejects non-finite bounds', () => {

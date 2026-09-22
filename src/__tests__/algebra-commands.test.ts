@@ -218,11 +218,11 @@ describe('function analysis commands', () => {
     const kernel = makeKernel();
     addInput(kernel, 'f(x) = x^2 - 4');
 
+    // Root(f) 现在返回 GeoList 容器 + 兄弟派生点（随 f 联动）
     const elements = addInput(kernel, 'Root(f)');
-    const point = elements[0] as GeoPoint;
-    // [-20, 20] 内第一个根是 -2
-    expect(point.getX()).toBeCloseTo(-2, 6);
-    expect(point.getY()).toBe(0);
+    const points = elements.filter((el): el is GeoPoint => el instanceof GeoPoint && el.isDefined());
+    const xs = points.map(p => p.getX()).sort((a, b) => a - b);
+    expect(xs).toEqual([-2, 2]);
   });
 
   it('Root(f, a, b) restricts the search to the given interval', () => {
@@ -230,7 +230,9 @@ describe('function analysis commands', () => {
     addInput(kernel, 'f(x) = x^2 - 4');
     const elements = addInput(kernel, 'Root(f, 0, 5)');
 
-    const point = elements[0] as GeoPoint;
+    // 输出是派生点（[algo, point]），随 f 联动
+    const point = elements.find(el => el instanceof GeoPoint) as GeoPoint;
+    expect(point).toBeDefined();
     expect(point.getX()).toBeCloseTo(2, 6);
   });
 
@@ -239,7 +241,8 @@ describe('function analysis commands', () => {
     addInput(kernel, 'f(x) = x^2 - 4');
     const elements = addInput(kernel, 'Root(f, 1)');
 
-    const point = elements[0] as GeoPoint;
+    const point = elements.find(el => el instanceof GeoPoint) as GeoPoint;
+    expect(point).toBeDefined();
     expect(point.getX()).toBeCloseTo(2, 6);
   });
 
@@ -254,7 +257,9 @@ describe('function analysis commands', () => {
     addInput(kernel, 'a = 4');
     addInput(kernel, 'f(x) = x^2 - a');
     const elements = addInput(kernel, 'Root(f)');
-    expect((elements[0] as GeoPoint).getX()).toBeCloseTo(-2, 6);
+    const points = elements.filter((el): el is GeoPoint => el instanceof GeoPoint && el.isDefined());
+    const xs = points.map(p => p.getX()).sort((a, b) => a - b);
+    expect(xs).toEqual([-2, 2]);
   });
 
   it('Extremum(f) returns every local extremum with the right kind', () => {
@@ -262,7 +267,7 @@ describe('function analysis commands', () => {
     addInput(kernel, 'f(x) = x^3 - 3x');
     const elements = addInput(kernel, 'Extremum(f)');
 
-    const points = elements.filter(el => el instanceof GeoPoint);
+    const points = elements.filter((el): el is GeoPoint => el instanceof GeoPoint && el.isDefined());
     expect(points).toHaveLength(2);
 
     const left = points.find(p => p.getX() < 0)!;
@@ -301,12 +306,10 @@ describe('function analysis commands', () => {
     addInput(kernel, 'f(x) = 3x^2');
     expect((addInput(kernel, 'Integral(f, 1, 0)')[0] as GeoNumeric).getValue()).toBeCloseTo(-1, 6);
 
-    // 1/x 在 0 处无定义：收缩后仍应给出有限值
+    // 1/x 在 0 处发散（p=1）：对标 GeoGebra 报未定义 —— 命令层以错误形式给出
     const kernel2 = makeKernel();
     addInput(kernel2, 'h(x) = 1/x');
-    const result = (addInput(kernel2, 'Integral(h, 0, 2)')[0] as GeoNumeric).getValue();
-    expect(Number.isFinite(result)).toBe(true);
-    expect(result).toBeGreaterThan(Math.LN2);
+    expect(() => addInput(kernel2, 'Integral(h, 0, 2)')).toThrow(/not finite|did not converge/);
   });
 
   it('rejects unknown functions in every analysis command', () => {

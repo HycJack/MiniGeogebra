@@ -10,6 +10,7 @@ export enum AnimationType {
     INCREASING = 1,
     DECREASING = 2,
     INCREASING_ONCE = 3,
+    RANDOM = 4,
 }
 
 export class GeoNumeric extends GeoElement implements Animatable {
@@ -73,6 +74,10 @@ export class GeoNumeric extends GeoElement implements Animatable {
                     this.animationValue = this.intervalMax;
                     this.setAnimating(false);
                 }
+                break;
+            case AnimationType.RANDOM:
+                // 对标 GeoGebra 的随机动画：每步在区间内随机跳一个值（增量量化仍生效）
+                this.animationValue = this.intervalMin + Math.random() * intervalWidth;
                 break;
             case AnimationType.INCREASING:
             default:

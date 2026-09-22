@@ -74,9 +74,10 @@ export function findRoots(
     }
 
     if (y === 0) {
-      roots.push(x);
+      // 只在零游程的起点记录一次（f ≡ 0 时相邻样本全为零，不能重复记根）
+      if (prevY !== 0) roots.push(x);
     } else if (prevY === 0) {
-      // 已在上一轮记录过
+      // 零游程结束
     } else if (prevY * y < 0) {
       const root = bisect(f, prevX, x);
       if (root !== null) roots.push(root);
@@ -86,11 +87,19 @@ export function findRoots(
     prevY = y;
   }
 
-  if (Number.isFinite(f(maxX)) && f(maxX) === 0 && roots[roots.length - 1] !== maxX) {
+  // 终点恰为零，且不属于已在起点记录过的零游程
+  if (Number.isFinite(f(maxX)) && f(maxX) === 0 && prevY !== 0) {
     roots.push(maxX);
   }
 
-  return roots.sort((a, b) => a - b);
+  // 兜底去重（浮点采样可能产生极近的重复根）
+  return dedupeSorted(roots.sort((a, b) => a - b), (maxX - minX) / Math.max(1, samples - 1));
+}
+
+/** 移除排序数组中彼此距离小于 `minGap` 的重复项。 */
+function dedupeSorted(sorted: number[], minGap: number): number[] {
+  return sorted.filter((v, i, all) =>
+    i === 0 || Math.abs(v - all[i - 1]) > Math.max(minGap, 1e-12 * Math.max(1, Math.abs(v))));
 }
 
 /** 二分法求根；f(lo)、f(hi) 必须异号（或其中一个为 0）。无解返回 null。 */
@@ -124,8 +133,12 @@ export function bisect(f: (x: number) => number, lo: number, hi: number): number
 /**
  * 在 `[minX, maxX]` 上求 `f` 的局部极值。
  *
- * 用导函数的符号变化定位候选点，再二分精化，最后按两侧函数值判定极值类型。
- * `fPrime` 与 `f` 无定义的位置会被跳过。
+ * 双通道定位（对标 GeoGebra：多项式走导数根 + 符号过滤，一般函数走
+ * AlgoExtremumMulti 的函数值采样）：
+ *   1. **导数通道** —— f′ 符号变化定位候选，二分精化，按两侧函数值判定类型；
+ *   2. **函数值通道** —— 网格扫描局部极大/极小，黄金分割精化。导数在尖点
+ *      （如 |x| 的顶点）为 NaN 时通道 1 全盲，通道 2 仍然命中。
+ * 两通道结果合并去重。
  */
 export function findExtrema(
   f: (x: number) => number,
@@ -165,10 +178,86 @@ export function findExtrema(
     prevD = d;
   }
 
+  hits.push(...findExtremaByValue(f, fPrime, minX, maxX, samples));
   hits.sort((a, b) => a.x - b.x);
-  // 去重：同一极值可能被相邻采样区间重复发现
+  // 去重：同一极值可能被两个通道/相邻采样区间重复发现
   return hits.filter((hit, index, all) =>
     index === 0 || Math.abs(hit.x - all[index - 1].x) > (maxX - minX) / samples);
+}
+
+/**
+ * 函数值扫描通道：网格上找"不低于两侧邻居"的局部极大/极小，
+ * 再在邻居区间内做黄金分割精化。对标 AlgoExtremumMulti.findExtremums
+ * 的函数值梯度扫描——对尖点与导数 NaN 处鲁棒。
+ */
+function findExtremaByValue(
+  f: (x: number) => number,
+  fPrime: (x: number) => number,
+  minX: number,
+  maxX: number,
+  samples: number,
+): ExtremumHit[] {
+  const hits: ExtremumHit[] = [];
+  const step = (maxX - minX) / (samples - 1);
+
+  const ys: number[] = new Array(samples);
+  for (let i = 0; i < samples; i++) ys[i] = f(minX + step * i);
+
+  for (let i = 1; i < samples - 1; i++) {
+    const y0 = ys[i - 1], y1 = ys[i], y2 = ys[i + 1];
+    if (![y0, y1, y2].every(Number.isFinite)) continue;
+    const wantMax = y1 >= y0 && y1 > y2;
+    const wantMin = y1 <= y0 && y1 < y2;
+    if (!wantMax && !wantMin) continue;
+
+    const xa = minX + step * (i - 1);
+    const xb = minX + step * (i + 1);
+    const x = refineUnimodal(f, xa, xb, wantMax);
+    const y = f(x);
+    if (!Number.isFinite(y)) continue;
+    // 导数符号校验（对标 AlgoExtremumMulti 的 gradientChangesSign）：
+    // 极大要求导数 + → −，极小要求 − → +。两侧导数同号说明是奇点旁的
+    // 伪极值（如 1/x 在 0 左侧网格上的"局部最小"），拒绝。
+    // 导数不可得（NaN，尖点）时不拒绝——这正是本通道存在的意义。
+    const h = 1e-6 * Math.max(1, Math.abs(x));
+    const dL = fPrime(x - h);
+    const dR = fPrime(x + h);
+    if (Number.isFinite(dL) && Number.isFinite(dR)) {
+      if (wantMax && !(dL > 0 && dR < 0)) continue;
+      if (!wantMax && !(dL < 0 && dR > 0)) continue;
+    }
+    const hit = classifyExtremum(f, x);
+    // 通道 1 已按导数符号正确分类光滑极值；这里只补它漏掉的（尖点/NaN 导数）。
+    // 与导数通道重复的候选经外层按 x 去重合并，kind 以先到者为准。
+    if (hit) hits.push({ x, y, kind: hit });
+  }
+  return hits;
+}
+
+/** 黄金分割搜索 [a, b] 内的局部极大（wantMax=false 时求极小）。要求区间内单峰。 */
+function refineUnimodal(
+  f: (x: number) => number,
+  a: number,
+  b: number,
+  wantMax: boolean,
+): number {
+  const gr = (Math.sqrt(5) - 1) / 2;
+  let lo = a, hi = b;
+  let c = hi - gr * (hi - lo);
+  let d = lo + gr * (hi - lo);
+  let fc = f(c), fd = f(d);
+  for (let i = 0; i < 60; i++) {
+    if (hi - lo < 1e-12 * Math.max(1, Math.abs(lo), Math.abs(hi))) break;
+    const better = wantMax ? fc > fd : fc < fd;
+    if (better) {
+      hi = d; d = c; fd = fc;
+      c = hi - gr * (hi - lo); fc = f(c);
+    } else {
+      lo = c; c = d; fc = fd;
+      d = lo + gr * (hi - lo); fd = f(d);
+    }
+  }
+  return (lo + hi) / 2;
 }
 
 /** 用一侧邻域比较判定极值类型；尖点（左右导数符号相反但函数不可导）单独标记。 */
@@ -216,17 +305,70 @@ export function integrate(
   const hi = Math.max(a, b);
   const sign = a < b ? 1 : -1;
 
+  // 容差随区间长度缩放：绝对容差在大区间（如 [0, 1e6]）上永远达不到，
+  // 每个子区间都会递归到最大深度白算。
+  const scaledTolerance = tolerance * Math.max(1, hi - lo);
+
   // 先扫描出函数值连续有限的所有子区间，奇点（含端点奇点）自然成为分段边界。
   // 这比“只在递归中点碰到 NaN 才切”可靠：奇点不必恰好落在某个中点上。
+  const probeStep = (hi - lo) / 512;
   const segments = finiteSegments(f, lo, hi);
   if (segments.length === 0) return { value: NaN, subdivisions: 0, converged: false };
 
+  // 发散检测（对标 GeoGebra：奇点使求积失败 → 未定义，而不是静默给出
+  // "截断到有限采样点"的伪收敛值）。分段边界外侧相邻的探测点就是奇点
+  // （距段边缘恰好一个探测步长），从它起算幂律阶梯估计奇点指数 p：
+  // |f| ~ d^-p 且 p ≥ 1 视为发散。
+  for (const segment of segments) {
+    if (segment.a > lo && divergentAtEdge(f, segment.a, -1, probeStep)) {
+      return { value: NaN, subdivisions: state.subdivisions, converged: false };
+    }
+    if (segment.b < hi && divergentAtEdge(f, segment.b, 1, probeStep)) {
+      return { value: NaN, subdivisions: state.subdivisions, converged: false };
+    }
+  }
+
   let value = 0;
   for (const segment of segments) {
-    value += adaptiveSimpson(f, segment.a, segment.b, tolerance, 0, state);
+    value += adaptiveSimpson(f, segment.a, segment.b, scaledTolerance, 0, state);
   }
 
   return { value: sign * value, subdivisions: state.subdivisions, converged: state.converged };
+}
+
+/**
+ * 判断段边缘外侧相邻的奇点是否使积分发散。
+ *
+ * 奇点位于段边缘外一个探测步长处（finiteSegments 的相邻探测点就是非有限点）。
+ * 从奇点向段内取距离阶梯 u_k = step·2^-k（采样点 x_k = edge + dir·step·(1−2^-k)），
+ * |f| ~ C·u^-p 时相邻两级之比为 2^p：p 的均值 ≥ 0.95 判发散。
+ *
+ * 可积奇点不会误报：1/√x 的 p=0.5、ln|x| 的 p≈0、有界跳跃/孤立无定义点的 p=0。
+ */
+function divergentAtEdge(
+  f: (x: number) => number,
+  edge: number,
+  dir: number,
+  step: number,
+): boolean {
+  if (!(step > 0)) return false;
+  const vals: number[] = [];
+  for (let k = 1; k <= 8; k++) {
+    const x = edge + dir * step * (1 - Math.pow(2, -k));
+    const y = f(x);
+    if (!Number.isFinite(y)) return false; // 采样落在段外非有限处，交给分段逻辑
+    vals.push(Math.abs(y));
+  }
+  const ps: number[] = [];
+  for (let k = 0; k + 1 < vals.length; k++) {
+    if (!(vals[k] > 0) || !(vals[k + 1] > 0)) continue;
+    // 距奇点的距离每次减半，|f| 应增到 2^p 倍
+    const p = Math.log2(vals[k + 1] / vals[k]);
+    if (Number.isFinite(p)) ps.push(p);
+  }
+  if (ps.length < 3) return false;
+  const mean = ps.reduce((sum, v) => sum + v, 0) / ps.length;
+  return mean >= 0.95;
 }
 
 /** 扫描 `[lo, hi]`，返回函数值连续有限的所有子区间（边界收缩到探测网格上）。 */

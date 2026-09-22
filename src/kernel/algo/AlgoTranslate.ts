@@ -1,8 +1,8 @@
-import { IKernel, Transformable } from '../core/Interfaces';
+import { IKernel } from '../core/Interfaces';
 import { AlgoElement } from './AlgoElement';
 import { GeoElement } from '../geo/GeoElement';
 import { GeoVector } from '../geo/GeoVector';
-import { buildTransformed } from './AlgoRotate';
+import { applyTransformed, buildTransformed } from './AlgoRotate';
 
 export class AlgoTranslate extends AlgoElement {
   private outputGeo: GeoElement;
@@ -25,6 +25,8 @@ export class AlgoTranslate extends AlgoElement {
   }
 
   compute(): void {
+    // 源对象或平移向量移动后原地重算，保持输出对象身份。
+    applyTransformed(this.outputGeo, this.inputGeo, 'translate', { vector: this.vector.getCoords() });
     this.outputGeo.setDefined();
   }
 }

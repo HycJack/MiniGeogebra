@@ -53,9 +53,10 @@ export class Construction {
   /** P1-1: 清理被删除元素在正向依赖图中的所有记录 */
   unregisterForwardDeps(element: ConstructionElement): void {
     this.forwardDeps.delete(element);
-    for (const [, set] of this.forwardDeps.entries()) {
+    for (const [input, set] of this.forwardDeps) {
       set.delete(element as AlgoElement);
-      if (set.size === 0) this.forwardDeps.delete(element);
+      // 之前误删 element 自身的 key（恒为 no-op），导致空 Set 在 Map 里累积泄漏。
+      if (set.size === 0) this.forwardDeps.delete(input);
     }
   }
 

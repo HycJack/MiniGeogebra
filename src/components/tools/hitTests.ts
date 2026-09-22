@@ -23,6 +23,7 @@ import { GeoPolyLine } from '../../kernel/geo/GeoPolyLine';
 import { GeoRay } from '../../kernel/geo/GeoRay';
 import { GeoElement } from '../../kernel/geo/GeoElement';
 import { GeoFunction } from '../../kernel/geo/GeoFunction';
+import { GeoCurve } from '../../kernel/geo/GeoCurve';
 import { WorldPoint } from './types';
 
 /** 点命中：返回最顶层（逆序第一个命中）的点。 */
@@ -48,6 +49,31 @@ export function isPointOnFunction(
   const maxX = bounds?.maxX ?? Math.max(100, x + 100);
   const pixelWidth = bounds?.pixelWidth ?? 1600;
   const samples = fn.updateSamples(minX, maxX, pixelWidth);
+  for (let i = 0; i < samples.length - 1; i++) {
+    const ax = samples[i].x;
+    const ay = samples[i].y;
+    const bx = samples[i + 1].x;
+    const by = samples[i + 1].y;
+    if (!Number.isFinite(ay) || !Number.isFinite(by)) continue;
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    if (len2 === 0) continue;
+    let t = ((x - ax) * dx + (y - ay) * dy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    if (Math.hypot(x - (ax + t * dx), y - (ay + t * dy)) <= eps) return true;
+  }
+  return false;
+}
+
+/** 参数曲线命中：采样段到点的最近距离 ≤ eps。 */
+export function isPointOnCurve(
+  curve: GeoCurve,
+  x: number,
+  y: number,
+  eps: number,
+): boolean {
+  const samples = curve.updateSamples(1600);
   for (let i = 0; i < samples.length - 1; i++) {
     const ax = samples[i].x;
     const ay = samples[i].y;
@@ -139,6 +165,8 @@ export function hitScreenObject(els: readonly ConstructionElement[], x: number, 
       if (d < 5 / scale) return el;
     } else if (el instanceof GeoFunction) {
       if (isPointOnFunction(el, x, y, 5 / scale)) return el;
+    } else if (el instanceof GeoCurve) {
+      if (isPointOnCurve(el, x, y, 5 / scale)) return el;
     } else if (el instanceof GeoPolygon) {
       if ((el as any).isInRegionXY(x, y)) return el;
     }

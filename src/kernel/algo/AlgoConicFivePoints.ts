@@ -23,43 +23,64 @@ export class AlgoConicFivePoints extends AlgoElement {
       this.outputConic.setUndefined();
       return;
     }
+    // 五点定圆锥：解 [x², xy, y², x, y, 1]·[A,B,C,D,E,F]ᵀ = 0 的零空间。
+    // 不能固定 F=1 —— 过原点的圆锥曲线 F=0，固定归一化会把存在的曲线误判为无解。
     const mat: number[][] = [];
-    const rhs: number[] = [];
     for (let i = 0; i < 5; i++) {
       const x = this.pts[i].getX(), y = this.pts[i].getY();
-      mat.push([x * x, x * y, y * y, x, y]);
-      rhs.push(-1);
+      mat.push([x * x, x * y, y * y, x, y, 1]);
     }
-    const sol = solve5x5(mat, rhs);
+    const sol = nullspaceOfRank5(mat);
     if (!sol) { this.outputConic.setUndefined(); return; }
-    const [A, B, C, D, E] = sol;
-    (this.outputConic as any).coeffs = [A, B, C, D, E, 1];
+    this.outputConic.coeffs = sol;
     this.outputConic.setDefined();
   }
 
   getOutput(): GeoConic { return this.outputConic; }
 }
 
-function solve5x5(mat: number[][], rhs: number[]): number[] | null {
-  const n = 5;
-  const aug: number[][] = mat.map((row, i) => [...row, rhs[i]]);
-  for (let col = 0; col < n; col++) {
-    let maxRow = col;
-    for (let row = col + 1; row < n; row++) {
-      if (Math.abs(aug[row][col]) > Math.abs(aug[maxRow][col])) maxRow = row;
+/**
+ * 对 5×6 矩阵做高斯消元求一维零空间。
+ * 秩恰为 5 时返回零空间向量（已做尺度归一化）；秩 < 5（退化构造，如多点共线）
+ * 或消元失败时返回 null。
+ */
+function nullspaceOfRank5(mat: number[][]): number[] | null {
+  const rows = 5, cols = 6;
+  const aug = mat.map(row => [...row]);
+  const pivotCols: number[] = [];
+  let row = 0;
+  for (let col = 0; col < cols && row < rows; col++) {
+    let maxRow = row;
+    for (let r = row + 1; r < rows; r++) {
+      if (Math.abs(aug[r][col]) > Math.abs(aug[maxRow][col])) maxRow = r;
     }
-    [aug[col], aug[maxRow]] = [aug[maxRow], aug[col]];
-    if (Math.abs(aug[col][col]) < 1e-12) return null;
-    for (let row = col + 1; row < n; row++) {
-      const factor = aug[row][col] / aug[col][col];
-      for (let j = col; j <= n; j++) aug[row][j] -= factor * aug[col][j];
+    if (Math.abs(aug[maxRow][col]) < 1e-10) continue;
+    [aug[row], aug[maxRow]] = [aug[maxRow], aug[row]];
+    const pivot = aug[row][col];
+    for (let j = 0; j < cols; j++) aug[row][j] /= pivot;
+    for (let r = 0; r < rows; r++) {
+      if (r === row) continue;
+      const factor = aug[r][col];
+      if (Math.abs(factor) < 1e-15) continue;
+      for (let j = 0; j < cols; j++) aug[r][j] -= factor * aug[row][j];
     }
+    pivotCols.push(col);
+    row++;
   }
-  const x = new Array(n).fill(0);
-  for (let i = n - 1; i >= 0; i--) {
-    x[i] = aug[i][n];
-    for (let j = i + 1; j < n; j++) x[i] -= aug[i][j] * x[j];
-    x[i] /= aug[i][i];
+  if (pivotCols.length !== rows) return null; // 秩不足：退化构造
+  const freeCols = [];
+  for (let col = 0; col < cols; col++) {
+    if (!pivotCols.includes(col)) freeCols.push(col);
   }
-  return x;
+  if (freeCols.length !== 1) return null;
+  const free = freeCols[0];
+  const v = new Array(cols).fill(0);
+  v[free] = 1;
+  pivotCols.forEach((pc, i) => {
+    v[pc] = -aug[i][free];
+  });
+  // 归一化到 |v|=1，避免系数整体尺度随输入漂移。
+  const norm = Math.hypot(...v);
+  if (!Number.isFinite(norm) || norm < 1e-12) return null;
+  return v.map(c => c / norm);
 }

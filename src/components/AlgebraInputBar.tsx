@@ -2,22 +2,24 @@ import React, { useState } from 'react';
 import { CornerDownLeft } from 'lucide-react';
 import { Kernel } from '../kernel/core/Kernel';
 import { ConstructionElement } from '../kernel/core/ConstructionElement';
-import { parseAlgebraInput } from '../kernel/algebra/EquationRecognizer';
+import { parseAlgebraInput, type AlgebraViewBounds } from '../kernel/algebra/EquationRecognizer';
 import type { TFunction } from '../i18n/LanguageContext';
 
 interface AlgebraInputBarProps {
   kernel: Kernel;
   onElementsCreated: (elements: ConstructionElement[]) => void;
+  /** 当前可视区（世界坐标）：Root/Extremum 等命令的"视区内搜索"用。 */
+  viewBounds?: AlgebraViewBounds;
   t: TFunction;
 }
 
-const AlgebraInputBar: React.FC<AlgebraInputBarProps> = ({ kernel, onElementsCreated, t }) => {
+const AlgebraInputBar: React.FC<AlgebraInputBarProps> = ({ kernel, onElementsCreated, viewBounds, t }) => {
   const [value, setValue] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const submit = () => {
     try {
-      const elements = parseAlgebraInput(kernel, value);
+      const elements = parseAlgebraInput(kernel, value, viewBounds);
       onElementsCreated(elements);
       setValue('');
       setError(null);

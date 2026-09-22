@@ -124,7 +124,7 @@ export class WebGL3DRenderer {
     const gl = canvas.getContext('webgl2', {
       alpha: true,
       antialias: true,
-      depth: false,
+      depth: true,
       premultipliedAlpha: false,
       preserveDrawingBuffer: true,
     }) as WebGL2RenderingContext | null;
@@ -137,6 +137,12 @@ export class WebGL3DRenderer {
     gl.disable(gl.CULL_FACE);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    // 深度缓冲：画家排序仍作为兜底绘制顺序，但同一平面上后画的线/点
+    // 通过 LEQUAL 深度测试 + 填充面 polygonOffset 前移，避免被同面填充遮挡。
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+    gl.enable(gl.POLYGON_OFFSET_FILL);
+    gl.polygonOffset(1, 1);
   }
 
   // ---------------------------------------------------------------- 生命周期
@@ -218,9 +224,37 @@ export class WebGL3DRenderer {
     return this.axisExtent('z');
   }
 
-  /** 返回当前相机朝向（用于导航方块）。 */
+  /** 当前相机朝向（用于导航方块）。 */
   getOrientation(): { yaw: number; pitch: number } {
     return { yaw: this.yaw, pitch: this.pitch };
+  }
+
+  /** 由屏幕像素坐标反投影出相机射线（拾取用）。 */
+  screenRay(sx: number, sy: number): { origin: V3; dir: V3 } {
+    const eye = this.getEye();
+    const fwd = norm3(sub3(this.target, eye));
+    const right = norm3(cross3(fwd, { x: 0, y: 0, z: 1 }));
+    const up = cross3(right, fwd);
+    const tanHalf = Math.tan(FOV_Y / 2);
+    const aspect = this.width / Math.max(1, this.height);
+    const nx = (sx / Math.max(1, this.width)) * 2 - 1;
+    const ny = 1 - (sy / Math.max(1, this.height)) * 2;
+
+    if (this.projectionMode === 'orthographic') {
+      const halfH = this.dist * tanHalf;
+      const halfW = halfH * aspect;
+      return {
+        origin: add3(eye, add3(scale3(right, nx * halfW), scale3(up, ny * halfH))),
+        dir: fwd,
+      };
+    }
+    return {
+      origin: eye,
+      dir: norm3(add3(fwd, add3(
+        scale3(right, nx * tanHalf * aspect),
+        scale3(up, ny * tanHalf),
+      ))),
+    };
   }
 
   // ---------------------------------------------------------------- 相机控制
@@ -403,18 +437,22 @@ export class WebGL3DRenderer {
   render(scene: Scene3D): void {
     const gl = this.gl;
     gl.clearColor(1, 1, 1, 1);
-    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
     const gridLines: Line3[] = [];
     const planeFills: Fill3[] = [];
     if (scene.showGrid || scene.showAxes) this.buildGrid(scene, gridLines);
     this.buildPlanes(scene, planeFills, gridLines);
 
-    // 画家算法：平面填充板 → 网格线 → 元素填充 → 元素线 → 点。
-    // 平面填充先画（作为背景），网格线叠加在填充板之上。
+    // 绘制顺序（画家算法兜底）+ 深度测试：
+    // 平面填充板 → 网格线 → 元素填充 → 元素线 → 点。
+    // 填充面开 polygonOffset 微退（写入深度），后画的线/点以 LEQUAL 通过测试。
     this.drawTriangles(this.fillTriangles(planeFills));
+    gl.polygonOffset(0, 0);
     this.drawTriangles(this.gridTriangles(gridLines));
+    gl.polygonOffset(1, 1);
     this.drawTriangles(this.fillTriangles(scene.fills));
+    gl.polygonOffset(0, 0);
     this.drawTriangles(this.lineTriangles(scene.lines));
     this.drawPoints(scene.points, this.mvpMatrix());
   }

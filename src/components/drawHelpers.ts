@@ -14,12 +14,15 @@ import { GeoSegment } from '../kernel/geo/GeoSegment';
 import { GeoPolygon } from '../kernel/geo/GeoPolygon';
 import { GeoConic } from '../kernel/geo/GeoConic';
 import { GeoLocus } from '../kernel/geo/GeoLocus';
+import { GeoText } from '../kernel/geo/GeoText';
 import { GeoArc } from '../kernel/geo/GeoArc';
 import { GeoConicPart } from '../kernel/geo/GeoConicPart';
 import { GeoVector } from '../kernel/geo/GeoVector';
 import { GeoPolyLine } from '../kernel/geo/GeoPolyLine';
 import { GeoRay } from '../kernel/geo/GeoRay';
 import { GeoFunction } from '../kernel/geo/GeoFunction';
+import { GeoCurve } from '../kernel/geo/GeoCurve';
+import { GeoInequality } from '../kernel/geo/GeoInequality';
 import { GeoElement } from '../kernel/geo/GeoElement';
 import { WorldPoint } from './tools/types';
 
@@ -365,6 +368,17 @@ export function drawLocus(renderer: IRenderer, locus: GeoLocus, selected: boolea
 }
 
 /** 显式函数曲线（输入栏 / 代数视图创建）。 */
+export function drawText(
+  renderer: IRenderer, el: GeoText, selected: boolean, scale: number,
+): void {
+  if (!el.isDefined() || el.visible === false) return;
+  renderer.save();
+  renderer.font = `${14 / scale}px sans-serif`;
+  renderer.fillStyle = selected ? '#2563eb' : (el.strokeColor || '#111827');
+  renderer.fillText(el.text, el.x, el.y);
+  renderer.restore();
+}
+
 export function drawFunction(
   renderer: IRenderer, fn: GeoFunction, selected: boolean,
   bounds: DrawBounds, scale: number, pixelWidth: number,
@@ -401,6 +415,49 @@ export function drawFunction(
     renderer.textAlign = 'left';
     renderer.textBaseline = 'bottom';
     renderer.fillText(fn.label || fn.id, bounds.minX + 10 / scale, bounds.minY + 20 / scale);
+  }
+}
+
+/** 参数曲线：自适应采样后描边，无定义处断开。 */
+export function drawCurve(
+  renderer: IRenderer,
+  curve: GeoCurve,
+  selected: boolean,
+  bounds: DrawBounds,
+  scale: number,
+  pixelWidth: number,
+): void {
+  if (!curve.isDefined() || curve.visible === false) return;
+  const viewHeight = Math.abs(bounds.maxY - bounds.minY) || 20;
+  const samples = curve.updateSamples(pixelWidth, viewHeight);
+  if (samples.length < 2) return;
+  const stroke = curve.strokeColor ?? curve.defaultStrokeColor;
+  const baseWidth = curve.strokeWidth ?? curve.defaultLineWidth;
+  renderer.strokeStyle = selected ? '#3b82f6' : stroke;
+  renderer.lineWidth = (selected ? baseWidth * 2 : baseWidth) / scale;
+
+  let drawing = false;
+  renderer.beginPath();
+  for (const sample of samples) {
+    if (!Number.isFinite(sample.x) || !Number.isFinite(sample.y)) {
+      drawing = false;
+      continue;
+    }
+    if (!drawing) {
+      renderer.moveTo(sample.x, sample.y);
+      drawing = true;
+    } else {
+      renderer.lineTo(sample.x, sample.y);
+    }
+  }
+  renderer.stroke();
+
+  if (selected && curve.labelVisible && curve.labelMode === 'always') {
+    renderer.fillStyle = '#1e40af';
+    renderer.font = `bold ${14 / scale}px sans-serif`;
+    renderer.textAlign = 'left';
+    renderer.textBaseline = 'bottom';
+    renderer.fillText(curve.label || curve.id, bounds.minX + 10 / scale, bounds.minY + 20 / scale);
   }
 }
 
@@ -657,4 +714,107 @@ export function drawHoverMarker(
   renderer.lineWidth = 2 / scale;
   renderer.strokeStyle = '#ffffff';
   renderer.stroke();
+}
+
+
+
+/** 二元不等式区域：逐行扫描线填充，边界用二分精化。 */
+export function drawInequality(
+  renderer: IRenderer,
+  ineq: GeoInequality,
+  bounds: DrawBounds,
+  scale: number,
+): void {
+  if (!ineq.isDefined() || ineq.visible === false) return;
+  const width = bounds.maxX - bounds.minX;
+  const height = bounds.maxY - bounds.minY;
+  if (width <= 0 || height <= 0) return;
+
+  const cols = Math.max(24, Math.min(240, Math.ceil(width * scale / 2)));
+  const rows = Math.max(24, Math.min(240, Math.ceil(height * scale / 2)));
+  const dx = width / cols;
+  const dy = height / rows;
+
+  const stroke = ineq.strokeColor ?? ineq.defaultStrokeColor;
+  const fill = ineq.fillColor ?? ineq.defaultFillColor ?? 'rgba(124, 58, 237, 0.18)';
+
+  // 第一遍：收集每一行满足条件的区间（边界处二分精化）
+  const spans: Array<{ y: number; x0: number; x1: number }> = [];
+  const boundaryPts: Array<{ x: number; y: number }> = [];
+
+  for (let r = 0; r < rows; r++) {
+    const y = bounds.minY + (r + 0.5) * dy;
+    const satisfiedAt = (c: number): boolean => ineq.satisfied(bounds.minX + (c + 0.5) * dx, y);
+
+    const intervals: Array<{ a: number; b: number }> = [];
+    let start = -1;
+    for (let c = 0; c < cols; c++) {
+      if (satisfiedAt(c) && start === -1) start = c;
+      else if (!satisfiedAt(c) && start !== -1) {
+        intervals.push({ a: start, b: c - 1 });
+        start = -1;
+      }
+    }
+    if (start !== -1) intervals.push({ a: start, b: cols - 1 });
+
+    for (const { a, b } of intervals) {
+      const xa = bounds.minX + a * dx;
+      const xb = bounds.minX + (b + 1) * dx;
+      const x0 = refineBoundary(ineq, xa, y, dx / 2, 0) ?? xa;
+      const x1 = refineBoundary(ineq, xb, y, dx / 2, 0) ?? xb;
+      spans.push({ y, x0, x1 });
+      if (x0 > bounds.minX + 1e-9) boundaryPts.push({ x: x0, y });
+      if (x1 < bounds.maxX - 1e-9) boundaryPts.push({ x: x1, y });
+    }
+  }
+
+  if (spans.length === 0) return;
+
+  // 填充：所有区间矩形合成一个路径一次填充
+  renderer.fillStyle = fill;
+  renderer.beginPath();
+  for (const span of spans) {
+    renderer.moveTo(span.x0, span.y - dy / 2);
+    renderer.lineTo(span.x1, span.y - dy / 2);
+    renderer.lineTo(span.x1, span.y + dy / 2);
+    renderer.lineTo(span.x0, span.y + dy / 2);
+    renderer.closePath();
+  }
+  renderer.fill();
+
+  // 边界轮廓：严格不等式虚线，非严格实线
+  if (boundaryPts.length > 0) {
+    renderer.strokeStyle = stroke;
+    renderer.lineWidth = (ineq.strokeWidth ?? ineq.defaultLineWidth) / scale;
+    if (!ineq.includesBoundary()) renderer.setLineDash([4 / scale, 4 / scale]);
+    renderer.beginPath();
+    for (const pt of boundaryPts) {
+      renderer.moveTo(pt.x, pt.y - dy / 2);
+      renderer.lineTo(pt.x, pt.y + dy / 2);
+    }
+    renderer.stroke();
+    renderer.setLineDash([]);
+  }
+}
+
+/** 从粗网格边界沿 x 向二分精化 g(x,y)=0 的位置；g 两侧同号时返回 null。 */
+function refineBoundary(
+  ineq: GeoInequality,
+  x: number,
+  y: number,
+  halfStep: number,
+  depth: number,
+): number | null {
+  if (depth >= 8 || halfStep < 1e-7) return x;
+  const gLeft = ineq.evaluateDiff(x - halfStep, y);
+  const gRight = ineq.evaluateDiff(x + halfStep, y);
+  if (!Number.isFinite(gLeft) || !Number.isFinite(gRight)) return null;
+  if (gLeft === 0) return x - halfStep;
+  if (gRight === 0) return x + halfStep;
+  if (gLeft * gRight > 0) return null;
+  const mid = x + (gLeft / (gLeft - gRight)) * 2 * halfStep;
+  const gMid = ineq.evaluateDiff(mid, y);
+  if (!Number.isFinite(gMid)) return x;
+  if (Math.abs(gMid) < 1e-9) return mid;
+  return refineBoundary(ineq, mid, y, Math.abs(mid - x) / 2, depth + 1);
 }

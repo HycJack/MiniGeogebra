@@ -125,6 +125,7 @@ export const SliderControl: React.FC<SliderControlProps> = ({ numeric, kernel, l
           <option value={AnimationType.INCREASING}>{t('increasing')}</option>
           <option value={AnimationType.DECREASING}>{t('decreasing')}</option>
           <option value={AnimationType.INCREASING_ONCE}>{t('increasingOnce')}</option>
+          <option value={AnimationType.RANDOM}>{t('random')}</option>
         </select>
       </div>
     </div>

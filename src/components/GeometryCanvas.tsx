@@ -22,6 +22,9 @@ import { ConstructionElement } from '../kernel/core/ConstructionElement';
 import { GeoElement } from '../kernel/geo/GeoElement';
 import { GeoLocus } from '../kernel/geo/GeoLocus';
 import { GeoFunction } from '../kernel/geo/GeoFunction';
+import { GeoCurve } from '../kernel/geo/GeoCurve';
+import { GeoInequality } from '../kernel/geo/GeoInequality';
+import { GeoText } from '../kernel/geo/GeoText';
 import { AlgoPointOnConic } from '../kernel/algo/AlgoPointOnConic';
 import { AlgoPointOnLine } from '../kernel/algo/AlgoPointOnLine';
 import { AlgoPointOnSegment } from '../kernel/algo/AlgoPointOnSegment';
@@ -31,7 +34,7 @@ import { IRenderer, TextItem } from '../kernel/view/IRenderer';
 import { createRenderer } from '../kernel/view/WebGLRendererFallback';
 import { serialize as serializeConstruction, deserialize as deserializeConstruction, downloadJSON } from '../kernel/persistence/ConstructionSerializer';
 import { toolHandlers, clearToolState } from './tools/handlers';
-import { drawGrid, drawPoint, drawLine, drawSegment, drawPolygon, drawConic, drawLocus, drawFunction, renderPreviews, drawVector, drawPolyLine, drawArc, drawConicPart, drawRay, drawHoverMarker } from './drawHelpers';
+import { drawGrid, drawPoint, drawLine, drawSegment, drawPolygon, drawConic, drawLocus, drawFunction, renderPreviews, drawVector, drawPolyLine, drawArc, drawConicPart, drawRay, drawHoverMarker, drawCurve, drawInequality, drawText } from './drawHelpers';
 import { useLanguage } from '../i18n/LanguageContext';
 import { Undo2, Redo2, Globe, ZoomIn, ZoomOut, Home, Trash2, Eye, EyeOff, Tag, MousePointerClick, Play, Pause } from 'lucide-react';
 import { ToolMode } from './tools/types';
@@ -251,6 +254,8 @@ export const GeometryCanvas: React.FC = () => {
     });
     elements.forEach(el => { if (el instanceof GeoLocus) drawLocus(renderer, el, false, coord.xScale); });
     elements.forEach(el => { if (el instanceof GeoFunction) drawFunction(renderer, el, false, bounds, coord.xScale, (bounds.maxX - bounds.minX) * coord.xScale); });
+    elements.forEach(el => { if (el instanceof GeoCurve) drawCurve(renderer, el, false, bounds, coord.xScale, (bounds.maxX - bounds.minX) * coord.xScale); });
+    elements.forEach(el => { if (el instanceof GeoInequality) drawInequality(renderer, el, bounds, coord.xScale); });
     elements.forEach(el => { if (el instanceof GeoPolyLine) drawPolyLine(renderer, el, false, coord.xScale); });
     elements.forEach(el => { if (el instanceof GeoVector) drawVector(renderer, el, false, coord.xScale); });
     elements.forEach(el => {
@@ -394,6 +399,9 @@ export const GeometryCanvas: React.FC = () => {
       else if (el instanceof GeoConic) drawConic(renderer, el, selectedElements.includes(el), coord.xScale);
       else if (el instanceof GeoLocus) drawLocus(renderer, el, selectedElements.includes(el), coord.xScale);
       else if (el instanceof GeoFunction) drawFunction(renderer, el, selectedElements.includes(el), coord.visibleWorldBounds(), coord.xScale, canvas.width / dpr);
+      else if (el instanceof GeoCurve) drawCurve(renderer, el, selectedElements.includes(el), coord.visibleWorldBounds(), coord.xScale, canvas.width / dpr);
+      else if (el instanceof GeoInequality) drawInequality(renderer, el, coord.visibleWorldBounds(), coord.xScale);
+      else if (el instanceof GeoText) drawText(renderer, el, selectedElements.includes(el), coord.xScale);
       else if (el instanceof GeoPolyLine) drawPolyLine(renderer, el, selectedElements.includes(el), coord.xScale);
       else if (el instanceof GeoVector) drawVector(renderer, el, selectedElements.includes(el), coord.xScale);
       else if (el instanceof GeoSegment) drawSegment(renderer, el, selectedElements.includes(el), coord.xScale);
@@ -467,7 +475,7 @@ export const GeometryCanvas: React.FC = () => {
 
   // ─── 鼠标事件 ─────────────────────────────────────────────────────
   const handleMouseDown = (e: React.MouseEvent) => {
-    const { screenX, screenY, x, y } = getMousePos(e);
+    const { screenX, screenY, x, y } = getMousePos(e, true);
     if (e.button === 1 || e.button === 2 || (e.button === 0 && e.shiftKey)) { setIsPanning(true); setLastPanPos({ x: screenX, y: screenY }); return; }
     if (mode === 'pan') { setIsPanning(true); setLastPanPos({ x: screenX, y: screenY }); return; }
     if (mode === 'zoom_in') { zoom(1.25); return; }
@@ -491,7 +499,7 @@ export const GeometryCanvas: React.FC = () => {
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    const { screenX, screenY, x, y } = getMousePos(e); setMousePos({ x, y });
+    const { screenX, screenY, x, y } = getMousePos(e, true); setMousePos({ x, y });
     if (isPanning) { setCoord(prev => prev.panBy(screenX - lastPanPos.x, screenY - lastPanPos.y)); setLastPanPos({ x: screenX, y: screenY }); setRenderRev(r => r + 1); return; }
     if (draggingUIElement) { setUIElements(prev => prev.map(el => el.id === draggingUIElement ? { ...el, x, y } : el)); return; }
     const elements = kernel.getConstruction().getElements().filter(el => el.visible !== false);
@@ -696,7 +704,7 @@ export const GeometryCanvas: React.FC = () => {
           />
 
           {view === '3d' && (
-            <Geometry3DView kernel={kernel} renderRev={renderRev} selectedElements={selectedElements} showGrid={showGrid} showAxes={showAxes} setShowGrid={setShowGrid} setShowAxes={setShowAxes} />
+            <Geometry3DView kernel={kernel} renderRev={renderRev} selectedElements={selectedElements} setSelectedElements={setSelectedElements} showGrid={showGrid} showAxes={showAxes} setShowGrid={setShowGrid} setShowAxes={setShowAxes} />
           )}
 
           {view === '2d' && (

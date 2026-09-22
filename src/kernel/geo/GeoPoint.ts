@@ -1,5 +1,6 @@
 import { IKernel, PathMover } from '../core/Interfaces';
 import { GeoElement } from './GeoElement';
+import { GeoNumeric } from './GeoNumeric';
 import { GeoVec3D } from '../core/GeoVec3D';
 
 export class GeoPoint extends GeoElement {
@@ -8,6 +9,21 @@ export class GeoPoint extends GeoElement {
   }
 
   getClassName() { return 'GeoPoint'; }
+
+  /**
+   * 路径/区域上的约束点可动画（B7，对标 GeoGebra 路径点动画）：
+   * 动画实际驱动 parentAlgo 的参数滑块（GeoNumeric），点随参数沿路径移动。
+   * 自由点不可动画。
+   */
+  isAnimatable(): boolean {
+    return this.parentAlgo?.getInput().some(i => i instanceof GeoNumeric) ?? false;
+  }
+
+  doAnimationStep(frameRate: number): boolean {
+    const driver = this.parentAlgo?.getInput().find((i): i is GeoNumeric => i instanceof GeoNumeric);
+    if (!driver) return false;
+    return driver.doAnimationStep(frameRate);
+  }
 
   // ---- P2-1: 默认样式（绘制层 fallback）----
   public get defaultStrokeColor(): string { return '#1d4ed8'; }

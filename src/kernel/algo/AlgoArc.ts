@@ -28,11 +28,20 @@ export class AlgoArc extends AlgoElement {
       this.result.setUndefined();
       return;
     }
-    const r = Math.hypot(this.pStart.getX() - this.center.getX(), this.pStart.getY() - this.center.getY());
+    const cx = this.center.getX(), cy = this.center.getY();
+    const r = Math.hypot(this.pStart.getX() - cx, this.pStart.getY() - cy);
     if (r <= 0) {
       this.result.setUndefined();
       return;
     }
+    // 圆心/端点移动后原地重算圆弧几何，保持输出对象身份。
+    this.result.setGeometry(
+      { x: cx, y: cy },
+      r,
+      Math.atan2(this.pStart.getY() - cy, this.pStart.getX() - cx),
+      Math.atan2(this.pEnd.getY() - cy, this.pEnd.getX() - cx),
+      false,
+    );
     this.result.setDefined();
   }
 }

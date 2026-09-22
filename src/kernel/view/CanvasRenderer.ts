@@ -59,7 +59,15 @@ export class CanvasRenderer implements IRenderer {
     this.ctx.textAlign = this._textAlign;
     this.ctx.font = this._font;
     this.ctx.fillStyle = this._fillStyle;
-    this.ctx.fillText(text, x, y);
+    // 渲染变换可能含负 y 缩放（世界 y 向上为正），直接把文字画进变换里会被镜像。
+    // 把 (x, y) 映射到屏幕坐标后在单位变换下绘制，文字保持正立。
+    const t = this.ctx.getTransform();
+    const sx = t.a * x + t.c * y + t.e;
+    const sy = t.b * x + t.d * y + t.f;
+    this.ctx.save();
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.ctx.fillText(text, sx, sy);
+    this.ctx.restore();
   }
   measureText(text: string): { width: number } { return { width: this.ctx.measureText(text).width }; }
 
