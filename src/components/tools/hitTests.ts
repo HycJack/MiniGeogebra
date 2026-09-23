@@ -169,6 +169,9 @@ export function hitScreenObject(els: readonly ConstructionElement[], x: number, 
       if (isPointOnCurve(el, x, y, 5 / scale)) return el;
     } else if (el instanceof GeoPolygon) {
       if ((el as any).isInRegionXY(x, y)) return el;
+    } else if (el instanceof GeoElement && (el as any).isInRegionXY && typeof (el as any).contours !== 'undefined') {
+      // GeoBooleanRegion 等轮廓区域：点内命中
+      if ((el as any).isInRegionXY(x, y)) return el;
     }
   }
   return undefined;

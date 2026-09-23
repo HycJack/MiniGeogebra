@@ -2,6 +2,7 @@ import { IKernel } from '../core/Interfaces';
 import { GeoElement } from './GeoElement';
 import { GeoVec3D } from '../core/GeoVec3D';
 import { Coords4 } from '../core/Coords4';
+import { GeoNumeric } from './GeoNumeric';
 
 /**
  * 3D 点 —— 对标 GeoGebra GeoPoint3D / GeoVec4D。
@@ -32,6 +33,20 @@ export class GeoPoint3D extends GeoElement {
 
   translate(v: { x: number; y: number; z: number }): void {
     this.setCoords(this.getX() + v.x, this.getY() + v.y, this.getZ() + v.z);
+  }
+
+  /**
+   * path/region 上的约束点可动画（C10）：驱动 parentAlgo 的参数滑块，
+   * 点随参数沿路径移动。自由点不可动画（与 2D GeoPoint 一致）。
+   */
+  isAnimatable(): boolean {
+    return this.parentAlgo?.getInput().some(i => i instanceof GeoNumeric) ?? false;
+  }
+
+  doAnimationStep(frameRate: number): boolean {
+    const driver = this.parentAlgo?.getInput().find((i): i is GeoNumeric => i instanceof GeoNumeric);
+    if (!driver) return false;
+    return driver.doAnimationStep(frameRate);
   }
 
   getAlgebraDescription(): string {

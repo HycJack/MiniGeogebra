@@ -9,6 +9,9 @@
  * 支持透视 / 正交投影切换。
  */
 
+import type { Box3 } from './RayPicker';
+import { clippingCubeEdges } from './ClippingBox';
+
 /** 三维点。 */
 export interface V3 { x: number; y: number; z: number; }
 
@@ -58,6 +61,16 @@ export interface Scene3D {
   lines: Line3[];
   fills: Fill3[];
   points: Point3[];
+  /**
+   * 世界空间裁剪盒（GeoGebra setClipPlanes 对应）。
+   * box 用于片元 discard 严格裁剪；large 已在场景构建时用于直线段裁剪。
+   * 缺省不裁剪。网格/坐标轴不受 box 约束（本身已被视口范围限制）。
+   */
+  clippingBox?: { box: Box3; large: Box3 };
+  /** 是否绘制裁剪盒线框（GeoGebra showClippingCube）。 */
+  showClipBox?: boolean;
+  /** 裁剪盒线框颜色。 */
+  clipBoxColor?: string;
 }
 
 /** 屏幕投影结果。 */
@@ -72,7 +85,13 @@ export type StandardView = 'home' | 'xy' | 'xz' | 'yz';
 interface ProgramInfo {
   program: WebGLProgram;
   attribs: { pos: GLint; col: GLint; corner?: GLint; scale?: GLint };
-  uniforms: { mvp: WebGLUniformLocation | null; pixel?: WebGLUniformLocation | null };
+  uniforms: {
+    mvp: WebGLUniformLocation | null;
+    pixel?: WebGLUniformLocation | null;
+    clipMin?: WebGLUniformLocation | null;
+    clipMax?: WebGLUniformLocation | null;
+    clipEnabled?: WebGLUniformLocation | null;
+  };
 }
 
 type Mat4 = Float32Array;
@@ -315,6 +334,16 @@ export class WebGL3DRenderer {
     return { minX: b.uMin, maxX: b.uMax, minY: -b.vMax, maxY: -b.vMin };
   }
 
+  /**
+   * 当前相机可见的世界 AABB —— 裁剪盒（GeoClippingCube3D.currentBounds）的基准。
+   * XY 取坐标平面内缩范围，Z 取轴可见半径对称区间。
+   */
+  getVisibleBounds3(): Box3 {
+    const xy = this.getCoordinateBoundsXY();
+    const zMax = this.axisExtent('z');
+    return { minX: xy.minX, maxX: xy.maxX, minY: xy.minY, maxY: xy.maxY, minZ: -zMax, maxZ: zMax };
+  }
+
   /** 当前相机可见的单个坐标平面范围。 */
   private visiblePlaneBounds(axis: PlaneAxis, options?: { padded?: boolean }): { uMin: number; uMax: number; vMin: number; vMax: number } {
     const corners: { nx: number; ny: number }[] = [
@@ -443,18 +472,32 @@ export class WebGL3DRenderer {
     const planeFills: Fill3[] = [];
     if (scene.showGrid || scene.showAxes) this.buildGrid(scene, gridLines);
     this.buildPlanes(scene, planeFills, gridLines);
+    const clip = scene.clippingBox?.box ?? null;
 
     // 绘制顺序（画家算法兜底）+ 深度测试：
-    // 平面填充板 → 网格线 → 元素填充 → 元素线 → 点。
+    // 平面填充板 → 网格线 → 元素填充 → 元素线 → 点 → 裁剪盒线框。
     // 填充面开 polygonOffset 微退（写入深度），后画的线/点以 LEQUAL 通过测试。
-    this.drawTriangles(this.fillTriangles(planeFills));
+    // 网格/坐标轴不施加裁剪盒（已由视口范围约束）；元素几何按严格盒片元裁剪
+    // （对应 GeoGebra renderer.setClipPlanes(minMax)）。
+    this.drawTriangles(this.fillTriangles(planeFills), null);
     gl.polygonOffset(0, 0);
-    this.drawTriangles(this.gridTriangles(gridLines));
+    this.drawTriangles(this.gridTriangles(gridLines), null);
     gl.polygonOffset(1, 1);
-    this.drawTriangles(this.fillTriangles(scene.fills));
+    this.drawTriangles(this.fillTriangles(scene.fills), clip);
     gl.polygonOffset(0, 0);
-    this.drawTriangles(this.lineTriangles(scene.lines));
-    this.drawPoints(scene.points, this.mvpMatrix());
+    this.drawTriangles(this.lineTriangles(scene.lines), clip);
+    this.drawPoints(scene.points, clip);
+
+    // 裁剪盒线框画在边界上，最后画且不裁剪（避免边界自裁，对齐 GeoGebra border 放大）。
+    if (scene.showClipBox && scene.clippingBox) {
+      const edgeLines: Line3[] = clippingCubeEdges(scene.clippingBox.box).map(e => ({
+        a: e.a,
+        b: e.b,
+        color: scene.clipBoxColor ?? 'rgba(100,116,139,0.85)',
+        widthPx: 1.4,
+      }));
+      this.drawTriangles(this.lineTriangles(edgeLines), null);
+    }
   }
 
   // ---------------------------------------------------------------- 场景转换
@@ -762,13 +805,14 @@ export class WebGL3DRenderer {
     return out;
   }
 
-  private drawTriangles(data: Float32Array): void {
+  private drawTriangles(data: Float32Array, clip: Box3 | null): void {
     const gl = this.gl;
     if (data.length === 0) return;
     this.uploadBuffer(this.triVbo, data);
     const info = this.triProg;
     gl.useProgram(info.program);
     gl.uniformMatrix4fv(info.uniforms.mvp, false, this.mvpMatrix());
+    this.setClipUniforms(gl, info, clip);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.triVbo);
     gl.enableVertexAttribArray(info.attribs.pos);
     gl.vertexAttribPointer(info.attribs.pos, 3, gl.FLOAT, false, 28, 0);
@@ -777,7 +821,20 @@ export class WebGL3DRenderer {
     gl.drawArrays(gl.TRIANGLES, 0, data.length / 7);
   }
 
-  private drawPoints(points: Point3[], mvp: Float32Array): void {
+  /** 世界盒裁剪 uniform（GLSL ES 无 gl_ClipDistance，用片元 discard 等价 setClipPlanes）。 */
+  private setClipUniforms(gl: WebGL2RenderingContext, info: ProgramInfo, box: Box3 | null): void {
+    const { clipEnabled, clipMin, clipMax } = info.uniforms;
+    if (!clipEnabled || !clipMin || !clipMax) return;
+    if (box) {
+      gl.uniform1f(clipEnabled, 1);
+      gl.uniform3f(clipMin, box.minX, box.minY, box.minZ);
+      gl.uniform3f(clipMax, box.maxX, box.maxY, box.maxZ);
+    } else {
+      gl.uniform1f(clipEnabled, 0);
+    }
+  }
+
+  private drawPoints(points: Point3[], clip: Box3 | null): void {
     const gl = this.gl;
     let n = 0;
     for (const p of points) n += p.ring ? 12 : 6;
@@ -792,8 +849,9 @@ export class WebGL3DRenderer {
     this.uploadBuffer(this.pointVbo, v);
     const info = this.pointProg;
     gl.useProgram(info.program);
-    gl.uniformMatrix4fv(info.uniforms.mvp, false, mvp);
-    gl.uniform2f(info.uniforms.pixel, 2 / this.width, 2 / this.height);
+    gl.uniformMatrix4fv(info.uniforms.mvp, false, this.mvpMatrix());
+    gl.uniform2f(info.uniforms.pixel!, 2 / this.width, 2 / this.height);
+    this.setClipUniforms(gl, info, clip);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.pointVbo);
     gl.enableVertexAttribArray(info.attribs.pos);
     gl.vertexAttribPointer(info.attribs.pos, 3, gl.FLOAT, false, 40, 0);
@@ -876,7 +934,13 @@ export class WebGL3DRenderer {
     return {
       program,
       attribs,
-      uniforms: { mvp: gl.getUniformLocation(program, 'u_mvp'), pixel: gl.getUniformLocation(program, 'u_pixel') },
+      uniforms: {
+        mvp: gl.getUniformLocation(program, 'u_mvp'),
+        pixel: gl.getUniformLocation(program, 'u_pixel'),
+        clipMin: gl.getUniformLocation(program, 'u_clip_min'),
+        clipMax: gl.getUniformLocation(program, 'u_clip_max'),
+        clipEnabled: gl.getUniformLocation(program, 'u_clip_enabled'),
+      },
     };
   }
 
@@ -919,9 +983,11 @@ in vec3 a_pos;
 in vec4 a_col;
 uniform mat4 u_mvp;
 out vec4 v_col;
+out vec3 v_world;
 void main() {
   gl_Position = u_mvp * vec4(a_pos, 1.0);
   v_col = a_col;
+  v_world = a_pos;
 }`;
 
 /** 点精灵着色器 */
@@ -934,17 +1000,29 @@ in float a_scale;
 uniform mat4 u_mvp;
 uniform vec2 u_pixel;
 out vec4 v_col;
+out vec3 v_world;
 void main() {
   gl_Position = u_mvp * vec4(a_pos, 1.0);
   gl_Position.xy += a_corner * u_pixel * a_scale * gl_Position.w;
   v_col = a_col;
+  v_world = a_pos;
 }`;
 
 const triFragmentSource = `#version 300 es
-precision mediump float;
+precision highp float;
 in vec4 v_col;
+in vec3 v_world;
+uniform vec3 u_clip_min;
+uniform vec3 u_clip_max;
+uniform float u_clip_enabled;
 out vec4 fragColor;
-void main() { fragColor = v_col; }`;
+void main() {
+  if (u_clip_enabled > 0.5 &&
+      (any(lessThan(v_world, u_clip_min)) || any(greaterThan(v_world, u_clip_max)))) {
+    discard;
+  }
+  fragColor = v_col;
+}`;
 
 // ---- 矩阵工具（列主序 Float32Array(16)）----
 

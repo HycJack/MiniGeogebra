@@ -60,6 +60,17 @@ export function elementIntersectsRect(el: GeoElement, rect: Rect, eps: number = 
     if ((p as any).isInRegionXY && corners(rect).some(c => (p as any).isInRegionXY(c.x, c.y))) return true;
     return false;
   }
+  // GeoBooleanRegion 等带 isInRegionXY 的区域对象
+  if (typeof (el as any).isInRegionXY === 'function' && typeof (el as any).contours !== 'undefined') {
+    if (corners(rect).some(c => (el as any).isInRegionXY(c.x, c.y))) return true;
+    const contours = (el as unknown as { contours: { x: number; y: number }[][] }).contours;
+    for (const contour of contours) {
+      for (const p of contour) {
+        if (ptInRect(p, rect, eps)) return true;
+      }
+    }
+    return false;
+  }
   return false;
 }
 

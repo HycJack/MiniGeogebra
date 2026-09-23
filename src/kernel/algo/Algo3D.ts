@@ -58,6 +58,8 @@ export class AlgoMidpoint3D extends AlgoElement {
   constructor(kernel: IKernel, private A: GeoPoint3D, private B: GeoPoint3D) {
     super(kernel);
     this.outputPoint = new GeoPoint3D(kernel);
+    // 与 2D AlgoMidpoint 一致：输出自动取点标签，代数输入才能引用
+    this.outputPoint.label = kernel.getConstruction().getNextPointLabel();
     this.setInputOutput();
   }
 

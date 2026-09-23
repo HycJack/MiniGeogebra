@@ -7,9 +7,10 @@
  * 对 Q2 做特征分解并配方 → 精确的椭圆/双曲线（中心 + 主轴方向 + 半轴）。
  *
  * 无法用 GeoConic3D 表示的情形返回 null（由调用方决定回退）：
- *   - 抛物截面（锥的平面恰平行于一条母线）；
  *   - 两平行线/两相交线（平面 ∥ 柱轴等退化情形）；
  *   - 空截面（平面与曲面不相交）。
+ * 抛物截面（平面平行于锥的一条母线）返回 kind='parabola'：
+ * center 为顶点、dir1 为开口方向、dir2 ⊥ dir1、a 为焦距（b 恒为 0）。
  */
 import { Coords4 } from '../core/Coords4';
 import { GeoPlane3D } from './GeoPlane3D';
@@ -23,13 +24,15 @@ interface QuadraticForm {
 }
 
 export interface QuadricSection {
-  kind: 'ellipse' | 'hyperbola';
+  kind: 'ellipse' | 'hyperbola' | 'parabola';
+  /** 椭圆/双曲线中心；抛物线顶点。 */
   center: Coords4;
-  /** 椭圆长轴 / 双曲线横轴方向（单位向量，位于截面平面内）。 */
+  /** 椭圆长轴 / 双曲线横轴 / 抛物线开口方向（单位向量，位于截面平面内）。 */
   dir1: Coords4;
   /** 与 dir1 正交的共轭方向。 */
   dir2: Coords4;
   a: number;
+  /** 抛物线时为 0（无第二半轴）。 */
   b: number;
 }
 
@@ -136,7 +139,8 @@ function eigen2(p: number, s: number, t: number): { l1: number; l2: number; v1: 
 }
 
 /**
- * 精确平面截面。返回 null 表示无法用 GeoConic3D 表示（抛物/两直线/空）。
+ * 精确平面截面。返回 null 表示无法用 GeoConic3D 表示（两直线/空）；
+ * 抛物截面以 kind='parabola' 返回。
  */
 export function quadricPlaneSection(q: GeoQuadric3D, plane: GeoPlane3D): QuadricSection | null {
   const form = quadricQuadraticForm(q);
@@ -170,7 +174,10 @@ export function quadricPlaneSection(q: GeoQuadric3D, plane: GeoPlane3D): Quadric
   const c2 = p0.dot(Av(p0)) + 2 * p0.dot(bv) + form.c;
 
   const { l1, l2, v1, v2 } = eigen2(q11, q12, q22);
-  const eigTol = 1e-9 * Math.max(Math.abs(l1), 1e-30);
+  // eigTol 按 |λ|max 归一：锥截面 rank-1 时零特征值可能是 l1（λ1 ≥ λ2，
+  // 如特征值 (0, −c)），只看 l2 会漏检并落到不定分支除以 ~0 → 伪双曲线。
+  const eigScale = Math.max(Math.abs(l1), Math.abs(l2), 1e-30);
+  const eigTol = 1e-9 * eigScale;
   const m1 = v1[0] * l21 + v1[1] * l22; // Vᵀ l2
   const m2 = v2[0] * l21 + v2[1] * l22;
   // 配方后：λ1 ŷ1² + λ2 ŷ2² = K，K = m1²/λ1 + m2²/λ2 − c2
@@ -179,8 +186,13 @@ export function quadricPlaneSection(q: GeoQuadric3D, plane: GeoPlane3D): Quadric
   );
   const kTol = 1e-9 * kScale;
 
-  const centerZ = (y01: number, y02: number): Coords4 =>
-    p0.add(p1.scale(y01)).add(p2.scale(y02));
+  // 特征坐标 y = (y1, y2) → 平面参数坐标 z = V y，再映到 3D（修中心换算，
+  // 特征向量不与 (p1, p2) 对齐时旧的 centerZ 直接把 y 当 z 会偏）。
+  const centerZ = (y01: number, y02: number): Coords4 => {
+    const z1 = v1[0] * y01 + v2[0] * y02;
+    const z2 = v1[1] * y01 + v2[1] * y02;
+    return p0.add(p1.scale(z1)).add(p2.scale(z2));
+  };
 
   const build = (kind: 'ellipse' | 'hyperbola', y01: number, y02: number,
                  dir1: [number, number], dir2: [number, number], a: number, b: number): QuadricSection => {
@@ -191,11 +203,43 @@ export function quadricPlaneSection(q: GeoQuadric3D, plane: GeoPlane3D): Quadric
     return { kind, center: centerZ(y01, y02), dir1: d1, dir2: d2, a, b };
   };
 
-  if (Math.abs(l2) < eigTol) {
-    // 秩 1：一条方向无二次约束
+  // rank-1：恰一个特征值 ≈ 0 → 抛物线（m ≠ 0）或平行线/空（m = 0）
+  const zero1 = Math.abs(l1) < eigTol;
+  const zero2 = Math.abs(l2) < eigTol;
+  if ((zero1 || zero2) && eigScale > eigTol) {
+    // 统一：sqL·s² + 2·mSq·s + 2·linM·lin + c2 = 0，s 沿非零特征方向 sqV，
+    // lin 沿零特征方向 linV（zero2 → sq=v1/lin=v2；zero1 → sq=v2/lin=v1）
+    const sqL = zero2 ? l1 : l2;
+    const sqV = zero2 ? v1 : v2;
+    const linV = zero2 ? v2 : v1;
+    const mSq = zero2 ? m1 : m2;
+    const linM = zero2 ? m2 : m1;
     const mTol = 1e-9 * Math.max(Math.abs(m1), Math.abs(m2), 1e-30);
-    if (Math.abs(m2) > mTol) return null; // 抛物线（GeoConic3D 无表示）
-    // λ1 y1² + c2 = 0：>0 两平行线（不支持），≤0 空
+    if (Math.abs(linM) > mTol && Math.abs(sqL) > eigTol) {
+      // 配方：sqL(s − s0)² + 2·linM·(lin − lin0) = 0
+      //   → lin − lin0 = α·(s − s0)²，α = −sqL/(2·linM)
+      const s0 = -mSq / sqL;
+      const lin0 = (mSq * mSq / sqL - c2) / (2 * linM);
+      const alpha = -sqL / (2 * linM);
+      const focal = 1 / (4 * Math.abs(alpha));
+      if (Number.isFinite(focal) && focal > 1e-12) {
+        const dSq = p1.scale(sqV[0]).add(p2.scale(sqV[1])).normalize();
+        const dLinRaw = p1.scale(linV[0]).add(p2.scale(linV[1]));
+        // 开口 = ±linV：α > 0 时 lin 随 s² 增大 → 沿 +linV
+        const dAxis = (alpha > 0 ? dLinRaw : dLinRaw.scale(-1)).normalize();
+        const z1 = sqV[0] * s0 + linV[0] * lin0;
+        const z2 = sqV[1] * s0 + linV[1] * lin0;
+        return {
+          kind: 'parabola',
+          center: p0.add(p1.scale(z1)).add(p2.scale(z2)),
+          dir1: dAxis,
+          dir2: dSq,
+          a: focal,
+          b: 0,
+        };
+      }
+    }
+    // λ·y² + c2 = 0：两平行线（不支持）或空
     return null;
   }
 
@@ -217,6 +261,6 @@ export function quadricPlaneSection(q: GeoQuadric3D, plane: GeoPlane3D): Quadric
     // 共轭双曲线：横轴沿 λ2 方向
     return build('hyperbola', -m1 / l1, -m2 / l2, v2, v1, Math.sqrt(-K / l2), Math.sqrt(K / l1));
   }
-  // K ≈ 0：抛物线（平面平行于锥的一条母线）
+  // K ≈ 0：两相交线退化（不定型中心落在曲线上），非抛物线——不支持
   return null;
 }

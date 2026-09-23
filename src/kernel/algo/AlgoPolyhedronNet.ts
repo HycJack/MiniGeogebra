@@ -4,10 +4,19 @@
  * 把棱锥/棱柱的侧面沿底面棱"绕轴旋转"展开到底面所在平面：
  * 顶点绕棱旋转到与底面法向垂直（落入底面），侧面因此摊平在底面上。
  * 展开后所有面共面（底面所在的 3D 平面），面积守恒。
+ *
+ * C8 补齐 GeoGebra 的两点能力：
+ *   1. 展开因子 v∈[0,1] —— 旋转角按 f 缩放，实现折叠↔展开动画；
+ *      越界（f<0 或 f>1）与 GeoGebra 一致置 undefined。
+ *   2. 展开到 xOy 平面的独立对象 —— 结果刚体映射到底面→z=0，
+ *      并为每个面输出 GeoPolygon（构造元素，可在 2D 视图/代数区单独选中）。
  */
 import { IKernel } from '../core/Interfaces';
 import { AlgoElement } from './AlgoElement';
 import { GeoElement } from '../geo/GeoElement';
+import { GeoPoint } from '../geo/GeoPoint';
+import { GeoPolygon } from '../geo/GeoPolygon';
+import { GeoNumeric } from '../geo/GeoNumeric';
 import { GeoVec3D } from '../core/GeoVec3D';
 import { Coords4 } from '../core/Coords4';
 import { GeoPolyhedron3D } from './AlgoPolyhedron3D';
@@ -86,6 +95,7 @@ function rotateVector(v: Coords4, axis: Coords4, angle: number): Coords4 {
  * 把一组点绕棱 AB 旋转到平面（法向 n0、朝向 centroid 外侧）内。
  * 整组点共用同一次旋转（刚体），因此面内距离与角度全部保持。
  * 展开后 P' 与 A、B 的距离保持不变（|P'A| = |PA|, |P'B| = |PB|）。
+ * f∈[0,1] 为展开因子：只转 fullAngle·f，f=0 保持闭合，f=1 完全摊平。
  */
 function unfoldRigidAroundEdge(
   points: Coords4[],
@@ -93,6 +103,7 @@ function unfoldRigidAroundEdge(
   B: Coords4,
   n0: Coords4,
   centroid: Coords4,
+  f = 1,
 ): Coords4[] {
   const u = B.sub(A).normalize();
   // 取第一个不在棱上的点确定旋转角
@@ -115,33 +126,119 @@ function unfoldRigidAroundEdge(
     break;
   }
   if (!found) return points;
+  const partial = angle * f;
   return points.map(P => {
     const w = P.sub(A);
-    return A.add(rotateVector(w, u, angle));
+    return A.add(rotateVector(w, u, partial));
   });
+}
+
+/**
+ * 把展开结果刚体映射到 xOy 平面：底面法向转到 +z，底面点落到 z=0。
+ * 已经水平且在 z=0 上的底面近似为恒等（仅减 centroid.z）。
+ */
+function mapFacesToXOy(
+  faces: Coords4[][],
+  normal: Coords4,
+  centroid: Coords4,
+): Coords4[][] {
+  const n = normal.normalize();
+  const target = Coords4.fromDirection(0, 0, 1);
+  const dot = Math.max(-1, Math.min(1, n.dot(target)));
+  let axis: Coords4 | null = null;
+  let angle = 0;
+  if (dot < 1 - 1e-12) {
+    if (dot > -1 + 1e-12) {
+      axis = n.cross(target).normalize();
+      angle = Math.acos(dot);
+    } else {
+      // 法向朝 -z：绕 x 转 π
+      axis = Coords4.fromDirection(1, 0, 0);
+      angle = Math.PI;
+    }
+  }
+  const zOff = centroid.getZ();
+  return faces.map(face => face.map(p => {
+    let q = p;
+    if (axis) {
+      const d = p.sub(centroid);
+      q = centroid.add(rotateVector(d, axis, angle));
+    }
+    return Coords4.fromPoint(q.getX(), q.getY(), q.getZ() - zOff);
+  }));
 }
 
 /** 棱锥/棱柱展开图。 */
 export class AlgoPolyhedronNet extends AlgoElement {
   private outputNet: GeoNet3D;
+  private facePolys: GeoPolygon[] = [];
+  /** 底面边数：构造期冻结，供反序列化在 polyhedron.compute 之前重建面输出。 */
+  private baseN: number;
 
-  constructor(kernel: IKernel, private polyhedron: GeoPolyhedron3D) {
+  constructor(
+    kernel: IKernel,
+    private polyhedron: GeoPolyhedron3D,
+    private v?: number | GeoNumeric,
+    savedBaseN?: number,
+  ) {
     super(kernel);
     this.outputNet = new GeoNet3D(kernel);
+    this.baseN = savedBaseN ?? Math.max(0, polyhedron.baseCount());
+    this.createFacePolygons();
     this.setInputOutput();
   }
 
   setInputOutput(): void {
     this.input = [this.polyhedron];
-    this.setOutput([this.outputNet]);
+    if (this.v instanceof GeoElement) this.input.push(this.v);
+    this.setOutput([this.outputNet, ...this.facePolys]);
   }
 
   getOutput(): GeoNet3D { return this.outputNet; }
+  getFacePolygons(): GeoPolygon[] { return this.facePolys; }
+  getBaseN(): number { return this.baseN; }
+  getFactorInput(): number | GeoNumeric | undefined { return this.v; }
+
+  /** 当前展开因子（GeoNumeric 取实时值；缺省 1 = 完全展开）。 */
+  getFactorValue(): number {
+    if (this.v instanceof GeoNumeric) return this.v.getValue();
+    if (typeof this.v === 'number') return this.v;
+    return 1;
+  }
+
+  private createFacePolygons(): void {
+    const n = this.baseN;
+    if (n < 3) return;
+    const mk = (size: number): GeoPolygon => {
+      const pts = Array.from({ length: size }, () => {
+        const p = new GeoPoint(this.kernel, new GeoVec3D(0, 0, 1));
+        p.labelVisible = false;
+        return p;
+      });
+      return new GeoPolygon(this.kernel, pts);
+    };
+    this.facePolys.push(mk(n)); // 底面
+    if (this.polyhedron.kind === 'pyramid') {
+      for (let i = 0; i < n; i++) this.facePolys.push(mk(3));
+    } else {
+      for (let i = 0; i < n; i++) this.facePolys.push(mk(4));
+      this.facePolys.push(mk(n)); // 顶面
+    }
+  }
 
   compute(): void {
+    const f = this.getFactorValue();
+    if (!Number.isFinite(f) || f < 0 || f > 1) {
+      this.outputNet.setUndefined();
+      for (const poly of this.facePolys) poly.setUndefined();
+      return;
+    }
     this.outputNet.setUndefined();
     const poly = this.polyhedron;
-    if (poly.vertices.length < 4) return;
+    if (poly.vertices.length < 4) {
+      for (const fp of this.facePolys) fp.setUndefined();
+      return;
+    }
     const n = poly.baseCount();
     const base = poly.vertices.slice(0, n);
     const normal = poly.baseNormal();
@@ -157,29 +254,51 @@ export class AlgoPolyhedronNet extends AlgoElement {
       for (let i = 0; i < n; i++) {
         const A = base[i];
         const B = base[(i + 1) % n];
-        const [unfolded] = unfoldRigidAroundEdge([apex], A, B, normal, centroid);
+        const [unfolded] = unfoldRigidAroundEdge([apex], A, B, normal, centroid, f);
         faces.push([A, B, unfolded]);
       }
     } else {
       const top = poly.vertices.slice(n);
       let lastTopEdgeU: [Coords4, Coords4] | null = null;
-      // 每个侧面绕各自底面棱展开（顶边随刚体旋转）
+      // 每个侧面绕各自底面棱展开（顶边随刚体旋转）；f 缩放旋转角
       for (let i = 0; i < n; i++) {
         const A = base[i];
         const B = base[(i + 1) % n];
-        const [AtU, BtU] = unfoldRigidAroundEdge([top[i], top[(i + 1) % n]], A, B, normal, centroid);
+        const [AtU, BtU] = unfoldRigidAroundEdge([top[i], top[(i + 1) % n]], A, B, normal, centroid, f);
         faces.push([A, B, BtU, AtU]);
         if (i === n - 1) lastTopEdgeU = [AtU, BtU];
       }
       // 顶面（正棱柱时 ∥ 底面）沿最后一条侧面展开后的共享边平移摊平：
       // 顶面顶点正对着底面顶点，旋转等价于平移。
+      // f=0 时 lastTopEdgeU 即原始顶棱，t=0，顶面保持闭合位置。
       if (lastTopEdgeU) {
         const t = lastTopEdgeU[0].sub(top[n - 1]);
         faces.push(top.map(v => v.add(t)));
       }
     }
 
-    this.outputNet.setFaces(faces, poly.kind);
+    // C8：刚体映射到底面 → z=0（xOy 平面），再作为 Net 与独立多边形输出
+    const mapped = mapFacesToXOy(faces, normal, centroid);
+    this.outputNet.setFaces(mapped, poly.kind);
     this.outputNet.setDefined();
+    this.syncFacePolygons(mapped);
+  }
+
+  /** 把映射后的面写回独立 GeoPolygon 输出（x,y 取自 xOy 映射结果）。 */
+  private syncFacePolygons(faces: Coords4[][]): void {
+    // 面数与预建输出不一致（理论上仅 polyhedron 拓扑变化）时按可对齐部分更新
+    const count = Math.min(faces.length, this.facePolys.length);
+    for (let i = 0; i < this.facePolys.length; i++) {
+      const poly = this.facePolys[i];
+      if (i >= count || faces[i].length < 3 || faces[i].length !== poly.vertices.length) {
+        poly.setUndefined();
+        continue;
+      }
+      for (let j = 0; j < poly.vertices.length; j++) {
+        const p = faces[i][j];
+        poly.vertices[j].setCoords(p.getX(), p.getY(), 1);
+      }
+      poly.setDefined();
+    }
   }
 }

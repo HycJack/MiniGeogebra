@@ -38,7 +38,7 @@ const lineInterceptPts = (a: number, b: number, c: number): [{ x: number; y: num
   const p = { x: 0, y: -c / b };
   return [p, { x: b, y: p.y - a }];
 };
-const circleCoeffs = (h: number, k: number, r: number): number[] => [1, 0, 1, -2 * h, -2 * k, h * h + k * k - r * r];
+export const circleCoeffs = (h: number, k: number, r: number): number[] => [1, 0, 1, -2 * h, -2 * k, h * h + k * k - r * r];
 
 type TransOp = 'rotate' | 'dilate' | 'mirror' | 'translate' | 'invert' | 'shear' | 'stretch';
 

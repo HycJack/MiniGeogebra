@@ -9,6 +9,7 @@ import { GeoPoint3D } from '../geo/GeoPoint3D';
 import { GeoPlane3D } from '../geo/GeoPlane3D';
 import { GeoQuadric3D } from '../geo/GeoQuadric3D';
 import { GeoConic3D } from '../geo/GeoConic3D';
+import { GeoLine3D } from '../geo/GeoLine3D';
 import { Coords4 } from '../core/Coords4';
 import { quadricPlaneSection } from '../geo/quadricSection';
 
@@ -81,19 +82,58 @@ export class AlgoIntersectConicPlaneQuadric extends AlgoConic3DBase<GeoConic3D> 
   }
 
   protected recompute(): void {
-    // 解析截面：球→圆（a=b）、柱/椭球→椭圆、锥→椭圆/双曲线，全部精确。
+    // 解析截面：球→圆（a=b）、柱/椭球→椭圆、锥→椭圆/双曲线/抛物线，全部精确。
     const section = quadricPlaneSection(this.quadric, this.plane);
     if (section) {
       if (section.kind === 'ellipse') {
         this.out.setEllipse(section.center, section.dir1, section.dir2, section.a, section.b);
-      } else {
+      } else if (section.kind === 'hyperbola') {
         this.out.setHyperbola(section.center, section.dir1, section.dir2, section.a, section.b);
+      } else {
+        this.out.setParabola(section.center, section.dir1, section.dir2, section.a);
       }
       this.out.setDefined();
       return;
     }
-    // 抛物截面（平面平行于锥的一条母线）与两直线退化：GeoConic3D 尚无表示
-    // （见未实现清单 C2），置 undefined 而不是输出拟合出的伪椭圆。
+    // 两直线退化（平面 ∥ 柱轴等）：置 undefined 而不是输出拟合出的伪椭圆。
     this.out.setUndefined();
+  }
+}
+
+/**
+ * 焦点 + 准线 → 3D 抛物线（对标 GeoGebra CmdParabola3D：`Parabola[point, line]`）。
+ * 焦点在准线上时输出 undefined（退化为点）。
+ */
+export class AlgoParabola3D extends AlgoConic3DBase<GeoConic3D> {
+  constructor(
+    kernel: IKernel,
+    private readonly focus: GeoPoint3D,
+    private readonly directrix: GeoLine3D,
+  ) {
+    super(kernel, new GeoConic3D(kernel), [focus, directrix]);
+  }
+
+  protected recompute(): void {
+    if (!this.focus.isDefined() || !this.directrix.isDefined()) {
+      this.out.setUndefined();
+      return;
+    }
+    const f = this.focus.getCoords3();
+    const o = this.directrix.getOrigin();
+    const d = this.directrix.getDirection().normalize();
+    // 焦点在准线上的投影 H：顶点 = F 与 H 中点，轴 = F − H（⊥ 准线），焦距 = |F − H|/2
+    const t = f.sub(o).dot(d);
+    const h = o.add(d.scale(t));
+    const dist = f.sub(h).norm();
+    if (!(dist > 1e-9) || !Number.isFinite(dist)) {
+      this.out.setUndefined();
+      return;
+    }
+    // axis ⊥ d（H 为垂足）→ 准线方向即平面内垂直于轴的方向
+    // 注意 scale 保留 w：f+h 得 w=2，toPoint() 归一即中点（scale(0.5) 会二次折半）
+    const vertex = f.add(h).toPoint();
+    const axis = f.sub(h).normalize();
+    this.out.setParabola(vertex, axis, d, dist / 2);
+    this.out.setDefined();
   }
 }

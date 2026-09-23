@@ -16,9 +16,11 @@ import { AlgoCentroid, AlgoIncenter, AlgoOrthocenter, AlgoIncircle, AlgoAreColli
 import { AlgoDependentCurve, AlgoPointOnCurve, AlgoTangentFunctionNumber, AlgoTangentCurve, AlgoCurvature, AlgoOsculatingCircle } from '../algo/AlgoCurveFamily';
 import { AlgoPointInRegion, AlgoIsInRegion, AlgoRandomPointIn } from '../algo/AlgoRegion';
 import { AlgoDependentInequality } from '../algo/AlgoDependentInequality';
+import { AlgoDependentQuadric3D } from '../algo/AlgoDependentQuadric3D';
 import { InequalityOp } from '../geo/GeoInequality';
 import { AlgoPointOnFunction } from '../algo/AlgoPointOnFunction';
 import { AlgoPointOnConic } from '../algo/AlgoPointOnConic';
+import { AlgoPointOnLine3D, AlgoPointOnCircle3D, AlgoPointOnConic3D, AlgoPointOnPolyline3D, AlgoPointInPlane3D } from '../algo/AlgoPointOn3D';
 import { AlgoTangent } from '../algo/AlgoTangent';
 import { GeoCurve } from '../geo/GeoCurve';
 import { GeoPoint3D } from '../geo/GeoPoint3D';
@@ -31,13 +33,14 @@ import { GeoPolyhedron3D } from '../algo/AlgoPolyhedron3D';
 import { GeoSurface } from '../geo/GeoSurface';
 import { AlgoSphere3D, AlgoCylinder3D, AlgoCone3D, AlgoIntersectLineQuadric3D, AlgoPrism3D, AlgoPyramid3D, AlgoVolume3D, AlgoAngleLines3D, AlgoAnglePlanes3D } from '../algo/AlgoPolyhedron3D';
 import { AlgoDependentSurface } from '../algo/AlgoDependentSurface';
+import { AlgoSurfaceOfRevolution } from '../algo/AlgoSurfaceOfRevolution';
 import { GeoCircle3D } from '../geo/GeoCircle3D';
 import { GeoPolyline3D } from '../geo/GeoPolyline3D';
 import { AlgoCircleThreePoints3D, AlgoTranslate3D, AlgoRotatePoint3D, AlgoMirrorPoint3D, AlgoIntersectPathPlanePolyhedron } from '../algo/Algo3DAdvanced';
 import { AlgoTransformLine3D, AlgoTransformCircle3D, AlgoTransformPolyhedron3D, AlgoIntersectPlaneQuadric, Transform3DArgs } from '../algo/AlgoTransformGeo3D';
 import { AlgoEllipsoid3D } from '../algo/AlgoPolyhedron3D';
 import { GeoConic3D } from '../geo/GeoConic3D';
-import { AlgoEllipse3D, AlgoHyperbola3D, AlgoIntersectConicPlaneQuadric } from '../algo/AlgoConic3D';
+import { AlgoEllipse3D, AlgoHyperbola3D, AlgoIntersectConicPlaneQuadric, AlgoParabola3D } from '../algo/AlgoConic3D';
 import { GeoNet3D, AlgoPolyhedronNet } from '../algo/AlgoPolyhedronNet';
 import { AlgoElement } from '../algo/AlgoElement';
 import { interpolatePolynomial } from './Polynomial';
@@ -50,9 +53,12 @@ import { AlgoCircleThreePoints } from '../algo/AlgoCircleThreePoints';
 import { AlgoVector } from '../algo/AlgoVector';
 import { AlgoMidpoint } from '../algo/AlgoMidpoint';
 import { AlgoIntersect } from '../algo/AlgoIntersect';
+import { AlgoPolygonBoolean } from '../algo/AlgoPolygonBoolean';
+import { GeoBooleanRegion } from '../geo/GeoBooleanRegion';
 import { AlgoDistance } from '../algo/AlgoDistance';
 import { AlgoSlope } from '../algo/AlgoSlope';
 import { AlgoRotate, AlgoDilate, AlgoMirror } from '../algo/AlgoRotate';
+import { AlgoTranslate } from '../algo/AlgoTranslate';
 import { AlgoFitPoly } from '../algo/AlgoFitPoly';
 import { AlgoFunctionRootPoint } from '../algo/AlgoFunctionRootPoint';
 import { AlgoRootList, ROOT_LIST_CAPACITY } from '../algo/AlgoRootList';
@@ -62,6 +68,9 @@ import { GeoList } from '../geo/GeoList';
 import { AlgoText } from '../algo/AlgoText';
 import { AlgoAngle, AlgoAngleOriented } from '../algo/AlgoAngle';
 import { AlgoPointOnLine } from '../algo/AlgoPointOnLine';
+import { AlgoLocus } from '../algo/AlgoLocus';
+import { AlgoLocus3D } from '../algo/AlgoLocus3D';
+import { GeoLocus } from '../geo/GeoLocus';
 import { AlgoDependentFunction } from '../algo/AlgoDependentFunction';
 import { AlgoDependentNumeric } from '../algo/AlgoDependentNumeric';
 import { AlgoDerivative } from '../algo/AlgoDerivative';
@@ -70,6 +79,7 @@ import { evaluate } from './ExpressionEvaluator';
 import { collectVariables, ExpressionNode, Scope } from './ExpressionNode';
 import { differentiate, expressionToString } from './Differentiator';
 import { extractPolynomialCoefficients, polynomialRealRoots } from './Polynomial';
+import { extractQuadricCoeffs } from './quadricCoeffs';
 import { findRoots, findExtrema, integrate } from './Numerics';
 
 /**
@@ -108,6 +118,7 @@ const COMMAND_ARITY: Record<string, [number, number]> = {
   DirectedAngle: [3, 3],
   Dilate: [2, 3],
   Mirror: [2, 2],
+  Translate: [2, 3],
   Derivative: [1, 1],
   Root: [1, 3],
   Extremum: [1, 3],
@@ -141,6 +152,7 @@ const COMMAND_ARITY: Record<string, [number, number]> = {
   // ---- 参数曲线 / 曲率 ----
   Curve: [5, 5],
   PointOn: [1, 1],
+  Locus: [2, 2],
   Tangent: [2, 2],
   Curvature: [2, 2],
   OsculatingCircle: [2, 2],
@@ -160,15 +172,16 @@ const COMMAND_ARITY: Record<string, [number, number]> = {
   Distance3D: [2, 2],
   // ---- 阶段5：曲面/多面体/测量 ----
   Sphere3D: [2, 2],
-  Cylinder3D: [2, 2],
-  Cone3D: [2, 2],
+  Cylinder3D: [2, 3],
+  Cone3D: [2, 3],
   IntersectLineQuadric: [2, 2],
-  Prism3D: [4, 4],
-  Pyramid3D: [4, 4],
+  Prism3D: [4, 16],
+  Pyramid3D: [4, 16],
   Volume3D: [1, 1],
   Angle3D: [2, 2],
-  // ---- 阶段6：参数曲面 ----
-  Surface: [9, 9],
+  // ---- 阶段6：参数曲面 / 旋转面 ----
+  // Surface 重载：9 元自由参数曲面；2/3 元旋转面（对标 GeoGebra CmdSurfaceCartesian）
+  Surface: [2, 9],
   // ---- 3D 进阶：圆/变换/截面 ----
   Circle3D: [3, 3],
   Translate3D: [4, 4],
@@ -178,8 +191,12 @@ const COMMAND_ARITY: Record<string, [number, number]> = {
   Ellipsoid3D: [4, 4],
   Ellipse3D: [3, 3],
   Hyperbola3D: [3, 3],
+  Parabola3D: [2, 2],
   IntersectConic: [2, 2],
-  Net: [1, 1],
+  Net: [1, 2],
+  // ---- C11：多边形布尔 ----
+  Union: [2, 2],
+  Difference: [2, 2],
 };
 
 /** 只在顶层逗号处切分参数，保留括号内的逗号（`(0, 0), (3, 4)` 切成 2 个而非 4 个）。 */
@@ -434,6 +451,72 @@ export function parseAlgebraInput(
     return point;
   };
 
+  /** 变量 ⊆ {x,y,z} ∪ 已有滑块，或全为常数时把文本解析成表达式；否则 null。 */
+  const tryParseAsQuadricSide = (text: string): ExpressionNode | null => {
+    try {
+      const expr = parseExpression(text.trim());
+      const vars = collectVariables(expr);
+      const hasSpatial = vars.has('x') || vars.has('y') || vars.has('z');
+      const scope: Scope = new Map();
+      for (const name of vars) {
+        if (name === 'x' || name === 'y' || name === 'z') continue;
+        const n = findNumeric(name);
+        if (!n) return null;
+        scope.set(name, n.getValue());
+      }
+      if (!hasSpatial) {
+        // 纯常数侧（如 RHS=0）：只要能求出有限值即可
+        const v = evaluate(expr, scope);
+        return Number.isFinite(v) ? expr : null;
+      }
+      const zero: ExpressionNode = { kind: 'number', value: 0 };
+      if (extractQuadricCoeffs(expr, zero, scope) === null) return null;
+      return expr;
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * 构建 AlgoDependentQuadric3D（lhs − rhs 为二次型）。
+   * expressionText 始终存完整原始输入 raw（序列化 roundtrip 直接重走识别器）。
+   * 要求整体至少含一个 x/y/z（避免 `q = 5` 变成退化曲面）。
+   */
+  const buildQuadricAlgo = (
+    lhs: ExpressionNode,
+    label?: string,
+    rhs?: ExpressionNode,
+  ): AlgoDependentQuadric3D | null => {
+    const rhsExpr = rhs ?? parseExpression('0');
+    const allVars = collectVariables(lhs);
+    collectVariables(rhsExpr, allVars);
+    if (!allVars.has('x') && !allVars.has('y') && !allVars.has('z')) return null;
+    const deps = collectDeps([lhs, rhsExpr], ['x', 'y', 'z']);
+    // 滑块依赖：把当前值放进 scope 试提取，失败则仍建 algo 由 compute 填
+    try {
+      const scope: Scope = new Map();
+      deps.forEach((dep, i) => scope.set(dep.label || `dep${i}`, dep.getValue()));
+      if (extractQuadricCoeffs(lhs, rhsExpr, scope) === null) {
+        // 系数依赖滑块但当前不可提（非多项式）→ 放弃
+        // 多项式但含未注册变量时 extract 返回 null
+        const free = new Set<string>();
+        collectVariables(lhs, free);
+        collectVariables(rhsExpr, free);
+        const known = new Set(['x', 'y', 'z']);
+        deps.forEach(d => known.add(d.label));
+        for (const name of free) if (!known.has(name)) return null;
+        // 已知变量仍提不出 → 非二次多项式
+        return null;
+      }
+      const algo = new AlgoDependentQuadric3D(kernel, lhs, rhsExpr, raw, deps);
+      if (label) algo.getOutput().label = label;
+      if (algo.getOutput().isDefined()) return algo;
+      return null;
+    } catch {
+      return null;
+    }
+  };
+
   // ------------------------------------------------------------------
   // 定义式
   // ------------------------------------------------------------------
@@ -493,6 +576,18 @@ export function parseAlgebraInput(
       }
 
       const expression = parseExpression(rightText);
+      // 带标签的隐式二次曲面：`quad = x^2 + y^2 - z^2 - 1`（变量 ⊆ {x,y,z}∪滑块 且次数 ≤2）
+      {
+        const algo = (() => {
+          const probe = tryParseAsQuadricSide(rightText);
+          return probe ? buildQuadricAlgo(probe, leftText) : null;
+        })();
+        if (algo) {
+          algo.getOutput().label = leftText;
+          existingLabels.add(leftText);
+          return [algo, algo.getOutput()];
+        }
+      }
       const dependencies = makeNumericDependencies(expression);
       if (dependencies.length > 0) {
         const algo = new AlgoDependentNumeric(kernel, expression, dependencies, rightText);
@@ -504,6 +599,19 @@ export function parseAlgebraInput(
         const numeric = new GeoNumeric(kernel, value);
         numeric.label = leftText;
         return [numeric];
+      }
+    }
+
+    // 无标签隐式方程：`x^2 + y^2 - z^2 = 1` → 一般二次曲面
+    {
+      const lhsExpr = tryParseAsQuadricSide(leftText);
+      const rhsExpr = tryParseAsQuadricSide(rightText);
+      if (lhsExpr && rhsExpr) {
+        const algo = buildQuadricAlgo(lhsExpr, undefined, rhsExpr);
+        if (algo) {
+          algo.getOutput().label = construction.getNextFunctionLabel(existingLabels);
+          return [algo, algo.getOutput()];
+        }
       }
     }
 
@@ -719,16 +827,25 @@ const curveDependencies = (
   return deps;
 };
 
-/** 给算法输出按类型分配标签（点/线/数值），供属性类命令使用。 */
+/** 给算法输出按类型分配标签（点/线/圆/多边形/向量/数值/函数），供变换与属性类命令使用。 */
 const assignOutputLabels = (ctx: CommandContext, outputs: GeoElement[]): void => {
   const used = new Set<string>();
   for (const out of outputs) {
     if (out instanceof GeoPoint) {
       ctx.assignNextLabel(out, () => ctx.construction.getNextPointLabel(used));
+    } else if (out instanceof GeoConic) {
+      // GeoArc/GeoConicPart 也走这里：变换输出可能是圆或一般圆锥曲线
+      ctx.assignNextLabel(out, () => ctx.construction.getNextCircleLabel(used));
     } else if (out instanceof GeoLine) {
       ctx.assignNextLabel(out, () => ctx.construction.getNextLineLabel(used));
+    } else if (out instanceof GeoVector) {
+      ctx.assignNextLabel(out, () => ctx.construction.getNextLineLabel(used));
+    } else if (out instanceof GeoPolygon || out instanceof GeoBooleanRegion) {
+      ctx.assignNextLabel(out, () => ctx.construction.getNextPolygonLabel(used));
     } else if (out instanceof GeoNumeric) {
       ctx.assignNextLabel(out, () => ctx.construction.getNextNumericLabel(used));
+    } else if (out instanceof GeoFunction) {
+      ctx.assignNextLabel(out, () => ctx.construction.getNextFunctionLabel(used));
     } else if (out instanceof GeoCurve) {
       ctx.assignNextLabel(out, () => ctx.construction.getNextLineLabel(used));
     }
@@ -795,11 +912,38 @@ const dispatchCommand = (
     }
 
     case 'Intersection': {
+      // 多边形 × 多边形 → 布尔交（GeoGebra AlgoPolygonOperation.INTERSECTION）
+      const polyA = ctx.findPolygon(args[0].trim());
+      const polyB = ctx.findPolygon(args[1].trim());
+      if (polyA && polyB) {
+        const algo = new AlgoPolygonBoolean(kernel, polyA, polyB, 'intersection');
+        assignOutputLabels(ctx, [algo.getOutput()]);
+        return [algo, algo.getOutput()];
+      }
       const algo = new AlgoIntersect(kernel, resolveObjectArg(ctx, args[0]), resolveObjectArg(ctx, args[1]));
       algo.compute();
       const points = algo.getOutputPoints().filter(point => point.isDefined());
       if (points.length === 0) throw new Error('The given objects do not intersect');
       return [algo, ...points];
+    }
+
+    case 'Union': {
+      // 多边形并集（列表 Union 见 GeoGebra AlgoUnion，此处先做多边形）
+      const a = ctx.findPolygon(args[0].trim());
+      const b = ctx.findPolygon(args[1].trim());
+      if (!a || !b) throw new Error(`Union expects two polygons`);
+      const algo = new AlgoPolygonBoolean(kernel, a, b, 'union');
+      assignOutputLabels(ctx, [algo.getOutput()]);
+      return [algo, algo.getOutput()];
+    }
+
+    case 'Difference': {
+      const a = ctx.findPolygon(args[0].trim());
+      const b = ctx.findPolygon(args[1].trim());
+      if (!a || !b) throw new Error(`Difference expects two polygons`);
+      const algo = new AlgoPolygonBoolean(kernel, a, b, 'difference');
+      assignOutputLabels(ctx, [algo.getOutput()]);
+      return [algo, algo.getOutput()];
     }
 
     case 'PointOnLine': {
@@ -909,7 +1053,7 @@ const dispatchCommand = (
       const algo = center
         ? new AlgoRotate(kernel, obj, center, angleDeg * Math.PI / 180)
         : new AlgoRotate(kernel, obj, { x: 0, y: 0 }, angleDeg * Math.PI / 180);
-      assignNextLabel(algo.getOutput(), () => construction.getNextPointLabel(existingLabels));
+      assignOutputLabels(ctx, [algo.getOutput()]);
       return [algo, algo.getOutput()];
     }
 
@@ -921,7 +1065,7 @@ const dispatchCommand = (
       const algo = center
         ? new AlgoDilate(kernel, obj, center, ratio)
         : new AlgoDilate(kernel, obj, { x: 0, y: 0 }, ratio);
-      assignNextLabel(algo.getOutput(), () => construction.getNextPointLabel(existingLabels));
+      assignOutputLabels(ctx, [algo.getOutput()]);
       return [algo, algo.getOutput()];
     }
 
@@ -930,7 +1074,27 @@ const dispatchCommand = (
       const axis = ctx.findLine(args[1].trim());
       if (!axis) throw new Error(`Unknown line "${args[1].trim()}"`);
       const algo = new AlgoMirror(kernel, obj, axis.a, axis.b, axis.c, axis);
-      assignNextLabel(algo.getOutput(), () => construction.getNextPointLabel(existingLabels));
+      assignOutputLabels(ctx, [algo.getOutput()]);
+      return [algo, algo.getOutput()];
+    }
+
+    // Translate(obj, v) 活向量；Translate(obj, dx, dy) 冻结分量
+    case 'Translate': {
+      const obj = resolveObjectArg(ctx, args[0]);
+      if (args.length >= 3) {
+        const dx = ctx.resolveNumber(args[1]);
+        const dy = ctx.resolveNumber(args[2]);
+        const algo = new AlgoTranslate(kernel, obj, { x: dx, y: dy });
+        assignOutputLabels(ctx, [algo.getOutput()]);
+        return [algo, algo.getOutput()];
+      }
+      const vectorLabel = args[1].trim();
+      const vector = ctx.construction.getElements().find(
+        el => el instanceof GeoVector && (el as GeoVector).label === vectorLabel,
+      ) as GeoVector | undefined;
+      if (!vector) throw new Error(`Unknown vector "${vectorLabel}"`);
+      const algo = new AlgoTranslate(kernel, obj, vector);
+      assignOutputLabels(ctx, [algo.getOutput()]);
       return [algo, algo.getOutput()];
     }
 
@@ -1352,13 +1516,19 @@ const dispatchCommand = (
     }
 
     case 'PointOn': {
-      // PointOn(path)：在线/线段/圆锥/函数/曲线上放置约束点
+      // PointOn(path)：在线/线段/圆锥/函数/曲线上放置约束点（含 3D path，C10）
       const label = args[0].trim();
       const line = ctx.findLine(label);
       const conic = ctx.findConic(label);
       const fn = ctx.findFunction(label);
       const curve = ctx.findCurve(label);
-      if (!line && !conic && !fn && !curve) throw new Error(`Unknown path "${label}"`);
+      const line3 = ctx.findLine3D(label);
+      const circle3 = ctx.findCircle3D(label);
+      const conic3 = ctx.findConic3D(label);
+      const poly3 = ctx.findPolyline3D(label);
+      if (!line && !conic && !fn && !curve && !line3 && !circle3 && !conic3 && !poly3) {
+        throw new Error(`Unknown path "${label}"`);
+      }
       const param = new GeoNumeric(kernel, 0);
       param.label = construction.getNextNumericLabel(existingLabels);
       existingLabels.add(param.label);
@@ -1372,12 +1542,45 @@ const dispatchCommand = (
       } else if (conic) {
         param.setValue(0);
         algo = new AlgoPointOnConic(kernel, conic, param);
+      } else if (line3) {
+        param.setValue(0.5);
+        algo = new AlgoPointOnLine3D(kernel, line3, param);
+      } else if (circle3) {
+        param.setValue(0);
+        algo = new AlgoPointOnCircle3D(kernel, circle3, param);
+      } else if (conic3) {
+        param.setValue(0);
+        algo = new AlgoPointOnConic3D(kernel, conic3, param);
+      } else if (poly3) {
+        param.setValue(0);
+        algo = new AlgoPointOnPolyline3D(kernel, poly3, param);
       } else {
         param.setValue(0);
         algo = new AlgoPointOnLine(kernel, line!, param);
       }
       assignNextLabel(algo.getGeoElements()[0], () => construction.getNextPointLabel(existingLabels));
       return [param, algo, ...algo.getGeoElements()];
+    }
+
+    case 'Locus': {
+      // Locus(tracer, driver)：2D/3D 轨迹（C5 补 3D 分支）
+      const tracer3 = ctx.findPoint3D(args[0].trim());
+      const driver3 = ctx.findPoint3D(args[1].trim());
+      if (tracer3 && driver3) {
+        const algo = new AlgoLocus3D(kernel, tracer3, driver3);
+        assignNextLabel(algo.getGeoElements()[0], () => `locus${existingLabels.size}`);
+        existingLabels.add(algo.getGeoElements()[0].label);
+        return [algo, ...algo.getGeoElements()];
+      }
+      const tracer2 = ctx.findPoint(args[0].trim());
+      const driver2 = ctx.findPoint(args[1].trim());
+      if (tracer2 && driver2) {
+        const algo = new AlgoLocus(kernel, tracer2, driver2);
+        assignNextLabel(algo.getGeoElements()[0], () => `locus${existingLabels.size}`);
+        existingLabels.add(algo.getGeoElements()[0].label);
+        return [algo, ...algo.getGeoElements()];
+      }
+      throw new Error(`Locus expects (tracer, driver) points in 2D or 3D`);
     }
 
     case 'Tangent': {
@@ -1425,8 +1628,17 @@ const dispatchCommand = (
 
     case 'PointIn':
     case 'RandomPointIn': {
-      const region = ctx.findPolygon(args[0].trim()) ?? ctx.findConic(args[0].trim());
-      if (!region) throw new Error(`Unknown polygon or conic "${args[0].trim()}"`);
+      const labelText = args[0].trim();
+      const plane3 = ctx.findPlane3D(labelText);
+      if (plane3) {
+        if (name !== 'PointIn') throw new Error(`RandomPointIn does not support plane "${labelText}"`);
+        // 平面是无限 Region3D（C10）：点落在面内 CoordSys 原点，可拖拽
+        const algo = new AlgoPointInPlane3D(kernel, plane3);
+        assignNextLabel(algo.getGeoElements()[0], () => construction.getNextPointLabel(existingLabels));
+        return [algo, ...algo.getGeoElements()];
+      }
+      const region = ctx.findPolygon(labelText) ?? ctx.findConic(labelText);
+      if (!region) throw new Error(`Unknown polygon, conic, or plane "${labelText}"`);
       const algo = name === 'PointIn'
         ? new AlgoPointInRegion(kernel, region)
         : new AlgoRandomPointIn(kernel, region);
@@ -1533,9 +1745,15 @@ const dispatchCommand = (
       const axis = ctx.findLine3D(args[0].trim());
       if (!axis) throw new Error(`Unknown 3D line "${args[0].trim()}"`);
       const value = ctx.resolveNumber(args[1]);
+      // 第三参可选：有限高（数或活滑块）；缺省 → 无限
+      let height: number | GeoNumeric | null = null;
+      if (args.length >= 3) {
+        const hText = args[2].trim();
+        height = ctx.findNumeric(hText) ?? ctx.resolveNumber(hText);
+      }
       const algo = name === 'Cylinder3D'
-        ? new AlgoCylinder3D(kernel, axis, value)
-        : new AlgoCone3D(kernel, axis, value * Math.PI / 180);
+        ? new AlgoCylinder3D(kernel, axis, value, height)
+        : new AlgoCone3D(kernel, axis, value * Math.PI / 180, height);
       assignNextLabel(algo.getOutput(), () => construction.getNextLineLabel(existingLabels));
       return [algo, algo.getOutput()];
     }
@@ -1550,24 +1768,32 @@ const dispatchCommand = (
     }
 
     case 'Prism3D': {
-      const pts = args.slice(0, 3).map(a => {
+      // Prism3D(P1..Pn, h) 直棱柱 / Prism3D(P1..Pn, Q) 斜棱柱（Q 为顶面参考点）
+      const lastText = args[args.length - 1].trim();
+      const pts = args.slice(0, -1).map(a => {
         const p = ctx.findPoint3D(a.trim());
         if (!p) throw new Error(`Unknown 3D point "${a.trim()}"`);
         return p;
       });
-      const algo = new AlgoPrism3D(kernel, pts, ctx.resolveNumber(args[3]));
+      if (pts.length < 3) throw new Error(`Prism3D expects at least 3 base points`);
+      const topPoint = ctx.findPoint3D(lastText);
+      const extrusion = topPoint ?? ctx.resolveNumber(lastText);
+      const algo = new AlgoPrism3D(kernel, pts, extrusion);
       assignNextLabel(algo.getOutput(), () => construction.getNextLineLabel(existingLabels));
       return [algo, algo.getOutput()];
     }
 
     case 'Pyramid3D': {
-      const pts = args.slice(0, 3).map(a => {
+      // Pyramid3D(P1..Pn, apex)：前 n−1 个为底面点，末位为顶点
+      const apexText = args[args.length - 1].trim();
+      const apex = ctx.findPoint3D(apexText);
+      if (!apex) throw new Error(`Unknown 3D point "${apexText}"`);
+      const pts = args.slice(0, -1).map(a => {
         const p = ctx.findPoint3D(a.trim());
         if (!p) throw new Error(`Unknown 3D point "${a.trim()}"`);
         return p;
       });
-      const apex = ctx.findPoint3D(args[3].trim());
-      if (!apex) throw new Error(`Unknown 3D point "${args[3].trim()}"`);
+      if (pts.length < 3) throw new Error(`Pyramid3D expects at least 3 base points`);
       const algo = new AlgoPyramid3D(kernel, pts, apex);
       assignNextLabel(algo.getOutput(), () => construction.getNextLineLabel(existingLabels));
       return [algo, algo.getOutput()];
@@ -1599,6 +1825,26 @@ const dispatchCommand = (
     }
 
     case 'Surface': {
+      // 旋转面：Surface(path, angleDeg) | Surface(path, angleDeg, axis)
+      if (args.length === 2 || args.length === 3) {
+        const pathLabel = args[0].trim();
+        const path = ctx.findFunction(pathLabel) ?? ctx.findCurve(pathLabel);
+        if (!path) throw new Error(`Surface expects a function or curve "${pathLabel}"`);
+        const angleText = args[1].trim();
+        const angleNumeric = ctx.findNumeric(angleText);
+        const angle: GeoNumeric | number = angleNumeric ?? ctx.evaluateNumber(angleText);
+        let axis: GeoLine3D | null = null;
+        if (args.length === 3) {
+          axis = ctx.findLine3D(args[2].trim());
+          if (!axis) throw new Error(`Unknown 3D line "${args[2].trim()}"`);
+        }
+        const algo = new AlgoSurfaceOfRevolution(kernel, path, angle, axis);
+        assignNextLabel(algo.getOutput(), () => construction.getNextLineLabel(existingLabels));
+        return [algo, algo.getOutput()];
+      }
+      if (args.length !== 9) {
+        throw new Error('Surface requires 2 or 3 arguments (revolution) or 9 (parametric)');
+      }
       // Surface(x(u,v), y(u,v), z(u,v), u, u0, u1, v, v0, v1)
       const paramU = args[3].trim();
       const paramV = args[6].trim();
@@ -1733,9 +1979,16 @@ const dispatchCommand = (
     case 'Net': {
       const polyhedron = ctx.findPolyhedron3D(args[0].trim());
       if (!polyhedron) throw new Error(`Unknown 3D polyhedron "${args[0].trim()}"`);
-      const algo = new AlgoPolyhedronNet(kernel, polyhedron);
+      // 可选展开因子 v∈[0,1]：活滑块走 GeoNumeric，字面量冻结为 number
+      let factor: number | GeoNumeric | undefined;
+      if (args.length > 1) {
+        const text = args[1].trim();
+        factor = ctx.findNumeric(text) ?? ctx.evaluateNumber(text);
+      }
+      const algo = new AlgoPolyhedronNet(kernel, polyhedron, factor);
       assignNextLabel(algo.getOutput(), () => construction.getNextLineLabel(existingLabels));
-      return [algo, algo.getOutput()];
+      assignOutputLabels(ctx, algo.getFacePolygons());
+      return [algo, ...algo.getGeoElements()];
     }
 
     case 'IntersectConic': {
@@ -1743,6 +1996,15 @@ const dispatchCommand = (
       const quadric = ctx.findQuadric3D(args[1].trim());
       if (!plane || !quadric) throw new Error(`IntersectConic expects a 3D plane and a quadric`);
       const algo = new AlgoIntersectConicPlaneQuadric(kernel, plane, quadric);
+      assignNextLabel(algo.getOutput(), () => construction.getNextLineLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+
+    case 'Parabola3D': {
+      const p = ctx.findPoint3D(args[0].trim());
+      const l = ctx.findLine3D(args[1].trim());
+      if (!p || !l) throw new Error(`Parabola3D expects a 3D point (focus) and a 3D line (directrix)`);
+      const algo = new AlgoParabola3D(kernel, p, l);
       assignNextLabel(algo.getOutput(), () => construction.getNextLineLabel(existingLabels));
       return [algo, algo.getOutput()];
     }

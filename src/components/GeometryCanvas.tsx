@@ -21,6 +21,7 @@ import { AlgoMidpoint } from '../kernel/algo/AlgoMidpoint';
 import { ConstructionElement } from '../kernel/core/ConstructionElement';
 import { GeoElement } from '../kernel/geo/GeoElement';
 import { GeoLocus } from '../kernel/geo/GeoLocus';
+import { GeoBooleanRegion } from '../kernel/geo/GeoBooleanRegion';
 import { GeoFunction } from '../kernel/geo/GeoFunction';
 import { GeoCurve } from '../kernel/geo/GeoCurve';
 import { GeoInequality } from '../kernel/geo/GeoInequality';
@@ -33,8 +34,9 @@ import { CoordinateSystem } from '../kernel/core/CoordinateSystem';
 import { IRenderer, TextItem } from '../kernel/view/IRenderer';
 import { createRenderer } from '../kernel/view/WebGLRendererFallback';
 import { serialize as serializeConstruction, deserialize as deserializeConstruction, downloadJSON } from '../kernel/persistence/ConstructionSerializer';
+import { importOFF } from '../kernel/io/OffParser';
 import { toolHandlers, clearToolState } from './tools/handlers';
-import { drawGrid, drawPoint, drawLine, drawSegment, drawPolygon, drawConic, drawLocus, drawFunction, renderPreviews, drawVector, drawPolyLine, drawArc, drawConicPart, drawRay, drawHoverMarker, drawCurve, drawInequality, drawText } from './drawHelpers';
+import { drawGrid, drawPoint, drawLine, drawSegment, drawPolygon, drawConic, drawLocus, drawBooleanRegion, drawFunction, renderPreviews, drawVector, drawPolyLine, drawArc, drawConicPart, drawRay, drawHoverMarker, drawCurve, drawInequality, drawText } from './drawHelpers';
 import { useLanguage } from '../i18n/LanguageContext';
 import { Undo2, Redo2, Globe, ZoomIn, ZoomOut, Home, Trash2, Eye, EyeOff, Tag, MousePointerClick, Play, Pause } from 'lucide-react';
 import { ToolMode } from './tools/types';
@@ -272,7 +274,13 @@ export const GeometryCanvas: React.FC = () => {
     reader.onload = (ev) => {
       try {
         const text = typeof ev.target?.result === 'string' ? ev.target.result : ''; if (!text.trim()) return;
-        const { coord: restored } = deserializeConstruction(kernel, text); if (restored) setCoord(restored);
+        // C11：OFF 网格导入（按扩展名或 OFF 头判定）
+        const isOff = /\.off$/i.test(file.name) || /^\s*OFF\b/i.test(text);
+        if (isOff && !/^\s*\{/.test(text)) {
+          importOFF(kernel, text);
+        } else {
+          const { coord: restored } = deserializeConstruction(kernel, text); if (restored) setCoord(restored);
+        }
         setSelectedElements([]); setPolygonPoints([]); setRenderRev(r => r + 1);
       } catch (err) { console.error('[import failed]', err); alert('导入失败'); }
       finally { if (fileInputRef.current) fileInputRef.current.value = ''; }
@@ -398,6 +406,7 @@ export const GeometryCanvas: React.FC = () => {
       else if (el instanceof GeoArc) drawArc(renderer, el, selectedElements.includes(el), coord.xScale);
       else if (el instanceof GeoConic) drawConic(renderer, el, selectedElements.includes(el), coord.xScale);
       else if (el instanceof GeoLocus) drawLocus(renderer, el, selectedElements.includes(el), coord.xScale);
+      else if (el instanceof GeoBooleanRegion) drawBooleanRegion(renderer, el, selectedElements.includes(el), coord.xScale);
       else if (el instanceof GeoFunction) drawFunction(renderer, el, selectedElements.includes(el), coord.visibleWorldBounds(), coord.xScale, canvas.width / dpr);
       else if (el instanceof GeoCurve) drawCurve(renderer, el, selectedElements.includes(el), coord.visibleWorldBounds(), coord.xScale, canvas.width / dpr);
       else if (el instanceof GeoInequality) drawInequality(renderer, el, coord.visibleWorldBounds(), coord.xScale);

@@ -12,6 +12,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Home, Grid3X3, RotateCw, Pause, Play } from 'lucide-react';
 import type { ProjectionMode, StandardView } from '../kernel/view/WebGL3DRenderer';
+import type { ClippingReduction } from '../kernel/view/ClippingBox';
 import type { TFunction } from '../i18n/LanguageContext';
 
 interface Props {
@@ -31,11 +32,21 @@ interface Props {
   /** 旋转动画速度（0 = 停止, 正值 = 顺时针, 负值 = 逆时针）。 */
   rotationSpeed: number;
   setRotationSpeed: (v: number) => void;
+  /** 裁剪盒线框显示开关（GeoGebra showClippingCube）。 */
+  showClipBox: boolean;
+  setShowClipBox: (v: boolean | ((p: boolean) => boolean)) => void;
+  /** 裁剪盒缩减档位：0 小 / 1 中 / 2 大（大 = 几乎不裁剪）。 */
+  clipReduction: ClippingReduction;
+  setClipReduction: (v: ClippingReduction) => void;
   t: TFunction;
 }
 
 const AXES_PLANE_KEYS: ('axesPlaneNone' | 'axesOnly' | 'planeOnly' | 'axesAndPlane')[] = [
   'axesPlaneNone', 'axesOnly', 'planeOnly', 'axesAndPlane',
+];
+
+const BOX_SIZE_KEYS: ('boxSizeSmall' | 'boxSizeMedium' | 'boxSizeLarge')[] = [
+  'boxSizeSmall', 'boxSizeMedium', 'boxSizeLarge',
 ];
 
 export const Geometry3DToolbar: React.FC<Props> = ({
@@ -45,16 +56,20 @@ export const Geometry3DToolbar: React.FC<Props> = ({
   axesPlaneMode, setAxesPlaneMode,
   planeXY, setPlaneXY,
   rotationSpeed, setRotationSpeed,
+  showClipBox, setShowClipBox,
+  clipReduction, setClipReduction,
   t,
 }) => {
   const [showViewMenu, setShowViewMenu] = useState(false);
   const [showProjectionMenu, setShowProjectionMenu] = useState(false);
   const [showAxesPlaneMenu, setShowAxesPlaneMenu] = useState(false);
   const [showRotationPanel, setShowRotationPanel] = useState(false);
+  const [showClipMenu, setShowClipMenu] = useState(false);
 
   const viewMenuRef = useRef<HTMLDivElement>(null);
   const projMenuRef = useRef<HTMLDivElement>(null);
   const axesMenuRef = useRef<HTMLDivElement>(null);
+  const clipMenuRef = useRef<HTMLDivElement>(null);
 
   // 点击外部关闭菜单
   useEffect(() => {
@@ -63,6 +78,7 @@ export const Geometry3DToolbar: React.FC<Props> = ({
       if (viewMenuRef.current && !viewMenuRef.current.contains(target)) setShowViewMenu(false);
       if (projMenuRef.current && !projMenuRef.current.contains(target)) setShowProjectionMenu(false);
       if (axesMenuRef.current && !axesMenuRef.current.contains(target)) setShowAxesPlaneMenu(false);
+      if (clipMenuRef.current && !clipMenuRef.current.contains(target)) setShowClipMenu(false);
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
@@ -181,6 +197,45 @@ export const Geometry3DToolbar: React.FC<Props> = ({
       >
         <Grid3X3 size={18} />
       </button>
+
+      {/* ── 裁剪盒 ── */}
+      <div ref={clipMenuRef} className="relative">
+        <button
+          className={`w-9 h-9 flex items-center justify-center rounded-lg bg-white/90 shadow border border-gray-200 transition-colors ${
+            showClipBox ? 'text-blue-600 border-blue-300' : 'text-gray-600 hover:bg-gray-50 hover:text-blue-600'
+          }`}
+          onClick={() => {
+            setShowClipMenu(!showClipMenu);
+            setShowViewMenu(false);
+            setShowProjectionMenu(false);
+            setShowAxesPlaneMenu(false);
+          }}
+          title={t('clipBox')}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M12 2l9 5v10l-9 5-9-5V7l9-5z" />
+            <path d="M12 12l9-5M12 12v10M12 12L3 7" opacity="0.4" />
+          </svg>
+        </button>
+        {showClipMenu && (
+          <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg py-1 min-w-[150px]">
+            <ViewMenuItem
+              label={t('clipBoxShow')}
+              active={showClipBox}
+              onClick={() => setShowClipBox(!showClipBox)}
+            />
+            <div className="border-t border-gray-100 my-1" />
+            {([0, 1, 2] as ClippingReduction[]).map(r => (
+              <ViewMenuItem
+                key={r}
+                label={t(BOX_SIZE_KEYS[r])}
+                active={clipReduction === r}
+                onClick={() => setClipReduction(r)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* ── 旋转动画 ── */}
       <div className="relative">

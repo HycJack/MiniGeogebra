@@ -3,6 +3,8 @@ import { Kernel } from '../kernel/core/Kernel';
 import { GeoNet3D, AlgoPolyhedronNet } from '../kernel/algo/AlgoPolyhedronNet';
 import { GeoPolyhedron3D } from '../kernel/algo/AlgoPolyhedron3D';
 import { GeoQuadric3D } from '../kernel/geo/GeoQuadric3D';
+import { GeoNumeric } from '../kernel/geo/GeoNumeric';
+import { GeoPolygon } from '../kernel/geo/GeoPolygon';
 import { Coords4 } from '../kernel/core/Coords4';
 import { GeoLine3D } from '../kernel/geo/GeoLine3D';
 import { parseAlgebraInput } from '../kernel/algebra/EquationRecognizer';
@@ -71,6 +73,138 @@ describe('Net: polyhedron unfold', () => {
     expect(net.faces.length).toBe(5); // 底 + 3 侧 + 顶
     expect(net.area()).toBeCloseTo(sideArea(py), 6);
     expect(net.isCoplanar()).toBe(true);
+  });
+});
+
+describe('C8: unfold factor + xOy independent polygons', () => {
+  const setupPyramid = (kernel: Kernel) => {
+    addInput(kernel, 'A = (0, 0, 0)');
+    addInput(kernel, 'B = (2, 0, 0)');
+    addInput(kernel, 'C = (0, 2, 0)');
+    addInput(kernel, 'T = (0, 0, 2)');
+    addInput(kernel, 'Pyramid3D(A, B, C, T)');
+    return ofType(kernel, GeoPolyhedron3D)[0];
+  };
+
+  it('factor 0 keeps the net closed (not coplanar); factor 1 fully unfolds', () => {
+    const kernel = makeKernel();
+    const py = setupPyramid(kernel);
+    const [closed] = outputsOf(kernel, `Net(${py.label}, 0)`, GeoNet3D);
+    expect(closed.isDefined()).toBe(true);
+    expect(closed.isCoplanar()).toBe(false);
+    // 面积在任意因子下守恒（刚体旋转不改面积）
+    expect(closed.area()).toBeCloseTo(sideArea(py), 6);
+
+    const [open] = outputsOf(kernel, `Net(${py.label}, 1)`, GeoNet3D);
+    expect(open.isCoplanar()).toBe(true);
+    expect(open.area()).toBeCloseTo(sideArea(py), 6);
+  });
+
+  it('factor 0.5 is partially unfolded: side apex z between closed and open', () => {
+    const kernel = makeKernel();
+    const py = setupPyramid(kernel);
+    const apex = py.vertices[3];
+    const [half] = outputsOf(kernel, `Net(${py.label}, 0.5)`, GeoNet3D);
+    expect(half.isDefined()).toBe(true);
+    const halfApexZ = half.faces[1][2].getZ();
+    // 闭合时侧面顶点保持原高度 2；完全展开后落在底面 z=0
+    expect(halfApexZ).toBeGreaterThan(0);
+    expect(halfApexZ).toBeLessThan(apex.getZ());
+    expect(half.isCoplanar()).toBe(false);
+  });
+
+  it('factor out of [0,1] makes the net undefined (GeoGebra parity)', () => {
+    const kernel = makeKernel();
+    const py = setupPyramid(kernel);
+    const [tooMuch] = outputsOf(kernel, `Net(${py.label}, 1.5)`, GeoNet3D);
+    expect(tooMuch.isDefined()).toBe(false);
+    const [negative] = outputsOf(kernel, `Net(${py.label}, -0.1)`, GeoNet3D);
+    expect(negative.isDefined()).toBe(false);
+  });
+
+  it('live GeoNumeric factor re-unfolds on slider change', () => {
+    const kernel = makeKernel();
+    const py = setupPyramid(kernel);
+    addInput(kernel, 'v = 0');
+    const slider = ofType(kernel, GeoNumeric)[0];
+    const [net] = outputsOf(kernel, `Net(${py.label}, v)`, GeoNet3D);
+    expect(net.isDefined()).toBe(true);
+    expect(net.isCoplanar()).toBe(false);
+
+    slider.setValue(1);
+    kernel.getConstruction().updateAllAlgorithms();
+    expect(net.isCoplanar()).toBe(true);
+
+    slider.setValue(0.5);
+    kernel.getConstruction().updateAllAlgorithms();
+    expect(net.isCoplanar()).toBe(false);
+  });
+
+  it('outputs independent GeoPolygon faces on the xOy plane (z=0)', () => {
+    const kernel = makeKernel();
+    const py = setupPyramid(kernel);
+    const before = ofType(kernel, GeoPolygon).length;
+    const elements = addInput(kernel, `Net(${py.label}, 1)`);
+    const polys = elements.filter(el => el instanceof GeoPolygon) as GeoPolygon[];
+    // 底面 + 3 侧面
+    expect(polys.length).toBe(4);
+    expect(ofType(kernel, GeoPolygon).length).toBe(before + 4);
+    for (const poly of polys) {
+      expect(poly.isDefined()).toBe(true);
+      expect(poly.vertices.length).toBeGreaterThanOrEqual(3);
+      // GeoPolygon 是 2D 对象：顶点活在 xOy 上（齐次 w=1），坐标即映射后的 x,y
+      for (const v of poly.vertices) {
+        expect(Number.isFinite(v.getX())).toBe(true);
+        expect(Number.isFinite(v.getY())).toBe(true);
+      }
+    }
+    // 全部面在 xOy 上且面积守恒
+    let area2d = 0;
+    for (const poly of polys) {
+      let sum = 0;
+      const vs = poly.vertices;
+      for (let i = 0, j = vs.length - 1; i < vs.length; j = i++) {
+        sum += vs[j].getX() * vs[i].getY() - vs[i].getX() * vs[j].getY();
+      }
+      area2d += Math.abs(sum) / 2;
+    }
+    expect(area2d).toBeCloseTo(sideArea(py), 5);
+  });
+
+  it('round-trips Net with a frozen factor and face polygon count', () => {
+    const kernel = makeKernel();
+    const py = setupPyramid(kernel);
+    addInput(kernel, `Net(${py.label}, 0.25)`);
+    const restored = new Kernel();
+    deserialize(restored, serialize(kernel));
+    const nets = restored.getConstruction().getElements()
+      .filter(el => el instanceof GeoNet3D) as GeoNet3D[];
+    expect(nets).toHaveLength(1);
+    expect(nets[0].isDefined()).toBe(true);
+    expect(nets[0].faces.length).toBe(4);
+    expect(nets[0].isCoplanar()).toBe(false); // 0.25 未完全展开
+    const polys = restored.getConstruction().getElements()
+      .filter(el => el instanceof GeoPolygon) as GeoPolygon[];
+    expect(polys.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('round-trips Net with a live GeoNumeric factor', () => {
+    const kernel = makeKernel();
+    const py = setupPyramid(kernel);
+    addInput(kernel, 'v = 0.5');
+    addInput(kernel, `Net(${py.label}, v)`);
+    const restored = new Kernel();
+    deserialize(restored, serialize(kernel));
+    const nets = restored.getConstruction().getElements()
+      .filter(el => el instanceof GeoNet3D) as GeoNet3D[];
+    expect(nets).toHaveLength(1);
+    expect(nets[0].isDefined()).toBe(true);
+    // 活输入恢复后仍应跟随滑块
+    const slider = restored.getConstruction().getElements()
+      .filter(el => el instanceof GeoNumeric)[0] as GeoNumeric;
+    slider.setValue(1);
+    restored.getConstruction().updateAllAlgorithms();
+    expect(nets[0].isCoplanar()).toBe(true);
   });
 });
 

@@ -31,9 +31,11 @@ import {
   AlgoOrthogonalLine, AlgoPerpendicularBisector, AlgoAngleBisector, AlgoTangent,
   AlgoLocus, AlgoDistance, AlgoAngle, AlgoArea, AlgoArc,
   AlgoRegularPolygon, AlgoCircleCenter,
+  AlgoRotate, AlgoDilate, AlgoMirror, AlgoTranslate, AlgoShearStretch, AlgoInvert,
   buildTransformed,
 } from '../../kernel/algo';
-import { shearStretchMatrix } from '../../kernel/algo/AlgoRotate';
+import { AlgoElement } from '../../kernel/algo/AlgoElement';
+import { GeoNumeric } from '../../kernel/geo/GeoNumeric';
 import { AlgoRayTwoPoints } from '../../kernel/algo/AlgoRayTwoPoints';
 import {
   AlgoVector, AlgoPolyLine, AlgoSemicircle, AlgoCircularSector,
@@ -93,12 +95,40 @@ export const handlePointerDown = (
     else kernel.notifyUpdate(obj);
   };
 
-  const addAlgoAndNotify = (algo: any) => {
-    kernel.getConstruction().addElement(algo);
-    const out = algo.getOutput();
-    if (Array.isArray(out)) out.forEach(notifyUpdate);
-    else if (out) notifyUpdate(out);
+  /** 按类型给尚未分配标签的输出补标签（Algo 构造器未必给标签）。 */
+  const assignOutputLabel = (out: GeoElement) => {
+    if (out.label) return;
+    const cons = kernel.getConstruction();
+    if (out instanceof GeoPoint) out.label = cons.getNextPointLabel();
+    else if (out instanceof GeoConic) out.label = cons.getNextCircleLabel();
+    else if (out instanceof GeoLine) out.label = cons.getNextLineLabel();
+    else if (out instanceof GeoVector) out.label = cons.getNextLineLabel();
+    else if (out instanceof GeoPolygon) out.label = cons.getNextPolygonLabel();
+    else if (out instanceof GeoNumeric) out.label = cons.getNextNumericLabel();
+    else if (out instanceof GeoFunction) out.label = cons.getNextFunctionLabel();
   };
+
+  /**
+   * 统一登记算法：algo + 全部输出入 construction，补标签，同步 update 后通知视图。
+   * 此前只 addElement(algo) 却漏注册输出（也未 compute），命中/序列化会丢对象。
+   */
+  const addAlgoAndNotify = (algo: AlgoElement) => {
+    const cons = kernel.getConstruction();
+    const present = cons.getElements();
+    if (!present.includes(algo)) cons.addElement(algo);
+    for (const out of algo.getGeoElements()) {
+      assignOutputLabel(out);
+      if (!cons.getElements().includes(out)) cons.addElement(out);
+    }
+    algo.update();
+    kernel.notifyUpdate(algo);
+  };
+
+  /** buildTransformed 对这些类型会原样返回输入（输出别名源对象）——不建 Algo。 */
+  const isTransformable = (el: GeoElement): boolean =>
+    el instanceof GeoPoint || el instanceof GeoSegment || el instanceof GeoLine ||
+    el instanceof GeoRay || el instanceof GeoConic || el instanceof GeoPolygon ||
+    el instanceof GeoPolyLine || el instanceof GeoLocus || el instanceof GeoNumeric;
 
   const selOne = (p: GeoPoint) => { setSelectedElements([p]); setRenderRev(r => r + 1); };
   const clearSel = () => { setSelectedElements([]); setRenderRev(r => r + 1); };
@@ -604,11 +634,14 @@ export const handlePointerDown = (
         return;
       }
       if (!ts.center) {
-        ts.center = { x: point.x, y: point.y };
+        const centerHit = hitPoint();
+        ts.center = centerHit
+          ? { x: centerHit.getX(), y: centerHit.getY(), el: centerHit }
+          : { x: point.x, y: point.y };
         return;
       }
       const P2 = { x: point.x, y: point.y };
-      const inputs = ts.inputs;
+      const inputs = ts.inputs as { el: GeoElement; ref?: { x: number; y: number } }[];
       let angle = 0, ratio = 1;
       if (op === 'rotate') {
         angle = Math.atan2(P2.y - ts.center.y, P2.x - ts.center.x) -
@@ -617,9 +650,16 @@ export const handlePointerDown = (
         ratio = Math.hypot(P2.x - ts.center.x, P2.y - ts.center.y) /
                 Math.hypot(inputs[0].ref!.x - ts.center.x, inputs[0].ref!.y - ts.center.y);
       }
-      const outs: ConstructionElement[] = [];
-      for (const { el } of inputs) outs.push(buildTransformed(kernel, el, op, { center: ts.center, angle, ratio }));
-      outs.forEach(o => { kernel.getConstruction().addElement(o); notifyUpdate(o); });
+      // 活中心：命中已有点时把 GeoPoint 注册为输入，移动中心联动重算
+      const centerArg: GeoPoint | { x: number; y: number } =
+        (ts.center as any).el ?? { x: ts.center.x, y: ts.center.y };
+      for (const { el } of inputs) {
+        if (!isTransformable(el)) continue;
+        const algo = op === 'rotate'
+          ? new AlgoRotate(kernel, el, centerArg, angle)
+          : new AlgoDilate(kernel, el, centerArg, ratio);
+        addAlgoAndNotify(algo);
+      }
       clearSel();
       setRenderRev(r => r + 1);
       ts.inputs = []; ts.center = null;
@@ -634,7 +674,11 @@ export const handlePointerDown = (
           if (!ts.transformRef) {
             const axisObject = hitObject();
             if (axisObject instanceof GeoLine) {
-              ts.transformRef = { kind: 'line', axis: { a: axisObject.a, b: axisObject.b, c: axisObject.c } };
+              ts.transformRef = {
+                kind: 'line',
+                axis: { a: axisObject.a, b: axisObject.b, c: axisObject.c },
+                line: axisObject,
+              };
             } else if (!ts.refStart) {
               ts.refStart = { x: point.x, y: point.y };
             } else {
@@ -648,14 +692,17 @@ export const handlePointerDown = (
           const factor = Number(raw);
           if (!isFinite(factor)) return;
 
+          // all-or-nothing：任一输入不支持或轴退化则整批不入 construction（步骤状态保留）
           try {
-            const matrix = shearStretchMatrix(
-              ts.transformRef.axis.a, ts.transformRef.axis.b, ts.transformRef.axis.c,
-              factor, mode,
-            );
-            const outs: ConstructionElement[] = [];
-            for (const { el } of ts.inputs) outs.push(buildTransformed(kernel, el, mode, { matrix }));
-            outs.forEach(out => { kernel.getConstruction().addElement(out); notifyUpdate(out); });
+            const axisRef = ts.transformRef as { axis: { a: number; b: number; c: number }; line?: GeoLine };
+            const algos = (ts.inputs as { el: GeoElement }[])
+              .filter(({ el }) => isTransformable(el))
+              .map(({ el }) => new AlgoShearStretch(
+                kernel, el,
+                axisRef.line ?? [axisRef.axis.a, axisRef.axis.b, axisRef.axis.c],
+                factor, mode === 'shear' ? 'shear' : 'stretch',
+              ));
+            algos.forEach(algo => addAlgoAndNotify(algo));
             clearSel();
             setRenderRev(r => r + 1);
             ts.inputs = []; ts.transformRef = null; ts.refStart = null;
@@ -706,18 +753,25 @@ export const handlePointerDown = (
       }
       const obj = hitObject();
       if (!ts.axis) {
-        if (obj instanceof GeoLine) ts.axis = { a: obj.a, b: obj.b, c: obj.c };
-        else ts.axisStart = { x: point.x, y: point.y };
-        return;
+        if (obj instanceof GeoLine) {
+          // 活镜轴：命中已有直线时保留引用，移动轴联动重算
+          ts.axis = { a: obj.a, b: obj.b, c: obj.c, line: obj };
+        } else if (!ts.axisStart) {
+          ts.axisStart = { x: point.x, y: point.y };
+          return;
+        } else {
+          // 两点画轴：冻结系数（旧逻辑 axisStart 被首分支覆盖，两点轴不可用）
+          ts.axis = lineFromTwoPoints(ts.axisStart, { x: point.x, y: point.y });
+          ts.axisStart = null;
+        }
       }
-      if (ts.axisStart) {
-        ts.axis = lineFromTwoPoints(ts.axisStart, { x: point.x, y: point.y });
-        ts.axisStart = null;
-        return;
+      for (const { el } of ts.inputs) {
+        if (!isTransformable(el)) continue;
+        addAlgoAndNotify(new AlgoMirror(
+          kernel, el, ts.axis.a, ts.axis.b, ts.axis.c,
+          (ts.axis as any).line as GeoLine | undefined,
+        ));
       }
-      const outs: ConstructionElement[] = [];
-      for (const { el } of ts.inputs) outs.push(buildTransformed(kernel, el, 'mirror', ts.axis));
-      outs.forEach(o => { kernel.getConstruction().addElement(o); notifyUpdate(o); });
       clearSel();
       setRenderRev(r => r + 1);
       ts.inputs = []; ts.axis = null; ts.axisStart = null;
@@ -732,67 +786,71 @@ export const handlePointerDown = (
         if (!ts.transformRef) {
           const axisObject = hitObject();
           if (axisObject instanceof GeoLine) {
-            ts.transformRef = { kind: 'line', axis: { a: axisObject.a, b: axisObject.b, c: axisObject.c } };
+            ts.transformRef = {
+              kind: 'line',
+              axis: { a: axisObject.a, b: axisObject.b, c: axisObject.c },
+              line: axisObject,
+            };
             return;
           }
-          ts.refStart = { x: point.x, y: point.y };
+          if (!ts.refStart) {
+            ts.refStart = { x: point.x, y: point.y };
+            return;
+          }
+          // 两点画轴：完成 ref 后冻结系数，下次 click 执行（旧代码此分支不可达）
+          ts.transformRef = { kind: 'line', axis: lineFromTwoPoints(ts.refStart, { x: point.x, y: point.y }) };
+          ts.refStart = null;
           return;
         }
-        if (ts.refStart && !ts.transformRef) {
-          ts.transformRef = { kind: 'line', axis: lineFromTwoPoints(ts.refStart, { x: point.x, y: point.y }) };
-        }
-        ts.refStart = null;
         const inputs = collectTransformInputs();
+        const ref = ts.transformRef as { axis: { a: number; b: number; c: number }; line?: GeoLine };
         for (const { el } of inputs) {
-          const out = buildTransformed(kernel, el, 'mirror', ts.transformRef.axis);
-          kernel.getConstruction().addElement(out);
-          notifyUpdate(out);
+          if (!isTransformable(el)) continue;
+          addAlgoAndNotify(new AlgoMirror(
+            kernel, el, ref.axis.a, ref.axis.b, ref.axis.c, ref.line,
+          ));
         }
       } else if (mode === 'mirror_point') {
         if (!ts.transformRef) {
           const centerPoint = hitPoint() ?? emptyClickNewPoint();
-          ts.transformRef = { kind: 'point', center: { x: centerPoint.getX(), y: centerPoint.getY() } };
+          // 活中心点：注册为 AlgoDilate 输入，移动中心联动镜像
+          ts.transformRef = { kind: 'point', centerPoint };
           return;
         }
         const inputs = collectTransformInputs();
+        const centerPoint = ts.transformRef.centerPoint as GeoPoint;
         for (const { el } of inputs) {
-          const out = buildTransformed(kernel, el, 'dilate', {
-            center: ts.transformRef.center,
-            ratio: -1,
-          });
-          kernel.getConstruction().addElement(out);
-          notifyUpdate(out);
+          if (!isTransformable(el)) continue;
+          addAlgoAndNotify(new AlgoDilate(kernel, el, centerPoint, -1));
         }
       } else if (mode === 'mirror_circle') {
         if (!ts.transformRef) {
           const circle = hitCircle(visibleElements, point.x, point.y, OBJ_EPS / coord.xScale);
           if (!circle) return;
-          const center = circle.getCenter();
-          ts.transformRef = { kind: 'circle', center, radius: circle.getRadius() };
+          // 活反演圆：注册为 AlgoInvert 输入，移动/缩放圆联动反演
+          ts.transformRef = { kind: 'circle', circle };
           return;
         }
         const inputs = collectTransformInputs();
+        const circle = ts.transformRef.circle as GeoConic;
         for (const { el } of inputs) {
+          if (!isTransformable(el)) continue;
           try {
-            const out = buildTransformed(kernel, el, 'invert', ts.transformRef);
-            kernel.getConstruction().addElement(out);
-            notifyUpdate(out);
+            addAlgoAndNotify(new AlgoInvert(kernel, el, circle));
           } catch { /* 非圆圆锥曲线的反演像无法表示：跳过该对象 */ }
         }
       } else {
         if (!ts.transformRef) {
           const vector = hitObject();
           if (!(vector instanceof GeoVector)) return;
-          ts.transformRef = {
-            kind: 'vector',
-            vector: { x: vector.getVector().x, y: vector.getVector().y },
-          };
+          // 活平移向量：注册为 AlgoTranslate 输入（保持同 click 继续收集输入的流程）
+          ts.transformRef = { kind: 'vector', vectorEl: vector };
         }
         const inputs = collectTransformInputs();
+        const vectorEl = ts.transformRef.vectorEl as GeoVector;
         for (const { el } of inputs) {
-          const out = buildTransformed(kernel, el, 'translate', ts.transformRef.vector);
-          kernel.getConstruction().addElement(out);
-          notifyUpdate(out);
+          if (!isTransformable(el)) continue;
+          addAlgoAndNotify(new AlgoTranslate(kernel, el, vectorEl));
         }
       }
       clearSel();

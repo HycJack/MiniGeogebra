@@ -20,6 +20,11 @@
 > 隐式二次型 + 平面参数化 + 2D 特征分解，对标 `AlgoIntersectPlaneQuadric` 合同变换；平面∥柱轴的
 > 两直线与抛物截面显式置 undefined）与 B5 FitPoly 最小二乘（新增 `src/kernel/algo/AlgoFitPoly.ts`，
 > 活依赖 + 序列化 roundtrip）已实现。平面×二次曲面一行从 ⚠️ 升级为 ✅（抛物截面除外，待 C2）。
+>
+> **2026-09-23 C 类批次追加**：C1–C11 全部完成（详见 [`未实现清单.md`](./未实现清单.md) C 表），
+> 含二次曲面/截面/有限柱锥/斜棱柱/3D 轨迹/旋转面/裁剪盒/展开/线曲面分类/3D 依附/OFF 导入与
+> 多边形布尔（`polygonBoolean` + `GeoBooleanRegion` + `AlgoPolygonBoolean`）。全套 37 文件 /
+> 575 用例全绿（`c11-off-boolean.test.ts` 20 用例收尾）。
 
 ---
 
@@ -89,12 +94,12 @@
 | 项目 | Mini 实现 | GeoGebra 参照 | 判定 | 说明 |
 |---|---|---|---|---|
 | Coords4 齐次坐标 | `Coords4.ts` | `matrix/Coords.java` | 🟡 | 核心运算等价；缺 crossProduct4/projectPlane 等完整 API |
-| GeoPoint3D | `GeoPoint3D.ts` | `GeoPoint3D.java` | 🟡 | 齐次存储+除 w 一致；缺 path/region 依附点 |
+| GeoPoint3D | `GeoPoint3D.ts` | `GeoPoint3D.java` | ✅ | 齐次存储+除 w 一致；path/region 依附点已补（C10：AlgoPointOn3D + isAnimatable/doAnimationStep） |
 | GeoLine3D（1D 坐标系统一表示） | `GeoLine3D.ts` | `GeoCoordSys1D` | 🟡 | origin+方向+参数限界同构；无 CoordSys 矩阵、线段参数不归一 [0,1] |
-| GeoPlane3D | `GeoPlane3D.ts` | `GeoPlane3D.java` | 🟡 | n·p=d 等价于 vz+offset；缺完整 CoordSys（面内作图） |
+| GeoPlane3D | `GeoPlane3D.ts` | `GeoPlane3D.java` | ✅ | n·p=d 等价于 vz+offset；CoordSys-lite 已补（C10：setCoordSys/getPoint/getPlaneCoords/project） |
 | 三点成面 / 中点 / 点面距离 | `Algo3D.ts` | `AlgoPlaneThreePoints` / `AlgoMidpoint3D` / `AlgoDistancePointPlane3D` | ✅ | 逐句对应（含"不能直接齐次相加"的仿射平均） |
 | 线×面交点 | `Algo3D.ts` | `AlgoIntersectCS1D2D` | 🟡 | 公式一致；缺"线在面内"分支（A3-6） |
-| 二次曲面表示 | `GeoQuadric3D.ts` | 10 系数矩阵 + `classifyQuadric`（17+ 类） | ⚠️ | Mini 仅 4 种解析型；斜柱/斜锥不受影响，任意二次曲面完全不支持（C1） |
+| 二次曲面表示 | `GeoQuadric3D.ts` + `quadricClassify.ts` | 10 系数矩阵 + `classifyQuadric`（17+ 类） | ✅ | 2026-09-23：`setMatrix`/`classifyFlatQuadric` + 方程创建 `AlgoDependentQuadric3D`，类型 parity 对齐 GeoQuadric3DTest（C1 完成） |
 | 线×二次曲面 | `GeoQuadric3D.intersectLine` | `AlgoIntersectLineQuadric3D` | 🟡 | 解二次得 0–2 交点一致；官方区分切线/渐近线 intersectionType |
 | 球 / 无限柱 / 无限锥 / 椭球 | `AlgoPolyhedron3D.ts` | `AlgoSpherePointRadius` 等 | 🟡 | 球✅；柱锥缺有限化（端盖/体积，C3）；椭球缺任意定向 |
 | 3D 圆（三点） | `GeoCircle3D.ts` | `AlgoCircle3DPoints` | ✅ | 三点定平面+外心，几何一致 |

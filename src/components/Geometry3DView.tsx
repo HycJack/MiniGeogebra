@@ -20,6 +20,7 @@ import { GeoPolygon } from '../kernel/geo/GeoPolygon';
 import { GeoConic } from '../kernel/geo/GeoConic';
 import { GeoArc } from '../kernel/geo/GeoArc';
 import { GeoLocus } from '../kernel/geo/GeoLocus';
+import { GeoLocus3D } from '../kernel/geo/GeoLocus3D';
 import { GeoPoint3D } from '../kernel/geo/GeoPoint3D';
 import { GeoLine3D } from '../kernel/geo/GeoLine3D';
 import { GeoPlane3D } from '../kernel/geo/GeoPlane3D';
@@ -29,9 +30,14 @@ import { GeoSurface } from '../kernel/geo/GeoSurface';
 import { GeoCircle3D } from '../kernel/geo/GeoCircle3D';
 import { GeoPolyline3D } from '../kernel/geo/GeoPolyline3D';
 import { GeoConic3D } from '../kernel/geo/GeoConic3D';
-import { GeoNet3D } from '../kernel/algo/AlgoPolyhedronNet';
+import { GeoNet3D, AlgoPolyhedronNet } from '../kernel/algo/AlgoPolyhedronNet';
+import { GeoMesh3D } from '../kernel/geo/GeoMesh3D';
 import { Coords4 } from '../kernel/core/Coords4';
 import { rayPlaneIntersect, clipLineToBox, pointSegmentDistance, Ray3 } from '../kernel/view/RayPicker';
+import {
+  computeClippingBox, isPointInBox,
+  REDUCTION_MEDIUM, ClippingReduction,
+} from '../kernel/view/ClippingBox';
 import { AlgoJoinPoints3D, AlgoMidpoint3D, AlgoPlaneThreePoints3D } from '../kernel/algo/Algo3D';
 import { AlgoSphere3D, AlgoCylinder3D, AlgoCone3D, AlgoPrism3D, AlgoPyramid3D } from '../kernel/algo/AlgoPolyhedron3D';
 import { AlgoElement } from '../kernel/algo/AlgoElement';
@@ -231,6 +237,8 @@ function buildScene(
   showXY: boolean,
   showXZ: boolean,
   showYZ: boolean,
+  showClipBox: boolean,
+  clipReduction: ClippingReduction,
   renderer: WebGL3DRenderer,
 ): Scene3D {
   const elements = kernel.getConstruction().getElements();
@@ -270,6 +278,8 @@ function buildScene(
 
   for (const el of elements) {
     if (!(el instanceof GeoPolygon) || !el.isDefined() || el.vertices.length < 3) continue;
+    // 展开图的独立面多边形由 GeoNet3D 按 3D 顶点绘制，避免在 z=0 投影上重画
+    if (el.parentAlgo instanceof AlgoPolyhedronNet) continue;
     const verts = faceFacingUp(el.vertices.map(v => to3(v.getX(), v.getY())));
     if (isVisibleFace(verts, renderer)) {
       fills.push({ verts, color: el.fillColor ?? el.defaultFillColor ?? 'rgba(59, 130, 246, 0.2)' });
@@ -293,14 +303,31 @@ function buildScene(
     }
   }
 
-  // ---- 3D 对象（GeoPoint3D / GeoLine3D / GeoPlane3D）----
-  // 内容包围盒向 Z 扩展，用于裁剪 3D 直线
-  const zSpan = Math.max((bounds.maxX - bounds.minX), (bounds.maxY - bounds.minY), 200) * 0.6;
-  const clipBox = {
-    minX: bounds.minX, maxX: bounds.maxX,
-    minY: bounds.minY, maxY: bounds.maxY,
-    minZ: -zSpan, maxZ: zSpan,
-  };
+  // C5：3D 空间轨迹（GeoLocus3D，采样含 z）
+  for (const el of elements) {
+    if (!(el instanceof GeoLocus3D) || !el.isDefined()) continue;
+    const samples = el.getSamples();
+    const st = styleOf(el, selSet.has(el));
+    for (const seg of el.getSegments()) {
+      for (let i = seg.start; i < seg.end && i < samples.length - 1; i++) {
+        const a = samples[i];
+        const b = samples[i + 1];
+        lines.push({
+          a: { x: a.x, y: a.y, z: a.z },
+          b: { x: b.x, y: b.y, z: b.z },
+          color: st.color,
+          widthPx: st.width,
+          dash: st.dash ? [...st.dash] : undefined,
+        });
+      }
+    }
+  }
+
+  // ---- 世界空间裁剪盒（GeoGebra GeoClippingCube3D）----
+  // 由相机可见范围 + 缩减档位计算：box 供片元严格裁剪，large 供无限直线段裁剪
+  // （对齐 getIntervalClippedLarge：线比面略宽，避免边界自裁）。
+  const clipping = computeClippingBox(renderer.getVisibleBounds3(), clipReduction);
+  const clipBox = clipping.large;
 
   for (const el of elements) {
     if (!(el instanceof GeoLine3D) || !el.isDefined()) continue;
@@ -415,51 +442,150 @@ function buildScene(
         pushPolyline(lines, pts, st, pxPerUnit);
       };
       circle('x'); circle('y'); circle('z');
+    } else if (el.getKind() === 'general') {
+      // 一般二次曲面：未回填解析参时画三个坐标面 traces（径向符号变号近似）
+      const m = el.getMatrix();
+      if (m) {
+        const Q = (x: number, y: number, z: number): number =>
+          m[0] * x * x + m[1] * y * y + m[2] * z * z + m[3] +
+          2 * m[4] * x * y + 2 * m[5] * x * z + 2 * m[6] * y * z +
+          2 * m[7] * x + 2 * m[8] * y + 2 * m[9] * z;
+        const center = el.getBase();
+        const cx = center.getX(), cy = center.getY(), cz = center.getZ();
+        const span = Math.min(
+          clipBox.maxZ,
+          Math.max(clipBox.maxX - clipBox.minX, clipBox.maxY - clipBox.minY) * 0.9,
+          8,
+        );
+        // 每个固定坐标面：沿 36 条射线二分求 Q=0
+        const traceOn = (
+          plane: 'xy' | 'xz' | 'yz',
+          fixed: number,
+        ): V3[] => {
+          const pts: V3[] = [];
+          const rays = 72;
+          for (let i = 0; i < rays; i++) {
+            const ang = (2 * Math.PI * i) / rays;
+            const dirU = Math.cos(ang), dirV = Math.sin(ang);
+            // 沿 (u,v) 射线在 [0, span] 上找符号变号并二分
+            const at = (t: number): number => {
+              const u = t * dirU, v = t * dirV;
+              if (plane === 'xy') return Q(cx + u, cy + v, fixed);
+              if (plane === 'xz') return Q(cx + u, fixed, cz + v);
+              return Q(fixed, cy + u, cz + v);
+            };
+            let lo = 0, hi = span;
+            const f0 = at(0);
+            // 粗扫
+            let hit = false;
+            let prevT = 0, prevF = f0;
+            for (let s = 1; s <= 24; s++) {
+              const t = (span * s) / 24;
+              const f = at(t);
+              if (prevF === 0 || (prevF < 0) !== (f < 0)) {
+                lo = prevT; hi = t; hit = true; break;
+              }
+              prevT = t; prevF = f;
+            }
+            if (!hit) continue;
+            for (let it = 0; it < 20; it++) {
+              const mid = (lo + hi) / 2;
+              if ((at(lo) < 0) !== (at(mid) < 0)) hi = mid;
+              else lo = mid;
+            }
+            const t = (lo + hi) / 2;
+            const u = t * dirU, v = t * dirV;
+            if (plane === 'xy') pts.push({ x: cx + u, y: cy + v, z: fixed });
+            else if (plane === 'xz') pts.push({ x: cx + u, y: fixed, z: cz + v });
+            else pts.push({ x: fixed, y: cy + u, z: cz + v });
+          }
+          return pts;
+        };
+        // 中心所在三个坐标面 + 两个偏移面，给出体积感
+        for (const fixed of [cz, cz + span * 0.35, cz - span * 0.35]) {
+          const pts = traceOn('xy', fixed);
+          if (pts.length >= 8) pushPolyline(lines, pts, st, pxPerUnit);
+        }
+        for (const fixed of [cy, cy + span * 0.35, cy - span * 0.35]) {
+          const pts = traceOn('xz', fixed);
+          if (pts.length >= 8) pushPolyline(lines, pts, st, pxPerUnit);
+        }
+        for (const fixed of [cx, cx + span * 0.35, cx - span * 0.35]) {
+          const pts = traceOn('yz', fixed);
+          if (pts.length >= 8) pushPolyline(lines, pts, st, pxPerUnit);
+        }
+      }
     } else {
-      // 柱/锥：端点圆 + 4 条母线
+      // 柱/锥：端点圆 + 母线；有限高时两端端盖圆盘填充
       const base = el.getBase();
       const axis = el.getAxis();
-      const r = el.getKind() === 'cylinder' ? el.getParam() : 0;
-      const tanHalf = el.getKind() === 'cone' ? Math.tan(el.getParam()) : 0;
-      const span = Math.min(clipBox.maxZ, Math.max(clipBox.maxX - clipBox.minX, clipBox.maxY - clipBox.minY) * 0.9);
-      const tEnd = el.getKind() === 'cone' ? span : span;
-      const ring = (t: number, radius: number) => {
-        const pts: V3[] = [];
-        const steps = 32;
-        for (let i = 0; i <= steps; i++) {
-          const a = (2 * Math.PI * i) / steps;
-          const u = Math.cos(a) * radius, v = Math.sin(a) * radius;
-          // 以轴方向为 Z 的局部环：选两个与轴垂直的正交基
-          const ref = Math.abs(axis.z) < 0.9 ? { x: 0, y: 0, z: 1 } : { x: 1, y: 0, z: 0 };
-          let e1 = { x: axis.y * ref.z - axis.z * ref.y, y: axis.z * ref.x - axis.x * ref.z, z: axis.x * ref.y - axis.y * ref.x };
-          const l1 = Math.hypot(e1.x, e1.y, e1.z) || 1;
-          e1 = { x: e1.x / l1, y: e1.y / l1, z: e1.z / l1 };
-          const e2 = { x: axis.y * e1.z - axis.z * e1.y, y: axis.z * e1.x - axis.x * e1.z, z: axis.x * e1.y - axis.y * e1.x };
-          const p = {
-            x: base.getX() + axis.x * t + e1.x * u + e2.x * v,
-            y: base.getY() + axis.y * t + e1.y * u + e2.y * v,
-            z: base.getZ() + axis.z * t + e1.z * u + e2.z * v,
-          };
-          pts.push(p);
-        }
-        pushPolyline(lines, pts, st, pxPerUnit);
-      };
-      const rMid = el.getKind() === 'cone' ? tanHalf * tEnd : r;
-      ring(-tEnd, el.getKind() === 'cone' ? tanHalf * tEnd : r);
-      ring(tEnd, rMid);
-      // 母线（4 条）
-      for (let k = 0; k < 4; k++) {
-        const a = (2 * Math.PI * k) / 4;
-        const u = Math.cos(a) * (el.getKind() === 'cone' ? tanHalf * tEnd : r);
-        const v = Math.sin(a) * (el.getKind() === 'cone' ? tanHalf * tEnd : r);
+      const kind = el.getKind();
+      const r = kind === 'cylinder' ? el.getParam() : 0;
+      const tanHalf = kind === 'cone' ? Math.tan(el.getParam()) : 0;
+      const limited = el.isLimited();
+      const height = el.getHeight();
+      // 有限：单侧 [0, h]；无限：对称 ±span 线框近似（span 取裁剪大盒量级）
+      const span = Math.min(
+        clipBox.maxZ,
+        Math.max(clipBox.maxX - clipBox.minX, clipBox.maxY - clipBox.minY) * 0.9,
+        Math.max(Math.abs(clipBox.minZ), 1) * 1.5,
+      );
+      const t0 = limited ? 0 : -span;
+      const t1 = limited && height !== null ? height : span;
+      const radiusAt = (t: number): number =>
+        kind === 'cone' ? Math.abs(t) * tanHalf : r;
+      const e1e2 = () => {
         const ref = Math.abs(axis.z) < 0.9 ? { x: 0, y: 0, z: 1 } : { x: 1, y: 0, z: 0 };
         let e1 = { x: axis.y * ref.z - axis.z * ref.y, y: axis.z * ref.x - axis.x * ref.z, z: axis.x * ref.y - axis.y * ref.x };
         const l1 = Math.hypot(e1.x, e1.y, e1.z) || 1;
         e1 = { x: e1.x / l1, y: e1.y / l1, z: e1.z / l1 };
         const e2 = { x: axis.y * e1.z - axis.z * e1.y, y: axis.z * e1.x - axis.x * e1.z, z: axis.x * e1.y - axis.y * e1.x };
-        const p1 = { x: base.getX() + axis.x * tEnd + e1.x * u + e2.x * v, y: base.getY() + axis.y * tEnd + e1.y * u + e2.y * v, z: base.getZ() + axis.z * tEnd + e1.z * u + e2.z * v };
-        const p2 = { x: base.getX() - axis.x * tEnd + e1.x * u + e2.x * v, y: base.getY() - axis.y * tEnd + e1.y * u + e2.y * v, z: base.getZ() - axis.z * tEnd + e1.z * u + e2.z * v };
+        return { e1, e2 };
+      };
+      const onRing = (t: number, ang: number, rad: number): V3 => {
+        const { e1, e2 } = e1e2();
+        const u = Math.cos(ang) * rad, v = Math.sin(ang) * rad;
+        return {
+          x: base.getX() + axis.x * t + e1.x * u + e2.x * v,
+          y: base.getY() + axis.y * t + e1.y * u + e2.y * v,
+          z: base.getZ() + axis.z * t + e1.z * u + e2.z * v,
+        };
+      };
+      const ringPts = (t: number, rad: number): V3[] => {
+        const pts: V3[] = [];
+        const steps = 32;
+        for (let i = 0; i <= steps; i++) {
+          pts.push(onRing(t, (2 * Math.PI * i) / steps, rad));
+        }
+        return pts;
+      };
+      pushPolyline(lines, ringPts(t0, radiusAt(t0)), st, pxPerUnit);
+      pushPolyline(lines, ringPts(t1, radiusAt(t1)), st, pxPerUnit);
+      // 母线（4 条）：连接两端同角
+      for (let k = 0; k < 4; k++) {
+        const ang = (2 * Math.PI * k) / 4;
+        const p1 = onRing(t1, ang, radiusAt(t1));
+        const p2 = onRing(t0, ang, radiusAt(t0));
         lines.push({ a: p1, b: p2, color: st.color, widthPx: st.width, dash: st.dash ? [...st.dash] : undefined });
+      }
+      // 有限体端盖：底 (t0) + 顶 (t1) 圆盘（锥底半径 0 时只画顶盖）
+      if (limited && height !== null) {
+        const fill = el.fillColor ?? el.defaultFillColor ?? 'rgba(236, 72, 153, 0.14)';
+        const disk = (t: number, rad: number): V3[] => {
+          if (rad < 1e-12) return [];
+          const verts: V3[] = [onRing(t, 0, 0)];
+          const steps = 32;
+          for (let i = 0; i <= steps; i++) verts.push(onRing(t, (2 * Math.PI * i) / steps, rad));
+          return verts;
+        };
+        const bottom = disk(t0, radiusAt(t0));
+        const top = disk(t1, radiusAt(t1));
+        if (bottom.length >= 3 && isVisibleFace(bottom, renderer)) {
+          fills.push({ verts: bottom, color: fill });
+        }
+        if (top.length >= 3 && isVisibleFace(top, renderer)) {
+          fills.push({ verts: top, color: fill });
+        }
       }
     }
   }
@@ -565,6 +691,13 @@ function buildScene(
         const p = el.pointAt((2 * Math.PI * i) / steps);
         pts.push({ x: p.getX(), y: p.getY(), z: p.getZ() });
       }
+    } else if (el.getKind() === 'parabola') {
+      // 抛物线：t ∈ [-4, 4] 采样
+      for (let i = 0; i <= steps; i++) {
+        const t = -4 + (8 * i) / steps;
+        const p = el.pointAt(t);
+        pts.push({ x: p.getX(), y: p.getY(), z: p.getZ() });
+      }
     } else {
       // 双曲线：两支各画一段
       for (const branch of [-1, 1]) {
@@ -592,6 +725,26 @@ function buildScene(
         lines.push({ a, b, color: st.color, widthPx: st.width, dash: st.dash ? [...st.dash] : undefined });
       }
     }
+  }
+
+  // C11：OFF 导入网格（面填充 + 线框）
+  for (const el of elements) {
+    if (!(el instanceof GeoMesh3D) || !el.isDefined()) continue;
+    const st = styleOf(el, selSet.has(el));
+    el.faces.forEach((face, fi) => {
+      const verts = face
+        .map(idx => el.vertices[idx])
+        .filter(Boolean)
+        .map(p => ({ x: p.getX(), y: p.getY(), z: p.getZ() }));
+      if (verts.length < 3) return;
+      const faceFill = el.faceColors?.[fi] || el.fillColor || el.defaultFillColor || 'rgba(100, 116, 139, 0.22)';
+      if (isVisibleFace(verts, renderer)) fills.push({ verts, color: faceFill });
+      for (let i = 0; i < verts.length; i++) {
+        const a = verts[i];
+        const b = verts[(i + 1) % verts.length];
+        lines.push({ a, b, color: st.color, widthPx: st.width, dash: st.dash ? [...st.dash] : undefined });
+      }
+    });
   }
 
   for (const el of elements) {
@@ -626,7 +779,19 @@ function buildScene(
   planes.push({ axis: 'xz', grid: showGrid && plateXZ, plate: plateXZ });
   planes.push({ axis: 'yz', grid: showGrid && plateYZ, plate: plateYZ });
 
-  return { gridBounds: viewBounds, contentBounds: bounds, showGrid, showAxes, planes, lines, fills, points };
+  return {
+    gridBounds: viewBounds,
+    contentBounds: bounds,
+    showGrid,
+    showAxes,
+    planes,
+    lines,
+    fills,
+    points,
+    clippingBox: clipping,
+    showClipBox,
+    clipBoxColor: 'rgba(100,116,139,0.85)',
+  };
 }
 
 function elementAnchor(el: GeoElement): V3 | null {
@@ -741,6 +906,8 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
   const [planeYZ] = useState(false);
   const [rotationSpeed, setRotationSpeed] = useState(0);
   const [tool3d, setTool3d] = useState<Tool3D>('select');
+  const [showClipBox, setShowClipBox] = useState(false);
+  const [clipReduction, setClipReduction] = useState<ClippingReduction>(REDUCTION_MEDIUM);
   const picks3dRef = useRef<Coords4[]>([]);
   const rotationFrameRef = useRef<number>(0);
 
@@ -750,16 +917,16 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
     setTool3d(tool);
   };
 
-  const propsRef = useRef({ renderRev, selectedElements, showGrid, showAxes, axesPlaneMode, planeXY, planeXZ, planeYZ });
-  propsRef.current = { renderRev, selectedElements, showGrid, showAxes, axesPlaneMode, planeXY, planeXZ, planeYZ };
+  const propsRef = useRef({ renderRev, selectedElements, showGrid, showAxes, axesPlaneMode, planeXY, planeXZ, planeYZ, showClipBox, clipReduction });
+  propsRef.current = { renderRev, selectedElements, showGrid, showAxes, axesPlaneMode, planeXY, planeXZ, planeYZ, showClipBox, clipReduction };
 
   const draw = useCallback(() => {
     const renderer = rendererRef.current;
     const canvas = canvasRef.current;
     const labels = labelRef.current;
     if (!renderer || !canvas || !labels) return;
-    const { showGrid: sg, showAxes: sa, selectedElements: sel, axesPlaneMode: apm, planeXY: pxy, planeXZ: pxz, planeYZ: pyz } = propsRef.current;
-    const scene = buildScene(kernel, sel, sg, sa, apm, pxy, pxz, pyz, renderer);
+    const { showGrid: sg, showAxes: sa, selectedElements: sel, axesPlaneMode: apm, planeXY: pxy, planeXZ: pxz, planeYZ: pyz, showClipBox: scb, clipReduction: cr } = propsRef.current;
+    const scene = buildScene(kernel, sel, sg, sa, apm, pxy, pxz, pyz, scb, cr, renderer);
     if (!fittedRef.current) {
       renderer.fitScene(scene);
       fittedRef.current = true;
@@ -815,10 +982,10 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
     return () => ro.disconnect();
   }, [syncSize]);
 
-  // 构造 / 选中 / 网格开关变化时重绘
+  // 构造 / 选中 / 网格 / 裁剪盒开关变化时重绘
   useEffect(() => {
     draw();
-  }, [draw, renderRev, selectedElements, showGrid, showAxes, planeXY]);
+  }, [draw, renderRev, selectedElements, showGrid, showAxes, planeXY, showClipBox, clipReduction]);
 
   // 投影模式变化
   useEffect(() => {
@@ -925,8 +1092,11 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
     const hitR = 14 * dprRef.current;
     let best: GeoPoint3D | null = null;
     let bestDist = hitR;
+    // 裁剪盒外的点不可见也不可拾取（与片元裁剪一致）
+    const clip = computeClippingBox(renderer.getVisibleBounds3(), clipReduction);
     for (const el of kernel.getConstruction().getElements()) {
       if (!(el instanceof GeoPoint3D) || !el.isDefined()) continue;
+      if (!isPointInBox({ x: el.getX(), y: el.getY(), z: el.getZ() }, clip.box)) continue;
       const sp = renderer.projectToScreen({ x: el.getX(), y: el.getY(), z: el.getZ() });
       if (sp && Math.hypot(sp.x - x, sp.y - y) < bestDist) {
         bestDist = Math.hypot(sp.x - x, sp.y - y);
@@ -1124,6 +1294,10 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
         setPlaneXY={setPlaneXY}
         rotationSpeed={rotationSpeed}
         setRotationSpeed={setRotationSpeed}
+        showClipBox={showClipBox}
+        setShowClipBox={setShowClipBox}
+        clipReduction={clipReduction}
+        setClipReduction={setClipReduction}
         t={t}
       />
 

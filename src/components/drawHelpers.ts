@@ -23,6 +23,7 @@ import { GeoRay } from '../kernel/geo/GeoRay';
 import { GeoFunction } from '../kernel/geo/GeoFunction';
 import { GeoCurve } from '../kernel/geo/GeoCurve';
 import { GeoInequality } from '../kernel/geo/GeoInequality';
+import { GeoBooleanRegion } from '../kernel/geo/GeoBooleanRegion';
 import { GeoElement } from '../kernel/geo/GeoElement';
 import { WorldPoint } from './tools/types';
 
@@ -363,6 +364,25 @@ export function drawLocus(renderer: IRenderer, locus: GeoLocus, selected: boolea
     for (let i = seg.start + 1; i <= seg.end; i++) {
       renderer.lineTo(samples[i].x, samples[i].y);
     }
+    renderer.stroke();
+  }
+}
+
+/** 多边形布尔结果区域（可变轮廓填充 + 描边）。 */
+export function drawBooleanRegion(renderer: IRenderer, region: GeoBooleanRegion, selected: boolean, scale: number): void {
+  if (!region.isDefined() || region.visible === false) return;
+  const fill = selected ? 'rgba(59, 130, 246, 0.35)' : (region.fillColor ?? region.defaultFillColor ?? 'rgba(59, 130, 246, 0.25)');
+  const stroke = selected ? '#3b82f6' : (region.strokeColor ?? region.defaultStrokeColor);
+  for (const contour of region.contours) {
+    if (contour.length < 3) continue;
+    renderer.beginPath();
+    renderer.moveTo(contour[0].x, contour[0].y);
+    for (let i = 1; i < contour.length; i++) renderer.lineTo(contour[i].x, contour[i].y);
+    renderer.closePath();
+    renderer.fillStyle = fill;
+    renderer.fill();
+    renderer.strokeStyle = stroke;
+    renderer.lineWidth = (selected ? 3 : 2) / scale;
     renderer.stroke();
   }
 }

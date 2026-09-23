@@ -154,7 +154,10 @@ export class AlgoTransformPolyhedron3D extends AlgoTransformBase3D<GeoPolyhedron
     const transformed = this.source.vertices.map(v => applyTransform3D(v, args));
     if (this.source.kind === 'prism') {
       const n = this.source.baseCount();
-      this.out.setPrism(transformed.slice(0, n), this.source.height());
+      const base = transformed.slice(0, n);
+      // 用变换后的 base0→top0 方向重建挤出：直/斜棱柱都保持斜率与高
+      const top0 = transformed[n];
+      this.out.setPrism(base, top0.sub(base[0]));
     } else {
       this.out.setPyramid(transformed.slice(0, this.source.baseCount()), transformed[transformed.length - 1]);
     }
@@ -257,6 +260,18 @@ export class AlgoIntersectPlaneQuadric extends AlgoTransformBase3D<GeoPolyline3D
             .add(section.dir2.scale(section.b * Math.sin(u))));
         }
         pts.push(pts[0]); // 闭合（保持 64 采样 + 1 闭合点的既有契约）
+        this.out.setPoints(pts);
+        this.out.setDefined();
+        return;
+      }
+      if (section.kind === 'parabola') {
+        // 抛物线：t ∈ [-4, 4]，(a t², 2a t)（同 GeoConic3D.pointAt）
+        for (let i = 0; i <= N; i++) {
+          const t = -4 + (8 * i) / N;
+          pts.push(section.center
+            .add(section.dir1.scale(section.a * t * t))
+            .add(section.dir2.scale(2 * section.a * t)));
+        }
         this.out.setPoints(pts);
         this.out.setDefined();
         return;

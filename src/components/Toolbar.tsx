@@ -296,7 +296,7 @@ const Toolbar: React.FC<ToolbarProps> = ({
       <ToolbarIcon title={t('importJSON')} onClick={() => fileInputRef.current?.click()}><FilePlus2 size={18} /></ToolbarIcon>
       <ToolbarIcon title={t('exportPNG')} onClick={handleExportPNG}><ImageDown size={18} /></ToolbarIcon>
       <ToolbarIcon title={t('exportSVG')} onClick={handleExportSVG}><VectorSquare size={18} /></ToolbarIcon>
-      <input ref={fileInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleImportPick} />
+      <input ref={fileInputRef} type="file" accept=".json,application/json,.off,text/plain" className="hidden" onChange={handleImportPick} />
 
       <ToolbarDivider />
       <div className="flex items-center gap-1 bg-gray-100 px-2 h-8 rounded-md shrink-0">

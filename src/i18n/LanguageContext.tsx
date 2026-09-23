@@ -146,6 +146,11 @@ export const translations = {
     rotateView: '自动旋转',
     rotateSpeed: '旋转速度',
     navCubeTitle: '导航方块',
+    clipBox: '视图裁剪盒',
+    clipBoxShow: '显示裁剪盒',
+    boxSizeSmall: '小盒（裁剪多）',
+    boxSizeMedium: '中盒',
+    boxSizeLarge: '大盒（几乎不裁剪）',
     // 右键菜单与 hover 提示
     ctxDelete: '删除',
     ctxToggleVisible: '显示/隐藏对象',
@@ -335,6 +340,11 @@ export const translations = {
     rotateView: 'Auto Rotate',
     rotateSpeed: 'Rotation Speed',
     navCubeTitle: 'Navigation Cube',
+    clipBox: 'Clipping Box',
+    clipBoxShow: 'Show Clipping Box',
+    boxSizeSmall: 'Small (clips more)',
+    boxSizeMedium: 'Medium',
+    boxSizeLarge: 'Large (barely clips)',
     // Right-click menu and hover tooltip
     ctxDelete: 'Delete',
     ctxToggleVisible: 'Show / Hide Object',

@@ -3,7 +3,7 @@
  * GeoPolyhedron / AlgoPolyhedronPointsPrism / AlgoPolyhedronPointsPyramid /
  * AlgoVolume / AlgoAngleLines3D / AlgoAnglePlanes3D。
  *
- * 底面：3 个 3D 点；棱柱由「底面 + 高」定义（沿底面法向平移），
+ * 底面：任意 n≥3 个 3D 点；棱柱由「底面 + 高（直）」或「底面 + 顶面参考点（斜）」定义，
  * 棱锥由「底面 + 顶点」定义。
  */
 import { IKernel } from '../core/Interfaces';
@@ -15,7 +15,7 @@ import { GeoPoint3D } from '../geo/GeoPoint3D';
 import { GeoNumeric } from '../geo/GeoNumeric';
 import { GeoLine3D } from '../geo/GeoLine3D';
 import { GeoPlane3D } from '../geo/GeoPlane3D';
-import { GeoQuadric3D } from '../geo/GeoQuadric3D';
+import { GeoQuadric3D, INTERSECTION_PASSING_LINE, LineQuadricIntersectionType } from '../geo/GeoQuadric3D';
 
 export type PolyhedronKind = 'prism' | 'pyramid';
 
@@ -35,11 +35,25 @@ export class GeoPolyhedron3D extends GeoElement {
   get defaultLineWidth(): number { return 1; }
   get defaultFillColor(): string { return 'rgba(168, 85, 247, 0.14)'; }
 
-  setPrism(base: Coords4[], height: number): void {
+  /**
+   * 构造棱柱。
+   * - extrusion 为 number：直棱柱，沿底面法向平移 height；
+   * - extrusion 为点（w≠0）：斜棱柱，所有底面点统一按 base[0]→该点平移
+   *   （对齐 GeoGebra AlgoPolyhedronPointsPrism uptranslation）；
+   * - extrusion 为方向（w=0）：按给定向量挤出（变换重建用）。
+   */
+  setPrism(base: Coords4[], extrusion: number | Coords4): void {
     this.kind = 'prism';
     this.vertices = base.map(p => p.toPoint());
-    const normal = this.baseNormal();
-    this.vertices.push(...this.vertices.slice().map(v => v.add(normal.scale(height))));
+    let t: Coords4;
+    if (typeof extrusion === 'number') {
+      t = this.baseNormal().scale(extrusion);
+    } else if (extrusion.isPoint()) {
+      t = extrusion.toPoint().sub(this.vertices[0]);
+    } else {
+      t = extrusion.asDirection();
+    }
+    this.vertices.push(...this.vertices.slice().map(v => v.add(t)));
   }
 
   setPyramid(base: Coords4[], apex: Coords4): void {
@@ -71,13 +85,15 @@ export class GeoPolyhedron3D extends GeoElement {
     return sum.norm() / 2;
   }
 
-  /** 高：棱柱 = 底面到顶面平移量；棱锥 = 顶点到底面距离。 */
+  /** 高：棱柱 = 底面到顶面的垂直距离；棱锥 = 顶点到底面距离。 */
   height(): number {
     if (this.kind === 'prism') {
       const base = this.baseVertices();
       const top = this.topVertices();
       if (base.length === 0 || top.length === 0) return 0;
-      return base[0].distanceTo(top[0]);
+      // 垂直高 = |挤出·法向|：斜棱柱的侧移不计入（对齐 GeoGebra distPlaneOriented）
+      const t = top[0].sub(base[0]).asDirection();
+      return Math.abs(t.dot(this.baseNormal()));
     }
     const v = this.vertices;
     if (v.length < 4) return 0;
@@ -149,17 +165,33 @@ export class AlgoSphere3D extends Algo3DBase<GeoQuadric3D> {
   }
 }
 
-/** 无限圆柱：轴（3D 直线）+ 半径。 */
+/** 圆柱：轴（3D 直线）+ 半径 + 可选有限高（height 缺省/非法 → 无限）。 */
 export class AlgoCylinder3D extends Algo3DBase<GeoQuadric3D> {
-  constructor(kernel: IKernel, private axis: GeoLine3D, private radius: number) {
-    super(kernel, new GeoQuadric3D(kernel, 'cylinder'), [axis]);
+  constructor(
+    kernel: IKernel,
+    private axis: GeoLine3D,
+    private radius: number,
+    private height: number | GeoNumeric | null = null,
+  ) {
+    super(
+      kernel,
+      new GeoQuadric3D(kernel, 'cylinder'),
+      height instanceof GeoNumeric ? [axis, height] : [axis],
+    );
   }
 
   getRadiusValue(): number { return this.radius; }
+  getHeightInput(): number | GeoNumeric | null { return this.height; }
+  getHeightValue(): number | null {
+    if (this.height === null) return null;
+    return typeof this.height === 'number' ? this.height : this.height.getValue();
+  }
 
   protected recompute(): void {
     if (!(this.radius > 0) || !Number.isFinite(this.radius)) { this.out.setUndefined(); return; }
-    this.out.setCylinder(this.axis.getOrigin(), this.axis.getDirection(), this.radius);
+    const h = this.getHeightValue();
+    if (h !== null && (!Number.isFinite(h) || h <= 0)) { this.out.setUndefined(); return; }
+    this.out.setCylinder(this.axis.getOrigin(), this.axis.getDirection(), this.radius, h);
     this.out.setDefined();
   }
 }
@@ -182,55 +214,109 @@ export class AlgoEllipsoid3D extends Algo3DBase<GeoQuadric3D> {
   }
 }
 
-/** 无限圆锥：轴（3D 直线）+ 半顶角（弧度）。 */
+/** 圆锥：轴（3D 直线）+ 半顶角（弧度）+ 可选有限高（height 缺省/非法 → 无限）。 */
 export class AlgoCone3D extends Algo3DBase<GeoQuadric3D> {
-  constructor(kernel: IKernel, private axis: GeoLine3D, private halfAngle: number) {
-    super(kernel, new GeoQuadric3D(kernel, 'cone'), [axis]);
+  constructor(
+    kernel: IKernel,
+    private axis: GeoLine3D,
+    private halfAngle: number,
+    private height: number | GeoNumeric | null = null,
+  ) {
+    super(
+      kernel,
+      new GeoQuadric3D(kernel, 'cone'),
+      height instanceof GeoNumeric ? [axis, height] : [axis],
+    );
   }
 
   getHalfAngle(): number { return this.halfAngle; }
+  getHeightInput(): number | GeoNumeric | null { return this.height; }
+  getHeightValue(): number | null {
+    if (this.height === null) return null;
+    return typeof this.height === 'number' ? this.height : this.height.getValue();
+  }
 
   protected recompute(): void {
     if (!(this.halfAngle > 0) || this.halfAngle >= Math.PI / 2) { this.out.setUndefined(); return; }
-    this.out.setCone(this.axis.getOrigin(), this.axis.getDirection(), this.halfAngle);
+    const h = this.getHeightValue();
+    if (h !== null && (!Number.isFinite(h) || h <= 0)) { this.out.setUndefined(); return; }
+    this.out.setCone(this.axis.getOrigin(), this.axis.getDirection(), this.halfAngle, h);
     this.out.setDefined();
   }
 }
 
-/** 直线 × 曲面交点（至多 2 个输出点）。 */
+/** 直线 × 曲面交点（至多 2 个输出点）+ 官方 intersectionType 分类。 */
 export class AlgoIntersectLineQuadric3D extends Algo3DBase<GeoPoint3D[]> {
+  private intersectionType: LineQuadricIntersectionType = INTERSECTION_PASSING_LINE;
+
   constructor(kernel: IKernel, private line: GeoLine3D, private quadric: GeoQuadric3D) {
     super(kernel, [new GeoPoint3D(kernel), new GeoPoint3D(kernel)], [line, quadric]);
   }
 
+  /** 1=producing 2=asymptotic 3=meeting 4=tangent 5=secant 6=passing（对标官方常量）。 */
+  getIntersectionType(): LineQuadricIntersectionType { return this.intersectionType; }
+
   protected recompute(): void {
     this.out.forEach(p => p.setUndefined());
-    const hits = this.quadric.intersectLine(this.line);
-    hits.forEach((hit, i) => {
-      if (i < this.out.length) {
-        this.out[i].setCoords(hit.point.getX(), hit.point.getY(), hit.point.getZ());
+    const { type, slots } = this.quadric.intersectLineClassified(this.line);
+    this.intersectionType = type;
+    // 槽位对齐官方 Q[0]/Q[1]（meeting 按 b_g 符号、tangent 双槽同点）
+    slots.forEach((slot, i) => {
+      if (slot && i < this.out.length) {
+        this.out[i].setCoords(slot.point.getX(), slot.point.getY(), slot.point.getZ());
         this.out[i].setDefined();
       }
     });
   }
 }
 
-/** 棱柱：底面三点 + 高。 */
+/**
+ * 棱柱：任意 n≥3 底面点 + 挤出方式。
+ * - number：冻结高（直棱柱，沿底面法向）；
+ * - GeoPoint3D：顶面参考点（斜棱柱，base[0]→该点统一平移，活引用）。
+ */
 export class AlgoPrism3D extends Algo3DBase<GeoPolyhedron3D> {
-  constructor(kernel: IKernel, private pts: GeoPoint3D[], private height: number) {
-    super(kernel, new GeoPolyhedron3D(kernel, 'prism'), [...pts]);
+  constructor(kernel: IKernel, private pts: GeoPoint3D[], private heightOrTop: number | GeoPoint3D) {
+    super(
+      kernel,
+      new GeoPolyhedron3D(kernel, 'prism'),
+      typeof heightOrTop === 'number' ? [...pts] : [...pts, heightOrTop],
+    );
   }
 
-  getHeight(): number { return this.height; }
+  /** 直棱柱的冻结高；斜棱柱返回 null。 */
+  getHeight(): number | null {
+    return typeof this.heightOrTop === 'number' ? this.heightOrTop : null;
+  }
+
+  /** 斜棱柱的顶面参考点；直棱柱返回 null。 */
+  getTopPoint(): GeoPoint3D | null {
+    return this.heightOrTop instanceof GeoPoint3D ? this.heightOrTop : null;
+  }
+
+  isOblique(): boolean {
+    return this.heightOrTop instanceof GeoPoint3D;
+  }
 
   protected recompute(): void {
-    if (this.pts.length < 3 || !(this.height > 0)) { this.out.setUndefined(); return; }
-    this.out.setPrism(this.pts.map(p => p.getCoords3()), this.height);
+    if (this.pts.length < 3) { this.out.setUndefined(); return; }
+    const base = this.pts.map(p => p.getCoords3());
+    if (typeof this.heightOrTop === 'number') {
+      if (!(this.heightOrTop > 0) || !Number.isFinite(this.heightOrTop)) {
+        this.out.setUndefined();
+        return;
+      }
+      this.out.setPrism(base, this.heightOrTop);
+    } else {
+      const top = this.heightOrTop.getCoords3();
+      if (!top.isPoint()) { this.out.setUndefined(); return; }
+      this.out.setPrism(base, top);
+    }
     this.out.setDefined();
   }
 }
 
-/** 棱锥：底面三点 + 顶点。 */
+/** 棱锥：任意 n≥3 底面点 + 顶点。 */
 export class AlgoPyramid3D extends Algo3DBase<GeoPolyhedron3D> {
   constructor(kernel: IKernel, private pts: GeoPoint3D[], private apex: GeoPoint3D) {
     super(kernel, new GeoPolyhedron3D(kernel, 'pyramid'), [...pts, apex]);

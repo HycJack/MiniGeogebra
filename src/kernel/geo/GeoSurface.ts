@@ -7,12 +7,17 @@ import { ExpressionNode, Scope } from '../algebra/ExpressionNode';
 /** 参数曲面采样点。 */
 export interface SurfaceSample { u: number; v: number; x: number; y: number; z: number }
 
+/** 自定义求值器（旋转面等不便写成表达式 AST 的曲面）。 */
+export type SurfaceEvaluator = (u: number, v: number) => { x: number; y: number; z: number } | null;
+
 /**
  * 参数曲面 —— 对标 GeoGebra GeoSurfaceCartesian3D：P(u,v) = (x(u,v), y(u,v), z(u,v))。
  * 提供解析求值与网格采样（渲染/截面用）。
+ * 旋转面走 setCustomEvaluator（表达式为占位零，evaluatePoint 优先走自定义路径）。
  */
 export class GeoSurface extends GeoElement {
   private scope: Scope = new Map();
+  private customEval: SurfaceEvaluator | null = null;
 
   constructor(
     kernel: IKernel,
@@ -20,11 +25,11 @@ export class GeoSurface extends GeoElement {
     public readonly yExpr: ExpressionNode,
     public readonly zExpr: ExpressionNode,
     public readonly paramU: string,
-    public readonly uMin: number,
-    public readonly uMax: number,
+    public uMin: number,
+    public uMax: number,
     public readonly paramV: string,
-    public readonly vMin: number,
-    public readonly vMax: number,
+    public vMin: number,
+    public vMax: number,
     public readonly expressionTexts: { x: string; y: string; z: string } = { x: '', y: '', z: '' },
   ) {
     super(kernel, new GeoVec3D(0, 0, 0));
@@ -40,6 +45,18 @@ export class GeoSurface extends GeoElement {
     this.scope = scope;
   }
 
+  /** 旋转面等非表达式曲面：设置后 evaluatePoint/sampleGrid 走该求值器。 */
+  setCustomEvaluator(fn: SurfaceEvaluator | null): void {
+    this.customEval = fn;
+  }
+
+  setIntervals(uMin: number, uMax: number, vMin: number, vMax: number): void {
+    this.uMin = uMin;
+    this.uMax = uMax;
+    this.vMin = vMin;
+    this.vMax = vMax;
+  }
+
   private evalExpr(expr: ExpressionNode, u: number, v: number): number {
     const scope = new Map(this.scope);
     scope.set(this.paramU, u);
@@ -48,6 +65,7 @@ export class GeoSurface extends GeoElement {
   }
 
   evaluatePoint(u: number, v: number): { x: number; y: number; z: number } | null {
+    if (this.customEval) return this.customEval(u, v);
     const x = this.evalExpr(this.xExpr, u, v);
     const y = this.evalExpr(this.yExpr, u, v);
     const z = this.evalExpr(this.zExpr, u, v);
