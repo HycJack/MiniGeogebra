@@ -82,7 +82,9 @@ type Command =
 /** GeoGebra 默认视图常用的单位比例，初始图形坐标保持在 ±10 以内。 */
 const DEFAULT_SCALE = 50;
 const MIN_SCALE = 0.1;
-const MAX_SCALE = 200;
+// 深zoom 上限：网格步长 = 50px / scale，scale=5e4 时主网格到 0.001 级别
+// （用户要求支持 0.001 网格）。MIN_SCALE=0.1 保持不变（缩小方向无此需求）。
+const MAX_SCALE = 50000;
 
 // ─── 核心编排组件 ────────────────────────────────────────────────────
 
@@ -654,8 +656,10 @@ export const GeometryCanvas: React.FC = () => {
     if (res.kind === 'zoom' && res.factor) zoom(res.factor);
     else if (res.kind === 'pan' && (res.dx || res.dy)) setCoord(prev => prev.panBy(res.dx || 0, res.dy || 0));
     else if (res.kind === 'reset') {
-      const dpr = window.devicePixelRatio || 1;
-      setCoord(CoordinateSystem.centered(canvasSize.width / dpr, canvasSize.height / dpr, DEFAULT_SCALE));
+      const rect = containerRef.current?.getBoundingClientRect();
+      const w = rect?.width ?? canvasSize.width;
+      const h = rect?.height ?? canvasSize.height;
+      setCoord(CoordinateSystem.centered(w, h, DEFAULT_SCALE));
     }
   };
 
@@ -681,7 +685,7 @@ export const GeometryCanvas: React.FC = () => {
 
       {/* ── Main Content ──────────────────────────────────────── */}
       <div className="flex flex-1 overflow-hidden relative">
-        <SidePanel kernel={kernel} panelTab={panelTab} setPanelTab={setPanelTab} selectedElements={selectedElements} coord={coord} recordStyleChange={recordStyleChange} notifyNumericChange={notifyNumericChange} renderRev={renderRev} t={t} onAlgebraElementsCreated={handleAlgebraElementsCreated} />
+        <SidePanel kernel={kernel} panelTab={panelTab} setPanelTab={setPanelTab} selectedElements={selectedElements} coord={coord} recordStyleChange={recordStyleChange} notifyNumericChange={notifyNumericChange} renderRev={renderRev} t={t} onAlgebraElementsCreated={handleAlgebraElementsCreated} onDeleteElement={deleteWithDependents} />
 
         {/* Canvas Area */}
         <div
@@ -717,7 +721,7 @@ export const GeometryCanvas: React.FC = () => {
           )}
 
           {view === '2d' && (
-            <CanvasOverlay uiElements={uiElements} setUIElements={setUIElements} editingUIElement={editingUIElement} setEditingUIElement={setEditingUIElement} draggingUIElement={draggingUIElement} setDraggingUIElement={setDraggingUIElement} coord={coord} />
+            <CanvasOverlay uiElements={uiElements} setUIElements={setUIElements} editingUIElement={editingUIElement} setEditingUIElement={setEditingUIElement} draggingUIElement={draggingUIElement} setDraggingUIElement={setDraggingUIElement} coord={coord} kernel={kernel} />
           )}
 
           {/* Hover tooltip for function curves */}
@@ -739,7 +743,7 @@ export const GeometryCanvas: React.FC = () => {
             <div className="absolute bottom-8 right-6 flex flex-col shadow-lg rounded-lg overflow-hidden border border-gray-200 bg-white">
               <button className="w-10 h-10 flex items-center justify-center text-gray-600 hover:bg-gray-100 hover:text-blue-600 transition-colors border-b border-gray-100" onClick={() => zoom(1.2)} title={t('zoomIn')}><ZoomIn size={20} /></button>
               <button className="w-10 h-10 flex items-center justify-center text-gray-600 hover:bg-gray-100 hover:text-blue-600 transition-colors border-b border-gray-100" onClick={() => zoom(1 / 1.2)} title={t('zoomOut')}><ZoomOut size={20} /></button>
-              <button className="w-10 h-10 flex items-center justify-center text-gray-600 hover:bg-gray-100 hover:text-blue-600 transition-colors" onClick={() => { const dpr = window.devicePixelRatio || 1; setCoord(CoordinateSystem.centered(canvasSize.width / dpr, canvasSize.height / dpr, DEFAULT_SCALE)); }} title={t('resetView')}><Home size={20} /></button>
+              <button className="w-10 h-10 flex items-center justify-center text-gray-600 hover:bg-gray-100 hover:text-blue-600 transition-colors" onClick={() => { const rect = containerRef.current?.getBoundingClientRect(); setCoord(CoordinateSystem.centered(rect?.width ?? canvasSize.width, rect?.height ?? canvasSize.height, DEFAULT_SCALE)); }} title={t('resetView')}><Home size={20} /></button>
             </div>
           )}
 

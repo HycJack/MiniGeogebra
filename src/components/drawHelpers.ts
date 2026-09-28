@@ -100,11 +100,12 @@ export function drawGrid(renderer: IRenderer, wScreen: number, hScreen: number, 
       renderer.moveTo(0, startY);
       renderer.lineTo(0, endY);
       renderer.stroke();
-      // Y 轴正方向箭头（向下）
+      // Y 轴正方向箭头：世界 y 向上为正，startY 是视区上端（y 最大值），
+      // 箭头画在 startY、朝上方（此前误画在 endY 负方向端且被顶部裁掉，看不见）。
       renderer.beginPath();
-      renderer.moveTo(-arrowHalf, endY - arrowLen);
-      renderer.lineTo(0, endY);
-      renderer.lineTo(arrowHalf, endY - arrowLen);
+      renderer.moveTo(-arrowHalf, startY + arrowLen);
+      renderer.lineTo(0, startY);
+      renderer.lineTo(arrowHalf, startY + arrowLen);
       renderer.stroke();
     }
     if (yInView) {
@@ -185,17 +186,18 @@ export function drawGrid(renderer: IRenderer, wScreen: number, hScreen: number, 
 export function drawPoint(renderer: IRenderer, p: GeoPoint, selected: boolean, scale: number): void {
   if (!p.isDefined() || p.visible === false) return;
   const x = p.getX(), y = p.getY();
-  const baseRadius = selected ? 8 : 6;
+  // 点尺寸（像素）：比 GeoGebra 默认略大，投屏/高 DPI 下更醒目
+  const baseRadius = selected ? 10 : 8;
   const pointRadius = baseRadius / scale;
 
   if (selected) {
     renderer.beginPath();
-    renderer.arc(x, y, (baseRadius + 4) / scale, 0, 2 * Math.PI);
+    renderer.arc(x, y, (baseRadius + 5) / scale, 0, 2 * Math.PI);
     renderer.strokeStyle = '#3b82f6';
     renderer.lineWidth = 2 / scale;
     renderer.stroke();
     renderer.beginPath();
-    renderer.arc(x, y, (baseRadius + 8) / scale, 0, 2 * Math.PI);
+    renderer.arc(x, y, (baseRadius + 10) / scale, 0, 2 * Math.PI);
     renderer.strokeStyle = 'rgba(59, 130, 246, 0.3)';
     renderer.lineWidth = 3 / scale;
     renderer.stroke();

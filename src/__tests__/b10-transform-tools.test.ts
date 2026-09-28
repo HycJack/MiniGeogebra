@@ -100,11 +100,19 @@ afterEach(() => {
 });
 
 describe('B10 addAlgoAndNotify（输出注册回归）', () => {
-  it('circle 工具：algo 与其输出圆都入 construction，且可命中', () => {
+  it('circle 工具：点圆心 → 输入半径 → algo 与输出圆入 construction', () => {
     const kernel = makeKernel();
     const o = makePoint(kernel, 0, 0, 'O');
     const { ctx } = makeCtx(kernel, 'circle', [], { radius: 40 });
-    click(ctx, 0, 0);
+    // 新交互：点击圆心后弹窗输入半径（stub window.prompt）
+    const g = globalThis as any;
+    const origPrompt = g.prompt;
+    g.prompt = () => '40';
+    try {
+      click(ctx, 0, 0);
+    } finally {
+      g.prompt = origPrompt;
+    }
 
     const algos = c(kernel).getElements().filter(el => (el as any).getClassName?.() === 'AlgoCirclePointRadius');
     expect(algos).toHaveLength(1);
@@ -261,8 +269,8 @@ describe('B10 AlgoShearStretch', () => {
     expect(after.x !== before.x || after.y !== before.y).toBe(true);
   });
 
-  it('shear 工具路径（window.prompt polyfill）', () => {
-    (globalThis as any).window = { prompt: () => '2' };
+  it('shear 工具路径（globalThis.prompt polyfill）', () => {
+    (globalThis as any).prompt = () => '2';
     const kernel = makeKernel();
     const p = makePoint(kernel, 1, 2, 'A');
     const { ctx } = makeCtx(kernel, 'shear', [p]);

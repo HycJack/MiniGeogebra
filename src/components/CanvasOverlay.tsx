@@ -1,5 +1,7 @@
 import React from 'react';
 import { CoordinateSystem } from '../kernel/core/CoordinateSystem';
+import { Kernel } from '../kernel/core/Kernel';
+import { GeoNumeric } from '../kernel/geo/GeoNumeric';
 
 export interface UIElement {
   id: string;
@@ -22,11 +24,12 @@ interface CanvasOverlayProps {
   draggingUIElement: string | null;
   setDraggingUIElement: React.Dispatch<React.SetStateAction<string | null>>;
   coord: CoordinateSystem;
+  kernel?: Kernel;
 }
 
 const CanvasOverlay: React.FC<CanvasOverlayProps> = ({
   uiElements, setUIElements, editingUIElement, setEditingUIElement,
-  draggingUIElement, setDraggingUIElement, coord
+  draggingUIElement, setDraggingUIElement, coord, kernel
 }) => {
   return (
     <>
@@ -105,10 +108,20 @@ const CanvasOverlay: React.FC<CanvasOverlayProps> = ({
                 value={element.value}
                 onChange={(e) => {
                   e.stopPropagation();
+                  const val = Number(e.target.value);
                   const updated = uiElements.map(el =>
-                    el.id === element.id ? { ...el, value: Number(e.target.value) } : el
+                    el.id === element.id ? { ...el, value: val } : el
                   );
                   setUIElements(updated);
+                  // 联动内核：滑块绑定的 GeoNumeric 同步改值，依赖对象实时重算
+                  if (element.numericLabel && kernel) {
+                    const numeric = kernel.getConstruction().getElements()
+                      .find(el => el instanceof GeoNumeric && (el as GeoNumeric).label === element.numericLabel) as GeoNumeric | undefined;
+                    if (numeric) {
+                      numeric.setValue(val);
+                      kernel.notifyUpdate(numeric);
+                    }
+                  }
                 }}
                 className="w-32"
                 onMouseDown={(e) => e.stopPropagation()}

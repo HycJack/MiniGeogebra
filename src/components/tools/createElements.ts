@@ -12,12 +12,15 @@ import { GeoLine } from '../../kernel/geo/GeoLine';
 import { GeoConic } from '../../kernel/geo/GeoConic';
 import { GeoFunction } from '../../kernel/geo/GeoFunction';
 import { GeoPolyLine } from '../../kernel/geo/GeoPolyLine';
+import { GeoArc } from '../../kernel/geo/GeoArc';
+import { GeoCurve } from '../../kernel/geo/GeoCurve';
 import { GeoVec3D } from '../../kernel/core/GeoVec3D';
 import { AlgoElement } from '../../kernel/algo/AlgoElement';
 import { AlgoPointOnSegment } from '../../kernel/algo/AlgoPointOnSegment';
 import { AlgoPointOnLine } from '../../kernel/algo/AlgoPointOnLine';
 import { AlgoPointOnConic } from '../../kernel/algo/AlgoPointOnConic';
 import { AlgoPointOnPolyLine } from '../../kernel/algo/AlgoPointOnPolyLine';
+import { AlgoPointOnArc } from '../../kernel/algo/AlgoPointOnArc';import { AlgoPointOnCurve } from '../../kernel/algo/AlgoCurveFamily';
 import { AlgoPointOnFunction } from '../../kernel/algo/AlgoPointOnFunction';
 
 /** 创建一个带唯一标签的独立点（A, B, C, D...）。 */
@@ -54,7 +57,7 @@ export function nextAreaLabel(construction: Construction): string {
 /** 在路径（线段/直线/圆/折线）上根据屏幕位置创建一个带参数的约束点。 */
 export function createParameterPointOnPath(
   kernel: Kernel,
-  path: GeoSegment | GeoLine | GeoConic | GeoPolyLine,
+  path: GeoSegment | GeoLine | GeoConic | GeoPolyLine | GeoArc | GeoCurve,
   screenX: number, screenY: number
 ): { param: GeoNumeric; point: GeoPoint; algo: AlgoElement } | null {
   const param = new GeoNumeric(kernel, 0);
@@ -73,6 +76,17 @@ export function createParameterPointOnPath(
   } else if (path instanceof GeoPolyLine) {
     param.intervalMin = 0; param.intervalMax = path.vertices.length - 1;
     algo = new AlgoPointOnPolyLine(kernel, path, param);
+  } else if (path instanceof GeoArc) {
+    // 圆弧参数 = 起止角区间（Path 接口与圆锥曲线同构）
+    param.intervalMin = path.getStartAngle();
+    param.intervalMax = path.getEndAngle();
+    param.animationIncrement = 0;
+    algo = new AlgoPointOnArc(kernel, path, param);
+  } else if (path instanceof GeoCurve) {
+    // 参数曲线：参数区间即定义域
+    param.intervalMin = path.getMinParameter();
+    param.intervalMax = path.getMaxParameter();
+    algo = new AlgoPointOnCurve(kernel, path, param);
   }
   if (!algo) return null;
 

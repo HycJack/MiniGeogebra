@@ -294,8 +294,14 @@ export const handlePointerDown = (
     }
 
     case 'circle': {
-      const p = hitPoint() ?? emptyClickNewPoint();
-      const circle = new AlgoCirclePointRadius(kernel, p, radius ?? 50);
+      // 对标 GeoGebra 的"圆 (圆心和半径)"：先点圆心，再弹窗输入半径。
+      // 此前是一次点击直接画半径 50 格的固定圆（radius state 无任何入口），交互错误。
+      const center = hitPoint() ?? emptyClickNewPoint();
+      const input = (globalThis as any).prompt(t('circleRadiusValuePrompt'), '3');
+      if (input === null) return; // 取消：不生成（圆心点保留，供重试）
+      const r = Number(input);
+      if (!isFinite(r) || r <= 0) return;
+      const circle = new AlgoCirclePointRadius(kernel, center, r);
       addAlgoAndNotify(circle);
       break;
     }
@@ -517,8 +523,10 @@ export const handlePointerDown = (
     }
 
     case 'area': {
-      const target = elements.slice().reverse().find(el => el instanceof GeoPolygon) as GeoPolygon | undefined;
-      if (target) {
+      // 修复：此前点击任意位置（包括空白）都会测"构造中最后一个多边形"，
+      // 无法指定目标。改为必须点中某个多边形。
+      const target = hitObject();
+      if (target instanceof GeoPolygon) {
         const ar = new AlgoArea(kernel, target);
         ar.getOutput().label = nextAreaLabel(construction);
         kernel.getConstruction().addElement(ar);
@@ -687,7 +695,7 @@ export const handlePointerDown = (
             if (!ts.transformRef) return;
           }
 
-          const raw = window.prompt(t(mode === 'shear' ? 'shearFactorPrompt' : 'stretchFactorPrompt'), '1');
+          const raw = (globalThis as any).prompt(t(mode === 'shear' ? 'shearFactorPrompt' : 'stretchFactorPrompt'), '1');
           if (raw === null) return;
           const factor = Number(raw);
           if (!isFinite(factor)) return;
@@ -862,7 +870,7 @@ export const handlePointerDown = (
     case 'segment_fixed': {
       if (!ts.fixedStart) {
         const start = hitPoint() ?? emptyClickNewPoint();
-        const input = window.prompt(t('fixedLengthPrompt'), '5');
+        const input = (globalThis as any).prompt(t('fixedLengthPrompt'), '5');
         const length = Number(input);
         if (input === null || !isFinite(length) || length <= 0) return;
         ts.fixedStart = start;
@@ -893,7 +901,7 @@ export const handlePointerDown = (
     case 'angle_fixed': {
       if (!ts.angleVertex) {
         ts.angleVertex = hitPoint() ?? emptyClickNewPoint();
-        const input = window.prompt(t('fixedAnglePrompt'), '60');
+        const input = (globalThis as any).prompt(t('fixedAnglePrompt'), '60');
         const degrees = Number(input);
         if (input === null || !isFinite(degrees)) {
           ts.angleVertex = null;
@@ -952,7 +960,7 @@ export const handlePointerDown = (
     case 'button':
     case 'checkbox': {
       const id = `ui_${Date.now()}`;
-      const newUIElement: any = {
+      let newUIElement: any = {
         id,
         type: mode,
         x: point.x,
@@ -964,6 +972,19 @@ export const handlePointerDown = (
         step: mode === 'slider' ? 1 : undefined,
         checked: mode === 'checkbox' ? false : undefined,
       };
+      // 画布滑块绑定一个**内核 GeoNumeric**（对标 GeoGebra 的 Slider 工具）：
+      // 拖动画布滑块 = 改内核数值，依赖它的对象实时联动，代数视图同步可见。
+      if (mode === 'slider') {
+        const numeric = new GeoNumeric(kernel, 50);
+        numeric.intervalMin = 0;
+        numeric.intervalMax = 100;
+        const construction = kernel.getConstruction();
+        numeric.label = construction.getNextNumericLabel();
+        construction.addElement(numeric);
+        construction.updateDependentAlgorithms(numeric);
+        newUIElement.numericLabel = numeric.label;
+        setRenderRev?.(r => r + 1);
+      }
       setUIElements?.([...(ctx.uiElements ?? []), newUIElement]);
       setEditingUIElement?.(id);
       break;
@@ -1052,26 +1073,35 @@ export const handlePointerDown = (
     case 'ellipse':
     case 'hyperbola':
     case 'parabola': {
-      const pHit = hitPoint();
+      // 第一次点击允许在空白处创建焦点自由点（此前点空白直接被忽略，工具无响应）
+      const pHit = hitPoint() ?? emptyClickNewPoint();
       if (pHit) {
-        const current = [...selectedElements, pHit];
-        if (mode === 'parabola' && current.length === 2) {
-          const line = elements.slice().reverse().find(el => el instanceof GeoLine) as GeoLine | undefined;
-          if (line) {
-            const algo = new AlgoParabola(kernel, current[0] as GeoPoint, line);
+        // 抛物线改 2 步交互：第 1 次点击焦点；第 2 次点击"准线上的位置"——
+        // 命中直线则该线为准线；点在空白/非直线上则取该处水平线为准线。
+        // 此前静默取"构造中最后一条直线"，用户无法知道准线是哪条。
+        if (mode === 'parabola') {
+          const current = [...selectedElements, pHit];
+          if (selectedElements.length >= 1 && selectedElements[0] instanceof GeoPoint) {
+            const focus = selectedElements[0];
+            const directrix = (current[1] instanceof GeoLine)
+              ? (current[1] as GeoLine)
+              : new GeoLine(kernel, 0, 1, -pHit.getY());
+            const algo = new AlgoParabola(kernel, focus, directrix);
             addAlgoAndNotify(algo);
             clearSel();
             setRenderRev(r => r + 1);
             break;
           }
+          setSelectedElements([pHit]);
+          setRenderRev(r => r + 1);
+          break;
         }
+        const current = [...selectedElements, pHit];
         if (current.length === 3 && current.every(e => e instanceof GeoPoint)) {
           const [f1, f2, p] = current as GeoPoint[];
           const algo = mode === 'ellipse'
             ? new AlgoEllipse(kernel, f1, f2, p)
-            : mode === 'hyperbola'
-            ? new AlgoHyperbola(kernel, f1, f2, p)
-            : new AlgoParabola(kernel, f1, new GeoLine(kernel, 0, 1, -f2.getY()));
+            : new AlgoHyperbola(kernel, f1, f2, p);
           addAlgoAndNotify(algo);
           clearSel();
           setRenderRev(r => r + 1);

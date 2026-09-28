@@ -785,3 +785,66 @@ describe('B7：路径点动画', () => {
     expect(p.isAnimatable()).toBe(false);
   });
 });
+
+describe('Slider 命令（对标 CmdSlider）', () => {
+  const addInput = (kernel: Kernel, text: string) => {
+    const elements = parseAlgebraInput(kernel, text);
+    elements.forEach(el => kernel.getConstruction().addElement(el));
+    kernel.getConstruction().updateAllAlgorithms();
+    return elements;
+  };
+
+  it('Slider() 创建匿名滑块（默认区间 [0,10]，值 5）', () => {
+    const kernel = makeKernel();
+    const result = addInput(kernel, 'Slider()');
+    const n = result.find(el => el instanceof GeoNumeric) as GeoNumeric;
+    expect(n).toBeDefined();
+    expect(n.intervalMin).toBe(0);
+    expect(n.intervalMax).toBe(10);
+    expect(n.getValue()).toBe(5);
+    expect(n.label).toBeTruthy();
+  });
+
+  it('Slider(0, 100, 5, 20) 带区间/步长/初值', () => {
+    const kernel = makeKernel();
+    const result = addInput(kernel, 'Slider(0, 100, 5, 20)');
+    const n = result.find(el => el instanceof GeoNumeric) as GeoNumeric;
+    expect(n.intervalMin).toBe(0);
+    expect(n.intervalMax).toBe(100);
+    expect(n.animationIncrement).toBe(5);
+    expect(n.getValue()).toBe(20);
+  });
+
+  it('Slider(a) 返回已有数值自身（不新建对象），退化区间才补默认值', () => {
+    const kernel = makeKernel();
+    addInput(kernel, 'a = 3');
+    const result = addInput(kernel, 'Slider(a)');
+    expect(result).toHaveLength(0); // 空数组哨兵：对象已在构造中
+    const all = kernel.getConstruction().getElements().filter(el => el instanceof GeoNumeric && (el as GeoNumeric).label === 'a') as GeoNumeric[];
+    expect(all).toHaveLength(1);
+    // a 的默认区间 [0, 2π] 有效 → 原样保留
+    expect(all[0].intervalMin).toBe(0);
+    expect(all[0].intervalMax).toBeCloseTo(2 * Math.PI, 9);
+    // 退化区间（max<=min）才补 [v, v+10]
+    addInput(kernel, 'b = 0');
+    const b = kernel.getConstruction().getElements().find(el => el instanceof GeoNumeric && (el as GeoNumeric).label === 'b') as GeoNumeric;
+    b.intervalMax = b.intervalMin; // 人为退化
+    addInput(kernel, 'Slider(b)');
+    expect(b.intervalMax).toBe(10);
+  });
+
+  it('Slider 产出的滑块可驱动依赖对象', () => {
+    const kernel = makeKernel();
+    addInput(kernel, 'Slider(0, 10, 1, 2)');
+    addInput(kernel, 'f(x) = t1*x');
+    // 找到 Slider 创建的数值（标签 t1）
+    const t1 = kernel.getConstruction().getElements().find(el => el instanceof GeoNumeric && (el as GeoNumeric).label === 't1') as GeoNumeric;
+    expect(t1.getValue()).toBe(2);
+    const fn = kernel.getConstruction().getElements().find(el => (el as any).evaluateAt) as any;
+    expect(fn.evaluateAt(3)).toBeCloseTo(6, 9);
+    // 拖滑块（改值）→ f 跟随
+    t1.setValue(5);
+    kernel.getConstruction().updateAllAlgorithms();
+    expect(fn.evaluateAt(3)).toBeCloseTo(15, 9);
+  });
+});

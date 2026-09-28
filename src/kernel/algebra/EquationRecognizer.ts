@@ -115,6 +115,7 @@ const COMMAND_ARITY: Record<string, [number, number]> = {
   FitPoly: [3, 12],
   Text: [2, 4],
   Angle: [3, 3],
+  Slider: [0, 5],
   DirectedAngle: [3, 3],
   Dilate: [2, 3],
   Mirror: [2, 2],
@@ -546,7 +547,50 @@ export function parseAlgebraInput(
     }
 
     if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(leftText)) {
-      if (existingLabels.has(leftText)) throw new Error(`Label "${leftText}" already exists`);
+      // B12：**重定义**——标签已存在且原对象是自由元素时，原位更新
+      // （不删对象、依赖者全部保留，对标 GeoGebra 重定义语义）：
+      //   - 数值滑块 `a = 2`：setValue + 依赖链增量重算；
+      //   - 自由点 `A = (x, y)`：setCoords + 同上；
+      //   - 新 RHS 带依赖（`a = b + 1`）：把自由数值升级为 AlgoDependentNumeric
+      //     需要替换对象，走"级联删除 + 重建"路径（依赖者会级联重建失败——
+      //     此情形报错提示先删除依赖者，与 GeoGebra 的受限场景一致）。
+      // 函数（f(x)=…）与派生对象不支持重定义（保持既有报错）。
+      if (existingLabels.has(leftText)) {
+        const existing = construction.getElements().find(
+          el => el instanceof GeoElement && (el as unknown as { label?: string }).label === leftText);
+        const isFreeNumeric = existing instanceof GeoNumeric && existing.isIndependent();
+        const isFreePoint = existing instanceof GeoPoint && existing.isIndependent();
+        if (!isFreeNumeric && !isFreePoint) throw new Error(`Label "${leftText}" already exists`);
+
+        if (isFreeNumeric) {
+          // 数值分支：RHS 必须是无依赖的数字（带依赖的升级需要替换对象，暂不支持）
+          const newDeps = (() => {
+            try {
+              const expr = parseExpression(rightText);
+              return makeNumericDependencies(expr);
+            } catch { return [null as unknown as GeoNumeric]; }
+          })();
+          if (newDeps === null || newDeps.length > 0) {
+            throw new Error(`Cannot redefine "${leftText}" with dependencies; delete dependents of "${leftText}" first`);
+          }
+          const value = Number(rightText);
+          if (!Number.isFinite(value)) throw new Error(`"${rightText}" is not a number`);
+          (existing as GeoNumeric).setValue(value);
+          construction.updateDependentAlgorithms(existing as GeoElement);
+          // 空数组 = 已原位更新（对象已在构造中），调用方无需再 addElement
+          return [];
+        }
+        // 自由点分支：新 RHS 必须是坐标元组（原位 setCoords）
+        const point3 = tryParseCoordTuple3(rightText, kernel);
+        const coordPoint = point3 ? null : tryParseCoordTuple(rightText, kernel);
+        const np = point3 ?? coordPoint;
+        if (!np) throw new Error(`Cannot redefine "${leftText}" with "${rightText}": expected (x, y) coordinates`);
+        np.label = leftText;
+        const ep = existing as GeoPoint;
+        ep.setCoords(np.getX(), np.getY(), np.getZ?.() ?? 1);
+        construction.updateDependentAlgorithms(ep);
+        return []; // 同上：原位更新
+      }
 
       // 命令式 RHS：`poly = Polygon(A, B, C)` → 递归走命令分发，把第一个输出命名为 leftText。
       // 必须先于 parseExpression：否则 `Polygon(...)` 会被当成未知函数抛错。
@@ -665,7 +709,9 @@ export function parseAlgebraInput(
   if (commandMatch) {
     const name = commandMatch[1];
     const [minArgs, maxArgs] = COMMAND_ARITY[name] ?? [0, 0];
-    if (minArgs > 0) {
+    // 无参命令（如 Slider()）也要走命令分发：识别器有该命令的名字即进入，
+    // 否则 `Slider()` 会被当成对未知函数的调用报错。
+    if (name in COMMAND_ARITY) {
       const rawArgs = splitArgs(commandMatch[2]).filter(arg => arg.length > 0);
       if (rawArgs.length < minArgs || rawArgs.length > maxArgs) {
         throw new Error(`Command ${name} requires ${minArgs === maxArgs ? minArgs : `${minArgs} or ${maxArgs}`} argument${minArgs === 1 ? '' : 's'}`);
@@ -1132,6 +1178,43 @@ const dispatchCommand = (
       return [algo, algo.getOutput()];
     }
 
+    case 'Slider': {
+      // Slider() —— 匿名滑块（默认区间 [0, 10]，值 5，标签自动分配）
+      // Slider(n) —— 绑定已有数值 n（为其设置动画区间，返回 n 本身）
+      // Slider(name, min, max[, step[, value]]) —— 创建命名滑块
+      // 全部产出内核 GeoNumeric：代数视图行内滑块 / 底部动画面板立即可用。
+      const num = (text: string) => ctx.resolveNumber(text);
+      if (args.length === 0) {
+        const slider = new GeoNumeric(kernel, 5);
+        slider.intervalMin = 0;
+        slider.intervalMax = 10;
+        assignNextLabel(slider, () => construction.getNextNumericLabel(existingLabels));
+        return [slider];
+      }
+      if (args.length === 1) {
+        const existingNum = ctx.findNumeric(args[0].trim());
+        if (!existingNum) throw new Error(`Unknown number "${args[0].trim()}"`);
+        if (existingNum.intervalMax <= existingNum.intervalMin) {
+          existingNum.intervalMin = Math.min(0, existingNum.getValue());
+          existingNum.intervalMax = existingNum.intervalMin + 10;
+        }
+        // 返回的是构造中已有的对象：空数组哨兵（同 B12 重定义），
+        // 避免调用方 addElement 把同一对象重复入列表。
+        return [];
+      }
+      const min = num(args[0]);
+      const max = num(args[1]);
+      if (!(max > min)) throw new Error('Slider expects max > min');
+      const step = args.length >= 3 ? num(args[2]) : (max - min) / 100;
+      const value = args.length >= 4 ? num(args[3]) : min + (max - min) / 2;
+      const slider = new GeoNumeric(kernel, value);
+      slider.intervalMin = min;
+      slider.intervalMax = max;
+      if (step > 0) slider.animationIncrement = step;
+      assignNextLabel(slider, () => construction.getNextNumericLabel(existingLabels));
+      return [slider];
+    }
+
     case 'DirectedAngle': {
       // 有向角（逆时针 [0, 2π)，对标 GeoGebra Angle 的方向变体）
       const p1 = ctx.findPoint(args[0].trim());
@@ -1218,17 +1301,18 @@ const dispatchCommand = (
         // 避免 addInput 中间那次 updateAll 让兄弟算法先各自收根。
         const algo = new AlgoRootList(kernel, fn, lo, hi, ROOT_LIST_CAPACITY, probeRoots);
         const elements: ConstructionElement[] = [];
-        // 兄弟根点算法与输出先入构造（构造序在主算法之前）；
-        // 占用的槽点分配标签，空闲槽不给标签（undefined 不显示）。
-        for (const rootPoint of algo.getRootPoints()) {
-          if (rootPoint.isDefined()) {
-            rootPoint.label = construction.getNextPointLabel(existingLabels);
-            existingLabels.add(rootPoint.label);
-          }
-          elements.push(rootPoint);
-        }
-        for (const rootAlgo of algo.getRootAlgos()) {
-          elements.push(rootAlgo);
+        // B13 修复：只有**占用的**槽位（算法+输出点）入构造；
+        // 空闲槽位完全不进构造——不再以 "GeoElement_CE_xx（未定义）" 泄漏到代数视图。
+        // 槽位占用数在创建时固定（根数已知），后续根数变化由列表算法置
+        // undefined 表达（多余槽点已在构造中，但只在原根数减少时出现）。
+        const rootAlgos = algo.getRootAlgos();
+        const rootPoints = algo.getRootPoints();
+        // 根数可能超过容量（如 sin(x) 在宽区间）：只注册前 CAPACITY 个根，
+        // 其余根丢弃（容量上限语义，列表无法再扩）。
+        for (let i = 0; i < Math.min(probeRoots.length, rootPoints.length); i++) {
+          rootPoints[i].label = construction.getNextPointLabel(existingLabels);
+          existingLabels.add(rootPoints[i].label);
+          elements.push(rootAlgos[i], rootPoints[i]);
         }
         assignNextLabel(algo.getOutput(), () => construction.getNextPointLabel(existingLabels));
         elements.push(algo, algo.getOutput());

@@ -1,6 +1,6 @@
 import { GeoPoint } from '../geo/GeoPoint';
 
-export const SNAP_POINT_RADIUS = 10; // 吸附热区（像素，与点击热区对齐）
+export const SNAP_POINT_RADIUS = 12; // 吸附热区（像素，与点击热区对齐；点渲染半径 8px + 余量）
 
 /** 吸附计算后的位置信息 */
 export interface SnappedPosition {

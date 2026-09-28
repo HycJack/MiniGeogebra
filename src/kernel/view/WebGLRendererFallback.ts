@@ -257,7 +257,10 @@ export class WebGLRendererFallback implements IRenderer {
     if (a.r <= 1e-9 || Math.abs(a.ea - a.sa) < 1e-6) return [];
     const r = a.r;
     const dA = Math.abs(a.ea - a.sa);
-    const segs = Math.max(8, Math.ceil(dA * r / 0.3));
+    // 段数按**像素**弧长预算（r × MV 缩放 ≈ 屏幕半径）：约每 3px 一段，
+    // 下限 24。旧实现按世界弧长 0.3/段 + 下限 8，导致小半径的点
+    // （世界半径 ~0.12）只分到 8 段 —— 八边形观感（"点不圆"）。
+    const segs = Math.max(24, Math.ceil(dA * r * this.mvPixelScale() / 3));
     const dir = a.ccw ? -1 : 1;
     const out: { p0: { x: number; y: number }; p1: { x: number; y: number } }[] = [];
     for (let i = 0; i < segs; i++) {
@@ -270,12 +273,18 @@ export class WebGLRendererFallback implements IRenderer {
     }
     return out;
   }
+
+  /** 当前 MV 矩阵的近似缩放（世界单位 → 像素）。 */
+  private mvPixelScale(): number {
+    // mv 是 [sx,0,0; 0,sy,0; tx,ty,1] 列主序线性流的乘积，取 sx 分量即可
+    return Math.max(Math.abs(this.mv[0]), Math.abs(this.mv[4]), 1e-6);
+  }
   private arcFanPoints(a: ArcEntry): { x: number; y: number }[] {
     if (a.r <= 1e-9 || Math.abs(a.ea - a.sa) < 1e-6) return [];
     const pts: { x: number; y: number }[] = [{ x: a.cx, y: a.cy }];
     const r = a.r;
     const dA = Math.abs(a.ea - a.sa);
-    const segs = Math.max(24, Math.ceil(dA * r / 0.15));
+    const segs = Math.max(32, Math.ceil(dA * r * this.mvPixelScale() / 1.5));
     const dir = a.ccw ? -1 : 1;
     for (let i = 1; i <= segs; i++) {
       const ang = a.sa + dir * dA * (i / segs);

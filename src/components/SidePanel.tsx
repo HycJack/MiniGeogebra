@@ -9,7 +9,7 @@ import { CoordinateSystem } from '../kernel/core/CoordinateSystem';
 import { ConstructionElement } from '../kernel/core/ConstructionElement';
 import { SliderControl } from './SliderControl';
 import AlgebraInputBar from './AlgebraInputBar';
-import { Menu, Sliders, Square } from 'lucide-react';
+import { Menu, Sliders, Square, Trash2 } from 'lucide-react';
 import type { TFunction } from '../i18n/LanguageContext';
 
 interface SidePanelProps {
@@ -20,6 +20,7 @@ interface SidePanelProps {
   coord: CoordinateSystem;
   recordStyleChange: (el: GeoElement, changes: Record<string, unknown>) => void;
   notifyNumericChange: (numeric: GeoNumeric, oldValue: number, newValue: number) => void;
+  onDeleteElement?: (els: ConstructionElement[]) => void;
   renderRev: number;
   t: TFunction;
 }
@@ -31,7 +32,7 @@ interface SidePanelWithHandlersProps extends SidePanelProps {
 const SidePanel: React.FC<SidePanelWithHandlersProps> = ({
   kernel, panelTab, setPanelTab, selectedElements, coord,
   recordStyleChange, notifyNumericChange, renderRev, t,
-  onAlgebraElementsCreated,
+  onAlgebraElementsCreated, onDeleteElement,
 }) => {
   // renderRev 只用于让约束点参数在动画循环中随构造刷新重新计算。
   void renderRev;
@@ -92,10 +93,41 @@ const SidePanel: React.FC<SidePanelWithHandlersProps> = ({
                   <div className="flex items-center gap-2">
                     <div className="w-3 h-3 rounded-full bg-blue-500 shadow-sm"></div>
                     <span className="font-semibold text-gray-800">{el.getNameDescription()}</span>
+                    {onDeleteElement && (
+                      <button
+                        type="button"
+                        onClick={() => onDeleteElement([el])}
+                        className="ml-auto opacity-0 group-hover:opacity-100 p-1 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 transition-all"
+                        title={t('ctxDelete')}
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    )}
                   </div>
                   <div className="text-sm text-gray-500 ml-5 font-mono mt-0.5">
                     {'getAlgebraDescription' in el ? el.getAlgebraDescription() : typeName}
                   </div>
+                  {el instanceof GeoNumeric && (
+                    <div className="ml-5 mt-1.5 flex items-center gap-2">
+                      <input
+                        type="range"
+                        min={el.intervalMin}
+                        max={el.intervalMax}
+                        step={(el.intervalMax - el.intervalMin) / 200 || 0.01}
+                        value={el.getValue()}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          notifyNumericChange(el, el.getValue(), val);
+                          el.setValue(val);
+                          kernel.notifyUpdate(el);
+                        }}
+                        className="flex-1 accent-blue-600 h-1"
+                      />
+                      <span className="text-xs font-mono text-gray-600 w-12 text-right">
+                        {el.getValue().toFixed(2)}
+                      </span>
+                    </div>
+                  )}
                 </div>
               );
             })}
