@@ -58,6 +58,7 @@ import { GeoBooleanRegion } from '../geo/GeoBooleanRegion';
 import { AlgoDistance } from '../algo/AlgoDistance';
 import { AlgoSlope } from '../algo/AlgoSlope';
 import { AlgoRotate, AlgoDilate, AlgoMirror } from '../algo/AlgoRotate';
+import { AlgoShearStretch } from '../algo/AlgoShearStretch';
 import { AlgoTranslate } from '../algo/AlgoTranslate';
 import { AlgoFitPoly } from '../algo/AlgoFitPoly';
 import { AlgoFunctionRootPoint } from '../algo/AlgoFunctionRootPoint';
@@ -108,6 +109,9 @@ const COMMAND_ARITY: Record<string, [number, number]> = {
   Vector: [2, 2],
   Midpoint: [2, 2],
   Intersection: [2, 2],
+  Intersect: [2, 2],   // GeoGebra 主命令名（Intersection 的别名）
+  Shear: [3, 3],
+  Stretch: [3, 3],
   PointOnLine: [2, 2],
   Distance: [2, 2],
   Slope: [1, 1],
@@ -519,6 +523,48 @@ export function parseAlgebraInput(
   };
 
   // ------------------------------------------------------------------
+  // 2D 隐式方程 → 直线/圆锥曲线（只含 x,y 的多项式，次数 ≤ 2）
+  // ------------------------------------------------------------------
+
+  /** 解析 lhs−rhs 为 2D 多项式系数；纯常数侧直接求值合成。非 2D 多项式返回 null。 */
+  const poly2DCoeffs = (text: string): number[] | null => {
+    try {
+      const expr = parseExpression(text.trim());
+      const vars = collectVariables(expr);
+      for (const v of vars) if (v !== 'x' && v !== 'y') return null;
+      const zero: ExpressionNode = { kind: 'number', value: 0 };
+      const scope: Scope = new Map();
+      // 纯常数侧（如 `y=0` 的 RHS）：extractQuadricCoeffs 不收无空间变量
+      // 的表达式，这里直接求值合成系数（[xx,yy,zz,const,...] 仅 const 位）。
+      if (vars.size === 0) {
+        const v = evaluate(expr, scope);
+        if (!Number.isFinite(v)) return null;
+        return [0, 0, 0, v, 0, 0, 0, 0, 0, 0];
+      }
+      return extractQuadricCoeffs(expr, zero, scope);
+    } catch { return null; }
+  };
+
+  /** `lhs = rhs` → GeoLine（一次）或 GeoConic（二次，含退化）；不支持返回 null。 */
+  const tryImplicit2D = (lhsText: string, rhsText: string): GeoLine | GeoConic | null => {
+    const L = poly2DCoeffs(lhsText);
+    const R = poly2DCoeffs(rhsText);
+    if (!L || !R) return null;
+    // extractQuadricCoeffs 顺序 [xx,yy,zz,const,xy,xz,yz,x,y,z]
+    const A = L[0] - R[0];
+    const B = L[4] - R[4];
+    const C = L[1] - R[1];
+    const D = L[7] - R[7];
+    const E = L[8] - R[8];
+    const F = L[3] - R[3];
+    const deg2 = Math.max(Math.abs(A), Math.abs(B), Math.abs(C));
+    const deg1 = Math.max(Math.abs(D), Math.abs(E));
+    if (deg2 > 1e-12) return new GeoConic(kernel, [A, B, C, D, E, F]);
+    if (deg1 > 1e-12) return new GeoLine(kernel, D, E, F);
+    return null; // 0=0 / 5=5：交给上层报错
+  };
+
+  // ------------------------------------------------------------------
   // 定义式
   // ------------------------------------------------------------------
 
@@ -539,14 +585,16 @@ export function parseAlgebraInput(
 
     if (leftText === 'y') {
       const expression = parseExpression(rightText);
-      if (!collectVariables(expression).has('x')) throw new Error('y = ... must depend on x');
-      const dependencies = makeNumericDependencies(expression, ['x']);
-      const algo = new AlgoDependentFunction(kernel, expression, 'x', rightText, dependencies);
-      algo.getOutput().label = construction.getNextFunctionLabel(existingLabels);
-      return [algo, algo.getOutput()];
+      if (collectVariables(expression).has('x')) {
+        const dependencies = makeNumericDependencies(expression, ['x']);
+        const algo = new AlgoDependentFunction(kernel, expression, 'x', rightText, dependencies);
+        algo.getOutput().label = construction.getNextFunctionLabel(existingLabels);
+        return [algo, algo.getOutput()];
+      }
+      // y = <不含 x>（如 y=0）→ 落入下方 2D 隐式方程分支（GeoGebra：直线）
     }
 
-    if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(leftText)) {
+    if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(leftText) && leftText !== 'x' && leftText !== 'y') {
       // B12：**重定义**——标签已存在且原对象是自由元素时，原位更新
       // （不删对象、依赖者全部保留，对标 GeoGebra 重定义语义）：
       //   - 数值滑块 `a = 2`：setValue + 依赖链增量重算；
@@ -646,6 +694,21 @@ export function parseAlgebraInput(
       }
     }
 
+    // 无标签 2D 隐式方程：`y=0`/`x=3` → 直线；`x^2+y^2=25`、`x=y^2` → 圆锥曲线。
+    // 仅支持只含 x,y 的多项式（依赖滑块的隐式曲线仍走后续/报错，保持既有行为）。
+    // 必须先于 3D quadric 探测：线性/纯 xy 方程不应被当作三维曲面。
+    {
+      const implicit = tryImplicit2D(leftText, rightText);
+      if (implicit instanceof GeoLine) {
+        implicit.label = construction.getNextLineLabel(existingLabels);
+        return [implicit];
+      }
+      if (implicit) {
+        implicit.label = construction.getNextCircleLabel(existingLabels);
+        return [implicit];
+      }
+    }
+
     // 无标签隐式方程：`x^2 + y^2 - z^2 = 1` → 一般二次曲面
     {
       const lhsExpr = tryParseAsQuadricSide(leftText);
@@ -717,7 +780,23 @@ export function parseAlgebraInput(
         throw new Error(`Command ${name} requires ${minArgs === maxArgs ? minArgs : `${minArgs} or ${maxArgs}`} argument${minArgs === 1 ? '' : 's'}`);
       }
       // 先做参数个数校验，再做嵌套展开（展开会把嵌套产物写入构造）
-      const args = rawArgs.map(expandNestedCommand);
+      let args = rawArgs.map(expandNestedCommand);
+      // 方程字符串参数（GeoGebra：Intersect(y=0, x^2+y^2=25)）——参数含顶层 `=`、
+      // 可解析为 2D 多项式方程时，先创建该对象并以标签代入命令。
+      args = args.map(arg => {
+        if (!arg.includes('=')) return arg;
+        const parts = splitAtTopLevelEquals(arg);
+        if (!parts) return arg;
+        if (parseFunctionHeader(parts[0])) return arg; // f(x)=… 交由其他路径
+        const implicit = tryImplicit2D(parts[0], parts[1]);
+        if (!implicit) return arg;
+        implicit.label = implicit instanceof GeoLine
+          ? construction.getNextLineLabel(existingLabels)
+          : construction.getNextCircleLabel(existingLabels);
+        construction.addElement(implicit);
+        existingLabels.add(implicit.label!);
+        return implicit.label!;
+      });
       return dispatchCommand(name, args, {
         construction, kernel, existingLabels, viewBounds,
         evaluateNumber, resolveNumber, makeFreePoint, assignNextLabel,
@@ -957,7 +1036,8 @@ const dispatchCommand = (
       return [algo, algo.getOutput()];
     }
 
-    case 'Intersection': {
+    case 'Intersection':
+    case 'Intersect': {
       // 多边形 × 多边形 → 布尔交（GeoGebra AlgoPolygonOperation.INTERSECTION）
       const polyA = ctx.findPolygon(args[0].trim());
       const polyB = ctx.findPolygon(args[1].trim());
@@ -1120,6 +1200,19 @@ const dispatchCommand = (
       const axis = ctx.findLine(args[1].trim());
       if (!axis) throw new Error(`Unknown line "${args[1].trim()}"`);
       const algo = new AlgoMirror(kernel, obj, axis.a, axis.b, axis.c, axis);
+      assignOutputLabels(ctx, [algo.getOutput()]);
+      return [algo, algo.getOutput()];
+    }
+
+    // Shear(obj, line, λ) / Stretch(obj, line, λ) —— GeoGebra AlgoShearOrStretch 对应命令
+    case 'Shear':
+    case 'Stretch': {
+      const isStretch = name === 'Stretch';
+      const obj = resolveObjectArg(ctx, args[0]);
+      const axis = ctx.findLine(args[1].trim());
+      if (!axis) throw new Error(`Unknown line "${args[1].trim()}"`);
+      const factor = ctx.resolveNumber(args[2]);
+      const algo = new AlgoShearStretch(kernel, obj, axis, factor, isStretch ? 'stretch' : 'shear');
       assignOutputLabels(ctx, [algo.getOutput()]);
       return [algo, algo.getOutput()];
     }

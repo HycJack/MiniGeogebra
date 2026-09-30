@@ -80,7 +80,7 @@ describe('GeoConic.pointAtAngle', () => {
   it('keeps samplePoints on the curve after the ray-intersection refactor', () => {
     for (const coeffs of [CIRCLE, ELLIPSE, HYPERBOLA, PARABOLA_RIGHT, ROTATED_HYPERBOLA]) {
       const c = conic(coeffs);
-      const points = c.samplePoints(180);
+      const points = c.samplePoints(180).filter(p => Number.isFinite(p.x));
       expect(points.length).toBeGreaterThan(50);
       for (const p of points) {
         expect(c.isOnPath(probe(p.x, p.y), EPS)).toBe(true);

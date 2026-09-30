@@ -40,6 +40,12 @@ import { drawGrid, drawPoint, drawLine, drawSegment, drawPolygon, drawConic, dra
 import { useLanguage } from '../i18n/LanguageContext';
 import { Undo2, Redo2, Globe, ZoomIn, ZoomOut, Home, Trash2, Eye, EyeOff, Tag, MousePointerClick, Play, Pause } from 'lucide-react';
 import { ToolMode } from './tools/types';
+
+// 切换到这些工具时保留选区（先选对象 → 再选变换工具的 GeoGebra 工作流）
+const TRANSFORM_MODES = new Set<ToolMode>([
+  'rotate', 'dilate', 'mirror', 'shear', 'stretch',
+  'mirror_line', 'mirror_point', 'mirror_circle', 'translate_vector',
+]);
 import { hitScreenObject, isPointOnFunction, functionParameterAt } from './tools/hitTests';
 import { resolveViewKey, formatHover } from './view/keyboardShortcuts';
 import { HoverTooltip } from './HoverTooltip';
@@ -119,7 +125,11 @@ export const GeometryCanvas: React.FC = () => {
       kernel.getConstruction().updateAllAlgorithms();
       setRenderRev(r => r + 1);
     }
-    setSelectedElements([]);
+    // GeoGebra 工作流：先选中对象再激活变换工具，选区会直接进入变换流程。
+    // 切换到变换类工具时不清选区（此前无条件清空，预选分支成了死代码）。
+    if (!TRANSFORM_MODES.has(mode)) {
+      setSelectedElements([]);
+    }
     setPolygonPoints([]);
     cancelBoxSelect();
   }, [mode, cancelBoxSelect]);
@@ -502,7 +512,9 @@ export const GeometryCanvas: React.FC = () => {
       setMode, setSelectedElements, setRenderRev, setPolygonPoints, addCommand, captureState,
       recordNumericChange: notifyNumericChange, recordRename: handleLabelSubmit, recordStyleChange, deleteElements: deleteWithDependents, t,
       setBoxSelecting: setIsBoxSelecting, setBoxStartScreen, setBoxEndScreen,
-      setDraggedElement, setUIElements, setEditingUIElement, toolState: ts,
+      // handlers 端按 ref 语义读取 ctx.toolState.current（测试同样以 { current: ts } 传参）；
+      // 此前误传裸对象 toolState.current，导致所有 ts.xxx 状态分支（圆3点/圆弧/正多边形/变换）崩溃。
+      setDraggedElement, setUIElements, setEditingUIElement, toolState: toolState,
     }, { x, y }, { x: screenX, y: screenY });
     ts.boxModifierDown = false; ts.shiftKey = false; boxModifierDown.current = false;
     const elementsAfter = kernel.getConstruction().getElements();

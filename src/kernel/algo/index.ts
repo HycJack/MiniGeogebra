@@ -35,6 +35,7 @@ export { AlgoArea } from './AlgoArea';
 export { AlgoArc } from './AlgoArc';
 export { AlgoRayTwoPoints } from './AlgoRayTwoPoints';
 export { AlgoRegularPolygon } from './AlgoRegularPolygon';
+export { AlgoRegularPolygonEdge } from './AlgoRegularPolygonEdge';
 export { AlgoRotate, AlgoDilate, AlgoMirror, buildTransformed } from './AlgoRotate';
 export { AlgoTranslate } from './AlgoTranslate';
 export { AlgoShearStretch, AlgoInvert } from './AlgoShearStretch';

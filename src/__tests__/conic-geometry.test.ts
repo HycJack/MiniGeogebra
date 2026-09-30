@@ -17,7 +17,8 @@ function evalConic(c: GeoConic, x: number, y: number): number {
 
 /** Verify that a set of sample points lies on the conic within tolerance. */
 function expectSamplesOnConic(c: GeoConic, tol = 1e-4): void {
-  const pts = c.samplePoints(120);
+  // 双曲线两支之间的空扇区以 NaN 断点标记（绘制时断笔），跳过
+  const pts = c.samplePoints(120).filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
   expect(pts.length).toBeGreaterThan(10);
   for (const p of pts) {
     expect(Math.abs(evalConic(c, p.x, p.y))).toBeLessThan(tol);

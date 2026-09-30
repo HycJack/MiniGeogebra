@@ -244,7 +244,19 @@ export class GeoConic extends GeoElement implements Path {
     }
 
     allPts.sort((p, q) => p.angle - q.angle);
-    return allPts;
+    // 双曲线两支之间存在"射线打不到曲线"的空扇区（渐近线之间）。若不在此断开，
+    // 相邻采样点会被直线连接，表现为"两支双曲线端点相连"。圆/椭圆每方向必有
+    // 交点，不受影响。NaN 是 polyline 绘制与动画的通用断笔标记。
+    const gapStep = (2 * Math.PI / nSamples) * 1.5;
+    const pts: { x: number; y: number }[] = [];
+    for (let i = 0; i < allPts.length; i++) {
+      const p = allPts[i];
+      if (i > 0 && p.angle - allPts[i - 1].angle > gapStep) {
+        pts.push({ x: NaN, y: NaN });
+      }
+      pts.push({ x: p.x, y: p.y });
+    }
+    return pts;
   }
 
   /** Parametric sampling for parabolas. */
@@ -306,7 +318,8 @@ class ConicPathMover implements PathMover {
   private points: { x: number; y: number }[] = [];
 
   constructor(private conic: GeoConic) {
-    this.points = conic.samplePoints(180);
+    // NaN 断点（双曲线两支间空扇区）不参与动画路径
+    this.points = conic.samplePoints(180).filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
   }
 
   getCurrentPosition(p: GeoPoint) {

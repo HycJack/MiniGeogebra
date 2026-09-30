@@ -37,6 +37,23 @@ export function hitScreenPoint(els: readonly ConstructionElement[], x: number, y
   return undefined;
 }
 
+/** 圆锥曲线的点到曲线距离估计：|Q|/|∇Q|（隐函数一阶近似，对椭圆/双曲线/抛物线一致有效）。 */
+function conicDistanceTo(c: GeoConic, x: number, y: number): number {
+  const [A, B, C, D, E, F] = c.coeffs;
+  const q = A * x * x + B * x * y + C * y * y + D * x + E * y + F;
+  if (c.isCircle()) {
+    // 圆走精确几何距离
+    const center = c.getCenter();
+    return Math.abs(Math.hypot(x - center.x, y - center.y) - c.getRadius());
+  }
+  const gx = 2 * A * x + B * y + D;
+  const gy = B * x + 2 * C * y + E;
+  const g = Math.hypot(gx, gy);
+  // 梯度退化（远离曲线/近无穷远分支）时退回近似半径法
+  if (g < 1e-12) return Math.abs(Math.hypot(x - c.getCenter().x, y - c.getCenter().y) - c.getApproxRadius());
+  return Math.abs(q) / g;
+}
+
 /** 在函数采样折线上判断 (x, y) 是否足够接近曲线。 */
 export function isPointOnFunction(
   fn: GeoFunction,
@@ -159,9 +176,7 @@ export function hitScreenObject(els: readonly ConstructionElement[], x: number, 
       const d = Math.abs(el.a * x + el.b * y + el.c) / len;
       if (d < 5 / scale) return el;
     } else if (el instanceof GeoConic) {
-      const r = el.getRadius();
-      const center = el.getCenter();
-      const d = Math.abs(Math.hypot(x - center.x, y - center.y) - r);
+      const d = conicDistanceTo(el, x, y);
       if (d < 5 / scale) return el;
     } else if (el instanceof GeoFunction) {
       if (isPointOnFunction(el, x, y, 5 / scale)) return el;

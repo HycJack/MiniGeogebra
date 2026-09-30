@@ -4,10 +4,24 @@ import { GeoElement } from '../geo/GeoElement';
 import { GeoPoint } from '../geo/GeoPoint';
 import { GeoLine } from '../geo/GeoLine';
 import { GeoConic } from '../geo/GeoConic';
+import { GeoPolygon } from '../geo/GeoPolygon';
+import { GeoPolyLine } from '../geo/GeoPolyLine';
 import { GeoVec3D } from '../core/GeoVec3D';
 import { intersectLineWithConic, intersectConicConic } from '../geo/conicSolve';
 
 interface Solution { x: number; y: number }
+
+/** 多边形（闭合）与折线（开放）统一按边序列处理。 */
+type PolyLike = GeoPolygon | GeoPolyLine;
+
+const asPolyLike = (el: GeoElement): PolyLike | null => {
+  if (el instanceof GeoPolygon || el instanceof GeoPolyLine) return el;
+  return null;
+};
+
+/** 边数：多边形闭合 n 条边；折线 n−1 条。 */
+const edgeCount = (poly: PolyLike): number =>
+  poly instanceof GeoPolygon ? poly.vertices.length : Math.max(0, poly.vertices.length - 1);
 
 export class AlgoIntersect extends AlgoElement {
   private outputPoints: GeoPoint[] = [];
@@ -27,10 +41,15 @@ export class AlgoIntersect extends AlgoElement {
     super(kernel);
     // Determine max number of intersection points
     let count = 0;
+    const poly1 = asPolyLike(obj1);
+    const poly2 = asPolyLike(obj2);
     if (obj1 instanceof GeoLine && obj2 instanceof GeoLine) count = 1;
     else if (obj1 instanceof GeoLine && obj2 instanceof GeoConic) count = 2;
     else if (obj1 instanceof GeoConic && obj2 instanceof GeoLine) count = 2;
     else if (obj1 instanceof GeoConic && obj2 instanceof GeoConic) count = 4;
+    // 多边形/折线 × 圆锥曲线：每条边至多 2 个交点（对标 GGB AlgoIntersectPolyLineConic）
+    else if (poly1 && obj2 instanceof GeoConic) count = 2 * edgeCount(poly1);
+    else if (obj1 instanceof GeoConic && poly2) count = 2 * edgeCount(poly2);
 
     const usedLabels = new Set<string>();
     for (let i = 0; i < count; i++) {
@@ -63,6 +82,8 @@ export class AlgoIntersect extends AlgoElement {
     }
 
     let solutions: Solution[] = [];
+    const poly1 = asPolyLike(this.obj1);
+    const poly2 = asPolyLike(this.obj2);
     if (this.obj1 instanceof GeoLine && this.obj2 instanceof GeoLine) {
       solutions = this.solveLineLine(this.obj1, this.obj2);
     } else if (this.obj1 instanceof GeoLine && this.obj2 instanceof GeoConic) {
@@ -71,6 +92,10 @@ export class AlgoIntersect extends AlgoElement {
       solutions = this.solveLineConic(this.obj2, this.obj1);
     } else if (this.obj1 instanceof GeoConic && this.obj2 instanceof GeoConic) {
       solutions = intersectConicConic(this.obj1.coeffs, this.obj2.coeffs);
+    } else if (poly1 && this.obj2 instanceof GeoConic) {
+      solutions = this.solvePolyConic(poly1, this.obj2);
+    } else if (this.obj1 instanceof GeoConic && poly2) {
+      solutions = this.solvePolyConic(poly2, this.obj1);
     }
 
     // 标签连续性（对标 GeoGebra AlgoIntersectAbstract 的置换机制）：
@@ -248,6 +273,52 @@ export class AlgoIntersect extends AlgoElement {
       const probe = new GeoPoint(this.kernel, new GeoVec3D(pt.x, pt.y, 1));
       return (line as any).isOnPath(probe);
     });
+  }
+
+  /**
+   * 多边形/折线 × 圆锥曲线（对标 GGB AlgoIntersectPolyLineConic）：
+   * 逐边把边所在直线与圆锥曲线求交，再过滤出真正落在边上的交点。
+   * 顶点恰好落在曲线上时相邻两边会报告同一点，按坐标近邻去重。
+   */
+  private solvePolyConic(poly: PolyLike, conic: GeoConic): Solution[] {
+    const verts = poly.vertices;
+    const n = verts.length;
+    const closed = poly instanceof GeoPolygon;
+    const segs = closed ? n : n - 1;
+    if (segs < 1 || !conic.isDefined()) return [];
+
+    const solutions: Solution[] = [];
+    const dedupEps = this.polyDedupEps(verts);
+    for (let i = 0; i < segs; i++) {
+      const A = verts[i];
+      const B = verts[(i + 1) % n];
+      const ax = A.getX(), ay = A.getY();
+      const bx = B.getX(), by = B.getY();
+      const dx = bx - ax, dy = by - ay;
+      const len2 = dx * dx + dy * dy;
+      if (len2 < 1e-18) continue;
+      // 过 A、B 的直线：b1·x − a1·y + c = 0 形式（与 GeoLine a,b,c 约定一致）
+      const a1 = ay - by;
+      const b1 = bx - ax;
+      const c1 = -(a1 * ax + b1 * ay);
+      const roots = intersectLineWithConic(conic.coeffs, a1, b1, c1);
+      for (const pt of roots) {
+        // 交点在边上的参数（0..1），留 1e-9 相对容差
+        const s = ((pt.x - ax) * dx + (pt.y - ay) * dy) / len2;
+        const tol = 1e-9;
+        if (s < -tol || s > 1 + tol) continue;
+        if (solutions.some(q => Math.hypot(q.x - pt.x, q.y - pt.y) < dedupEps)) continue;
+        solutions.push({ x: pt.x, y: pt.y });
+      }
+    }
+    return solutions;
+  }
+
+  /** 去重半径与坐标量级成比例（顶点落在曲线上时相邻边重复报告同一点）。 */
+  private polyDedupEps(verts: GeoPoint[]): number {
+    let mag = 1;
+    for (const v of verts) mag = Math.max(mag, Math.abs(v.getX()), Math.abs(v.getY()));
+    return 1e-6 * mag;
   }
 
   getOutputPoints(): GeoPoint[] {

@@ -21,14 +21,16 @@ describe('shear and stretch transforms', () => {
     const kernel = makeKernel();
     const point = makePoint(kernel, 1, 0);
     const matrix = shearStretchMatrix(0, 1, -2, 3, 'stretch');
+    // 轴 0x+1y-2=0 即 y=2：拉伸沿法向缩放，(1,0) 距轴 -2 → y = 2 + 3*(0-2) = -4
     const out = buildTransformed(kernel, point, 'stretch', { matrix }) as any;
     expect(out.getX()).toBeCloseTo(1, 6);
-    expect(out.getY()).toBeCloseTo(4, 6);
+    expect(out.getY()).toBeCloseTo(-4, 6);
 
-    const axisPoint = makePoint(kernel, 0, -2);
+    // 轴上的点不动（此前锚点符号写反，固定的是 y=-2）
+    const axisPoint = makePoint(kernel, 0, 2);
     const fixed = buildTransformed(kernel, axisPoint, 'stretch', { matrix }) as any;
     expect(fixed.getX()).toBeCloseTo(0, 6);
-    expect(fixed.getY()).toBeCloseTo(-2, 6);
+    expect(fixed.getY()).toBeCloseTo(2, 6);
   });
 
   it('maps a circle to a general conic under shear', () => {

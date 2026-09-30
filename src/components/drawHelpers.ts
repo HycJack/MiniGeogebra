@@ -324,21 +324,27 @@ export function drawConic(renderer: IRenderer, c: GeoConic, selected: boolean, s
   const pts = c.samplePoints(360);
   if (pts.length < 2) return;
 
+  // 双曲线采样含 NaN 断点（两支之间的空扇区），遇断点需 moveTo 重起路径。
+  const strokePolyline = (points: { x: number; y: number }[]) => {
+    renderer.beginPath();
+    let started = false;
+    for (const p of points) {
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) { started = false; continue; }
+      if (!started) { renderer.moveTo(p.x, p.y); started = true; }
+      else renderer.lineTo(p.x, p.y);
+    }
+    renderer.stroke();
+  };
+
   if (selected) {
     renderer.strokeStyle = 'rgba(59, 130, 246, 0.3)';
     renderer.lineWidth = 6 / scale;
-    renderer.beginPath();
-    renderer.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length; i++) renderer.lineTo(pts[i].x, pts[i].y);
-    renderer.stroke();
+    strokePolyline(pts);
     renderer.strokeStyle = '#3b82f6';
     renderer.lineWidth = baseWidth * 2 / scale;
   }
 
-  renderer.beginPath();
-  renderer.moveTo(pts[0].x, pts[0].y);
-  for (let i = 1; i < pts.length; i++) renderer.lineTo(pts[i].x, pts[i].y);
-  renderer.stroke();
+  strokePolyline(pts);
 
   if (selected && c.labelVisible && c.labelMode === 'always') {
     const label = c.label || c.id;

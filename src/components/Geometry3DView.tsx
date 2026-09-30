@@ -908,12 +908,20 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
   const [tool3d, setTool3d] = useState<Tool3D>('select');
   const [showClipBox, setShowClipBox] = useState(false);
   const [clipReduction, setClipReduction] = useState<ClippingReduction>(REDUCTION_MEDIUM);
-  const picks3dRef = useRef<Coords4[]>([]);
+  // 构造进行中的拾取点：每次点击立即创建真实 3D 点（此前只在点满时才建，
+  // 中间点击零反馈，看起来像"无法创建"）。吸附命中已有点时复用不新建。
+  const picks3dRef = useRef<GeoPoint3D[]>([]);
+  // 本次构造中新建（非吸附复用）的点，Esc 取消时回滚删除
+  const picksCreatedRef = useRef<Set<GeoPoint3D>>(new Set());
   const rotationFrameRef = useRef<number>(0);
+  // 提示条需要实时反映步骤数，ref 变化不触发渲染，用 state 计数
+  const [pickCount3d, setPickCount3d] = useState(0);
 
   /** 切换工具时清空已收集的构造点。 */
   const selectTool3D = (tool: Tool3D): void => {
     picks3dRef.current = [];
+    picksCreatedRef.current.clear();
+    setPickCount3d(0);
     setTool3d(tool);
   };
 
@@ -1114,10 +1122,9 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
     return point;
   };
 
-  /** 依据工具与收集到的点构造对象（含数值参数提示）。 */
-  const build3DObject = (tool: Tool3D, picks: Coords4[]): void => {
+  /** 依据工具与收集到的点构造对象（含数值参数提示）。点已全部创建并登记。 */
+  const build3DObject = (tool: Tool3D, pts: GeoPoint3D[]): void => {
     const c = kernel.getConstruction();
-    const pts = picks.map(p => addPoint3D(p));
     let algo: AlgoElement | null = null;
     const finish = () => {
       if (!algo) return;
@@ -1176,16 +1183,27 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
     finish();
   };
 
-  /** 点击处理：构造工具按步骤收集平面上的点；select 工具选中最近 3D 点。 */
+  /** 点击处理：构造工具逐步收集点（点击立即建点、优先吸附已有点）；select 工具选中最近 3D 点。 */
   const handleClick = (clientX: number, clientY: number): void => {
     if (tool3d !== 'select') {
       const config = TOOL3D_CONFIG[tool3d];
-      const hit = pickOnPlane(clientX, clientY);
-      if (!hit) return;
-      picks3dRef.current = [...picks3dRef.current, hit];
+      // 优先吸附已有 3D 点（GeoGebra 行为：构造时点击已有点即复用）
+      const snapped = pickPoint3D(clientX, clientY);
+      let point: GeoPoint3D | null = snapped;
+      if (!point) {
+        const hit = pickOnPlane(clientX, clientY);
+        if (!hit) return; // 视线近乎平行于构造平面（如平视视角点击地平线上方）
+        point = addPoint3D(hit);
+        kernel.notifyUpdate(point);
+        picksCreatedRef.current.add(point);
+      }
+      picks3dRef.current = [...picks3dRef.current, point];
+      setPickCount3d(picks3dRef.current.length);
       if (picks3dRef.current.length >= config.points) {
         build3DObject(tool3d, picks3dRef.current);
         picks3dRef.current = [];
+        picksCreatedRef.current.clear();
+        setPickCount3d(0);
       }
       draw();
       return;
@@ -1195,12 +1213,20 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
     draw();
   };
 
-  // 构造工具进行中按 Esc 取消当前步骤
+  // 构造工具进行中按 Esc 取消当前步骤：回滚本次新建的点（吸附复用的已有点保留）
   useEffect(() => {
     if (tool3d === 'select') return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        for (const p of picks3dRef.current) {
+          if (picksCreatedRef.current.has(p)) {
+            kernel.getConstruction().deleteElementWithDependents(p);
+          }
+        }
         picks3dRef.current = [];
+        picksCreatedRef.current.clear();
+        setPickCount3d(0);
+        kernel.getConstruction().updateAllAlgorithms();
         draw();
       }
     };
@@ -1348,10 +1374,10 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
         ))}
       </div>
 
-      {/* ── 底部提示：视图操作 / 当前工具的逐步指引 ── */}
+      {/* ── 底部提示：视图操作 / 当前工具的逐步指引（pickCount3d 为 state，点击后立即刷新） ── */}
       <div className="absolute bottom-3 left-4 pointer-events-none text-xs text-gray-400 bg-white/70 px-2 py-1 rounded">
-        {tool3d !== 'select' && picks3dRef.current.length > 0
-          ? t('tool3dStepHint').replace('{current}', String(picks3dRef.current.length + 1))
+        {tool3d !== 'select' && pickCount3d > 0
+          ? t('tool3dStepHint').replace('{current}', String(pickCount3d + 1))
             .replace('{total}', String(TOOL3D_CONFIG[tool3d].points))
           : tool3d !== 'select'
             ? t('tool3dStepHint').replace('{current}', '1').replace('{total}', String(TOOL3D_CONFIG[tool3d].points)) + ' · ' + t('tool3dEsc')

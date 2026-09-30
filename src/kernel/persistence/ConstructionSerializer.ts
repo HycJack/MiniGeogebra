@@ -69,6 +69,7 @@ import { AlgoDependentQuadric3D } from '../algo/AlgoDependentQuadric3D';
 import { AlgoRotate, AlgoDilate, AlgoMirror } from '../algo/AlgoRotate';
 import { AlgoShearStretch, AlgoInvert } from '../algo/AlgoShearStretch';
 import { AlgoRegularPolygon } from '../algo/AlgoRegularPolygon';
+import { AlgoRegularPolygonEdge } from '../algo/AlgoRegularPolygonEdge';
 import { GeoPolygon } from '../geo/GeoPolygon';
 import { GeoConic } from '../geo/GeoConic';
 import { GeoLine } from '../geo/GeoLine';
@@ -237,6 +238,7 @@ function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], scalars?
     case 'AlgoArc':                 return new AlgoArc(kernel, asPoint(0), asPoint(1), asPoint(2));
     case 'AlgoCircumcircularSector': return new AlgoCircumcircularSector(kernel, asPoint(0), asPoint(1), asPoint(2));
     case 'AlgoRegularPolygon':      return new AlgoRegularPolygon(kernel, asPoint(0), scalars?.[0] ?? 50, Math.max(3, Math.round(scalars?.[1] ?? 6)));
+    case 'AlgoRegularPolygonEdge':  return new AlgoRegularPolygonEdge(kernel, asPoint(0), asPoint(1), Math.max(3, Math.round(scalars?.[0] ?? 6)));
     // 变换算法：inputs[1] 为活中心（GeoPoint）/活镜轴（GeoLine）时优先使用
     // （依赖联动），否则回退到 scalars 里的构造期坐标（兼容旧存档）。
     case 'AlgoRotate':              return new AlgoRotate(kernel, inputs[0], inputs[1] instanceof GeoPoint ? inputs[1] : { x: scalars?.[1] ?? 0, y: scalars?.[2] ?? 0 }, scalars?.[0] ?? 0);
@@ -645,6 +647,8 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
         sa.scalars = [v.x, v.y];
       } else if (algo instanceof AlgoRegularPolygon) {
         sa.scalars = [algo.getRadiusValue(), algo.getSidesValue()];
+      } else if (algo instanceof AlgoRegularPolygonEdge) {
+        sa.scalars = [algo.getSidesValue()];
       } else if (algo instanceof AlgoDependentCurve) {
         sa.variableName = algo.getParameterName();
         sa.scalars = [...algo.getRange()];

@@ -129,26 +129,33 @@ describe('B10 addAlgoAndNotify（输出注册回归）', () => {
     const a = makePoint(kernel, 2, 0, 'A');
     const b = makePoint(kernel, 0, 0, 'B');
     const { ctx } = makeCtx(kernel, 'rotate');
-    // click1：选源 A；click2：中心 B；click3：角度方向 (0,2) → 90°
-    click(ctx, 2, 0);
-    click(ctx, 0, 0);
-    click(ctx, 0, 2);
-
-    const rotates = c(kernel).getElements().filter(
+    // 新交互：click1 选源 A；click2 中心 B + 弹窗输入角度（stub window.prompt）
+    const g = globalThis as any;
+    const origPrompt = g.prompt;
+    g.prompt = () => '90';
+    let rotates: AlgoRotate[];
+    try {
+      click(ctx, 2, 0);
+      click(ctx, 0, 0);
+    } finally {
+      g.prompt = origPrompt;
+    }
+    rotates = c(kernel).getElements().filter(
       el => (el as any).getClassName?.() === 'AlgoRotate',
     ) as AlgoRotate[];
     expect(rotates).toHaveLength(1);
     expect(rotates[0].getInput()).toContain(b); // 活中心
     const image = rotates[0].getOutput() as GeoPoint;
     expect(image.parentAlgo).toBe(rotates[0]);
+    // +90° = 屏幕逆时针（y-down 世界）：(2,0) → (0,-2)
     expect(image.getX()).toBeCloseTo(0, 6);
-    expect(image.getY()).toBeCloseTo(2, 6);
+    expect(image.getY()).toBeCloseTo(-2, 6);
 
-    // 移动中心联动
+    // 移动中心联动：A(2,0) 绕 B(1,1) 屏幕逆时针 90° → (0,0)
     b.setCoords(1, 1, 1);
     kernel.flushNow();
-    expect(image.getX()).toBeCloseTo(2, 6);
-    expect(image.getY()).toBeCloseTo(2, 6);
+    expect(image.getX()).toBeCloseTo(0, 6);
+    expect(image.getY()).toBeCloseTo(0, 6);
     expect(a.getX()).toBeCloseTo(2, 6);
   });
 
@@ -210,7 +217,9 @@ describe('B10 mirror_line / translate_vector 工具', () => {
     v.label = 'v';
 
     const { ctx } = makeCtx(kernel, 'translate_vector', [a]);
-    // click 在向量上设置 transformRef，同 click 继续收集 selectedElements=[A]
+    // click1 命中向量设置 transformRef（此后 return，不再同击自毁）；
+    // click2 收集输入：预选 selectedElements=[A] 优先
+    click(ctx, 1.5, 0);
     click(ctx, 1.5, 0);
 
     const translates = c(kernel).getElements().filter(
@@ -531,7 +540,8 @@ describe('B10 序列化 roundtrip', () => {
     const restored = roundtrip(kernel);
     const out = ofType(restored, GeoPoint).find(el => el.label === "P'");
     expect(out).toBeDefined();
+    // 正角 = 屏幕逆时针（y-down 世界中数学坐标 y 取负）
     expect(out!.getX()).toBeCloseTo(0, 5);
-    expect(out!.getY()).toBeCloseTo(1, 5);
+    expect(out!.getY()).toBeCloseTo(-1, 5);
   });
 });

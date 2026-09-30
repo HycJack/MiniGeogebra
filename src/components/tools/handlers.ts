@@ -30,7 +30,7 @@ import {
   AlgoCircleCenterPoint, AlgoCircleThreePoints, AlgoIntersect, AlgoParallelLine,
   AlgoOrthogonalLine, AlgoPerpendicularBisector, AlgoAngleBisector, AlgoTangent,
   AlgoLocus, AlgoDistance, AlgoAngle, AlgoArea, AlgoArc,
-  AlgoRegularPolygon, AlgoCircleCenter,
+  AlgoRegularPolygonEdge, AlgoCircleCenter,
   AlgoRotate, AlgoDilate, AlgoMirror, AlgoTranslate, AlgoShearStretch, AlgoInvert,
   buildTransformed,
 } from '../../kernel/algo';
@@ -133,22 +133,29 @@ export const handlePointerDown = (
   const selOne = (p: GeoPoint) => { setSelectedElements([p]); setRenderRev(r => r + 1); };
   const clearSel = () => { setSelectedElements([]); setRenderRev(r => r + 1); };
 
-  /** 变换工具共用的输入收集：优先使用当前选择，否则点击/新建一个对象。 */
-  const collectTransformInputs = () => {
+  /** 变换输入的参考点（拖拽语义用）：点取自身，圆锥曲线取中心，其余取点击位置。 */
+  const inputRef = (el: GeoElement, pt: WorldPoint): { x: number; y: number } => {
+    if (el instanceof GeoPoint) return { x: el.getX(), y: el.getY() };
+    if (el instanceof GeoConic) { const c = el.getCenter(); return { x: c.x, y: c.y }; }
+    return { x: pt.x, y: pt.y };
+  };
+
+  /** 把预选对象映射为变换输入（rotate/dilate/mirror 等共用）。 */
+  const selectionToInputs = (): { el: GeoElement; ref: { x: number; y: number } }[] =>
+    selectedElements.map(el => ({ el, ref: inputRef(el, point) }));
+
+  /** 变换工具共用的输入收集：优先使用当前选择，其次点击命中；空白点击返回 null（忽略）。 */
+  const collectTransformInputs = (): { el: GeoElement; ref?: { x: number; y: number } }[] | null => {
     if (ts.inputs?.length) return ts.inputs;
     if (selectedElements.length > 0) {
-      ts.inputs = selectedElements.map(el => {
-        let ref: { x: number; y: number };
-        if (el instanceof GeoPoint) ref = { x: el.getX(), y: el.getY() };
-        else if (el instanceof GeoConic) { const c = el.getCenter(); ref = { x: c.x, y: c.y }; }
-        else ref = { x: point.x, y: point.y };
-        return { el, ref };
-      });
+      ts.inputs = selectedElements.map(el => ({ el, ref: inputRef(el, point) }));
       clearSel();
-    } else {
-      const el = hitObject() ?? hitPoint() ?? emptyClickNewPoint();
-      ts.inputs = [{ el, ref: el instanceof GeoPoint ? { x: el.getX(), y: el.getY() } : { x: point.x, y: point.y } }];
+      return ts.inputs;
     }
+    // 空白点击不再新建游离点（GeoGebra 行为：变换对象必须命中已有对象）
+    const el = hitObject() ?? hitPoint();
+    if (!el) return null;
+    ts.inputs = [{ el, ref: inputRef(el, point) }];
     return ts.inputs as { el: GeoElement; ref?: { x: number; y: number } }[];
   };
 
@@ -158,6 +165,19 @@ export const handlePointerDown = (
     kernel.getConstruction().addElement(p);
     kernel.notifyUpdate(p);
     return p;
+  };
+
+  /** 点击命中路径对象（线/圆/曲线）时创建"对象上的点"（GeoGebra 构造吸附语义）。 */
+  const hitPathNewPoint = (): GeoPoint | null => {
+    const obj = hitObject();
+    if (obj instanceof GeoSegment || obj instanceof GeoLine || obj instanceof GeoConic || obj instanceof GeoPolyLine) {
+      const created = createParameterPointOnPath(kernel, obj, point.x, point.y);
+      if (created) {
+        notifyUpdate(created.point);
+        return created.point;
+      }
+    }
+    return null;
   };
 
   /** 两点构造辅助（直线/线段/射线）：支持"先点一点 → 再点终点"和"空白点两点"两种流程。 */
@@ -341,9 +361,11 @@ export const handlePointerDown = (
 
     case 'circle3': {
       const picks: (GeoPoint | null)[] = [...((ts.arcPicks as any) ?? [])];
-      const clicked = hitPoint();
-      if (clicked) picks.push(clicked);
-      else picks.push(emptyClickNewPoint());
+      // 吸附优先级：已有点 → 路径对象上的依赖点 → 空白新建自由点
+      const clicked = hitPoint() ?? hitPathNewPoint() ?? emptyClickNewPoint();
+      // 重复拾取同一点会导致退化圆（undefined），忽略重复点击
+      if (picks.some(p => p === clicked)) break;
+      picks.push(clicked);
       if (picks.length === 3) {
         const [p1, p2, p3] = picks as GeoPoint[];
         const circle = new AlgoCircleThreePoints(kernel, p1, p2, p3);
@@ -591,8 +613,10 @@ export const handlePointerDown = (
 
     case 'arc': {
       const picks = [...((ts.arcPicks as any) ?? [])];
-      const picked = hitPoint();
-      picks.push(picked ?? emptyClickNewPoint());
+      // 吸附优先级与 circle3 一致；重复拾取同一点忽略（三点共点必退化）
+      const picked = hitPoint() ?? hitPathNewPoint() ?? emptyClickNewPoint();
+      if (picks.some(p => p === picked)) break;
+      picks.push(picked);
       if (picks.length >= 3) buildArc(picks.slice(0, 3));
       else {
         (ts.arcPicks as any) = picks;
@@ -602,75 +626,82 @@ export const handlePointerDown = (
     }
 
     case 'regular_polygon': {
+      // GeoGebra 交互：两次点击定义第一条边的两个端点，弹窗输入边数 n，
+      // 多边形在屏幕上呈逆时针展开。此前实现是"中心+半径"模型且边数硬编码 6。
       const clicked = hitPoint() ?? emptyClickNewPoint();
-      if (!ts.regPolyCenter) {
-        ts.regPolyCenter = clicked;
+      if (!ts.regPolyStart) {
+        ts.regPolyStart = clicked;
         selOne(clicked);
-      } else {
-        const center = ts.regPolyCenter;
-        if (center === clicked) { ts.regPolyCenter = null; break; }
-        const r = Math.hypot(clicked.getX() - center.getX(), clicked.getY() - center.getY());
-        if (r <= EPS) { ts.regPolyCenter = null; break; }
-        const polyAlgo = new AlgoRegularPolygon(kernel, center, r, 6);
-        addAlgoAndNotify(polyAlgo);
-        clearSel();
-        ts.regPolyCenter = null;
-        setRenderRev(r => r + 1);
+        break;
       }
+      const start = ts.regPolyStart;
+      if (start === clicked) { ts.regPolyStart = null; break; }
+      const raw = (globalThis as any).prompt(t('regularPolygonSidesPrompt'), '6');
+      if (raw === null) { ts.regPolyStart = null; clearSel(); break; }
+      const nSides = Number(raw);
+      if (!isFinite(nSides) || nSides < 3) { ts.regPolyStart = null; clearSel(); break; }
+      const polyAlgo = new AlgoRegularPolygonEdge(kernel, start, clicked, Math.floor(nSides));
+      addAlgoAndNotify(polyAlgo);
+      // 边 segment（GeoGebra 同样为每条边输出一条线段）
+      const verts = polyAlgo.getOutput().vertices;
+      for (let i = 0; i < verts.length; i++) {
+        const seg = new AlgoSegmentTwoPoints(kernel, verts[i], verts[(i + 1) % verts.length]);
+        addAlgoAndNotify(seg);
+      }
+      clearSel();
+      ts.regPolyStart = null;
+      setRenderRev(r => r + 1);
       break;
     }
 
     case 'rotate':
     case 'dilate': {
       const op = mode === 'rotate' ? 'rotate' : 'dilate';
-      if ((!ts.inputs || ts.inputs.length === 0) && selectedElements.length === 0) {
-        ts.inputs = [{ el: hitPoint() ?? emptyClickNewPoint(), ref: { x: point.x, y: point.y } }];
-        setSelectedElements([]);
-        setRenderRev(r => r + 1);
-        return;
-      }
+      // 步骤 1（对象）：预选优先（GeoGebra 工作流），否则点击命中任意对象；
+      // 空白点击忽略——此前 emptyClickNewPoint 会在点击处生成游离点并被旋转，
+      // 而用户真正想变换的线/圆却选不中。
       if ((ts.inputs?.length ?? 0) === 0) {
-        ts.inputs = selectedElements.map(el => {
-          let ref: { x: number; y: number };
-          if (el instanceof GeoPoint) ref = { x: el.getX(), y: el.getY() };
-          else if (el instanceof GeoConic) { const c = el.getCenter(); ref = { x: c.x, y: c.y }; }
-          else ref = { x: point.x, y: point.y };
-          return { el, ref };
-        });
+        if (selectedElements.length > 0) {
+          ts.inputs = selectionToInputs();
+          clearSel();
+          setRenderRev(r => r + 1);
+          return;
+        }
+        const obj = hitObject() ?? hitPoint();
+        if (!obj) return;
+        ts.inputs = [{ el: obj, ref: inputRef(obj, point) }];
         setSelectedElements([]);
         setRenderRev(r => r + 1);
         return;
       }
+      // 步骤 2（中心 + 数值）：命中已有点为活中心；随后弹窗输入角度/比例
+      //（GeoGebra：正值 = 屏幕逆时针）。不再用第三次点击的几何位置推参数。
       if (!ts.center) {
         const centerHit = hitPoint();
         ts.center = centerHit
           ? { x: centerHit.getX(), y: centerHit.getY(), el: centerHit }
           : { x: point.x, y: point.y };
-        return;
+        const raw = (globalThis as any).prompt(
+          t(op === 'rotate' ? 'rotateAnglePrompt' : 'dilateFactorPrompt'),
+          op === 'rotate' ? '45' : '2',
+        );
+        if (raw === null) { ts.inputs = []; ts.center = null; return; }
+        const value = Number(raw);
+        if (!isFinite(value)) { ts.inputs = []; ts.center = null; return; }
+        // 活中心：命中已有点时把 GeoPoint 注册为输入，移动中心联动重算
+        const centerArg: GeoPoint | { x: number; y: number } =
+          (ts.center as any).el ?? { x: ts.center.x, y: ts.center.y };
+        for (const { el } of ts.inputs as { el: GeoElement }[]) {
+          if (!isTransformable(el)) continue;
+          const algo = op === 'rotate'
+            ? new AlgoRotate(kernel, el, centerArg, (value * Math.PI) / 180)
+            : new AlgoDilate(kernel, el, centerArg, value);
+          addAlgoAndNotify(algo);
+        }
+        clearSel();
+        setRenderRev(r => r + 1);
+        ts.inputs = []; ts.center = null;
       }
-      const P2 = { x: point.x, y: point.y };
-      const inputs = ts.inputs as { el: GeoElement; ref?: { x: number; y: number } }[];
-      let angle = 0, ratio = 1;
-      if (op === 'rotate') {
-        angle = Math.atan2(P2.y - ts.center.y, P2.x - ts.center.x) -
-                Math.atan2(inputs[0].ref!.y - ts.center.y, inputs[0].ref!.x - ts.center.x);
-      } else {
-        ratio = Math.hypot(P2.x - ts.center.x, P2.y - ts.center.y) /
-                Math.hypot(inputs[0].ref!.x - ts.center.x, inputs[0].ref!.y - ts.center.y);
-      }
-      // 活中心：命中已有点时把 GeoPoint 注册为输入，移动中心联动重算
-      const centerArg: GeoPoint | { x: number; y: number } =
-        (ts.center as any).el ?? { x: ts.center.x, y: ts.center.y };
-      for (const { el } of inputs) {
-        if (!isTransformable(el)) continue;
-        const algo = op === 'rotate'
-          ? new AlgoRotate(kernel, el, centerArg, angle)
-          : new AlgoDilate(kernel, el, centerArg, ratio);
-        addAlgoAndNotify(algo);
-      }
-      clearSel();
-      setRenderRev(r => r + 1);
-      ts.inputs = []; ts.center = null;
       return;
     }
 
@@ -732,7 +763,9 @@ export const handlePointerDown = (
           return;
         }
 
-        const source = hitObject() ?? hitPoint() ?? emptyClickNewPoint();
+        // 空白点击忽略（GeoGebra 行为）：此前会新建游离点当源对象
+        const source = hitObject() ?? hitPoint();
+        if (!source) return;
         ts.inputs = [{
           el: source,
           ref: source instanceof GeoPoint ? { x: source.getX(), y: source.getY() } : { x: point.x, y: point.y },
@@ -742,19 +775,16 @@ export const handlePointerDown = (
       }
 
       if ((!ts.inputs || ts.inputs.length === 0) && selectedElements.length === 0) {
-        ts.inputs = [{ el: hitPoint() ?? emptyClickNewPoint(), ref: { x: point.x, y: point.y } }];
+        // 空白点击忽略：mirror 源对象必须命中已有对象/点
+        const obj = hitObject() ?? hitPoint();
+        if (!obj) return;
+        ts.inputs = [{ el: obj, ref: inputRef(obj, point) }];
         setSelectedElements([]);
         setRenderRev(r => r + 1);
         return;
       }
       if ((ts.inputs?.length ?? 0) === 0) {
-        ts.inputs = selectedElements.map(el => {
-          let ref: { x: number; y: number };
-          if (el instanceof GeoPoint) ref = { x: el.getX(), y: el.getY() };
-          else if (el instanceof GeoConic) { const c = el.getCenter(); ref = { x: c.x, y: c.y }; }
-          else ref = { x: point.x, y: point.y };
-          return { el, ref };
-        });
+        ts.inputs = selectionToInputs();
         setSelectedElements([]);
         setRenderRev(r => r + 1);
         return;
@@ -799,18 +829,31 @@ export const handlePointerDown = (
               axis: { a: axisObject.a, b: axisObject.b, c: axisObject.c },
               line: axisObject,
             };
+            // 输入已预选/已点击（GeoGebra"先对象后镜像线"顺序）→ 本击直接执行
+            if (ts.inputs?.length || selectedElements.length > 0) {
+              // 落到下方公共执行段
+            } else {
+              return;
+            }
+          } else if (axisObject) {
+            // 非线对象先到（GeoGebra 顺序：先点源对象）→ 记为输入，等镜像线
+            if ((ts.inputs?.length ?? 0) === 0) {
+              ts.inputs = [{ el: axisObject, ref: inputRef(axisObject, point) }];
+            }
             return;
-          }
-          if (!ts.refStart) {
+          } else if (!ts.refStart) {
             ts.refStart = { x: point.x, y: point.y };
             return;
+          } else {
+            // 两点画轴：完成 ref 后冻结系数，下次 click 执行（旧代码此分支不可达）
+            ts.transformRef = { kind: 'line', axis: lineFromTwoPoints(ts.refStart, { x: point.x, y: point.y }) };
+            ts.refStart = null;
+            // 若对象已先选好，本击直接执行（落入下方公共执行段）
+            if (!(ts.inputs?.length)) return;
           }
-          // 两点画轴：完成 ref 后冻结系数，下次 click 执行（旧代码此分支不可达）
-          ts.transformRef = { kind: 'line', axis: lineFromTwoPoints(ts.refStart, { x: point.x, y: point.y }) };
-          ts.refStart = null;
-          return;
         }
         const inputs = collectTransformInputs();
+        if (!inputs) return; // 空白点击：忽略，保留当前步骤状态
         const ref = ts.transformRef as { axis: { a: number; b: number; c: number }; line?: GeoLine };
         for (const { el } of inputs) {
           if (!isTransformable(el)) continue;
@@ -820,12 +863,27 @@ export const handlePointerDown = (
         }
       } else if (mode === 'mirror_point') {
         if (!ts.transformRef) {
-          const centerPoint = hitPoint() ?? emptyClickNewPoint();
-          // 活中心点：注册为 AlgoDilate 输入，移动中心联动镜像
-          ts.transformRef = { kind: 'point', centerPoint };
-          return;
+          // 任意顺序：先点中心点（参数优先，兼容旧流程）或先点非点源对象（GeoGebra 顺序）
+          const pt = hitPoint();
+          if (pt) {
+            // 活中心点：注册为 AlgoDilate 输入，移动中心联动镜像
+            ts.transformRef = { kind: 'point', centerPoint: pt };
+            if (ts.inputs?.length || selectedElements.length > 0) {
+              // 已有源对象 → 本击直接执行（落入公共执行段）
+            } else {
+              return;
+            }
+          } else {
+            const obj = hitObject();
+            if (!obj) return; // 空白点击忽略（此前会新建游离点当中心）
+            if ((ts.inputs?.length ?? 0) === 0) {
+              ts.inputs = [{ el: obj, ref: inputRef(obj, point) }];
+            }
+            return;
+          }
         }
         const inputs = collectTransformInputs();
+        if (!inputs) return; // 空白点击：忽略，保留当前步骤状态
         const centerPoint = ts.transformRef.centerPoint as GeoPoint;
         for (const { el } of inputs) {
           if (!isTransformable(el)) continue;
@@ -833,13 +891,27 @@ export const handlePointerDown = (
         }
       } else if (mode === 'mirror_circle') {
         if (!ts.transformRef) {
+          // 任意顺序：先点反演圆（参数优先）或先点非圆源对象（GeoGebra 顺序）
           const circle = hitCircle(visibleElements, point.x, point.y, OBJ_EPS / coord.xScale);
-          if (!circle) return;
-          // 活反演圆：注册为 AlgoInvert 输入，移动/缩放圆联动反演
-          ts.transformRef = { kind: 'circle', circle };
-          return;
+          if (circle) {
+            // 活反演圆：注册为 AlgoInvert 输入，移动/缩放圆联动反演
+            ts.transformRef = { kind: 'circle', circle };
+            if (ts.inputs?.length || selectedElements.length > 0) {
+              // 已有源对象 → 本击直接执行
+            } else {
+              return;
+            }
+          } else {
+            const obj = hitObject() ?? hitPoint();
+            if (!obj) return; // 未命中任何对象：提示无效（此前静默 return）
+            if ((ts.inputs?.length ?? 0) === 0) {
+              ts.inputs = [{ el: obj, ref: inputRef(obj, point) }];
+            }
+            return;
+          }
         }
         const inputs = collectTransformInputs();
+        if (!inputs) return; // 空白点击：忽略，保留当前步骤状态
         const circle = ts.transformRef.circle as GeoConic;
         for (const { el } of inputs) {
           if (!isTransformable(el)) continue;
@@ -849,12 +921,26 @@ export const handlePointerDown = (
         }
       } else {
         if (!ts.transformRef) {
-          const vector = hitObject();
-          if (!(vector instanceof GeoVector)) return;
-          // 活平移向量：注册为 AlgoTranslate 输入（保持同 click 继续收集输入的流程）
-          ts.transformRef = { kind: 'vector', vectorEl: vector };
+          const obj = hitObject();
+          if (!(obj instanceof GeoVector)) {
+            // 非向量对象先到（GeoGebra 顺序：先点源对象）→ 记为输入，等平移向量
+            if (obj && (ts.inputs?.length ?? 0) === 0) {
+              ts.inputs = [{ el: obj, ref: inputRef(obj, point) }];
+            }
+            return;
+          }
+          // 活平移向量：注册为 AlgoTranslate 输入。必须 return——
+          // 此前落入同一次 click 的 collectTransformInputs，命中刚选中的向量本身
+          // （GeoVector 不可变换被跳过）后整个状态被清空，工具永远无法完成平移。
+          ts.transformRef = { kind: 'vector', vectorEl: obj };
+          if (ts.inputs?.length || selectedElements.length > 0) {
+            // 已有源对象 → 本击直接执行
+          } else {
+            return;
+          }
         }
         const inputs = collectTransformInputs();
+        if (!inputs) return; // 空白点击：忽略，保留当前步骤状态
         const vectorEl = ts.transformRef.vectorEl as GeoVector;
         for (const { el } of inputs) {
           if (!isTransformable(el)) continue;
@@ -1156,7 +1242,7 @@ export const handlePointerDown = (
 export const clearToolState = (ts: any) => {
   ts.inputs = []; ts.center = null; ts.transformRef = null; ts.refStart = null;
   ts.centerIsPoint = false; ts.axis = null; ts.axisStart = null;
-  ts.regPolyCenter = null; (ts.arcPicks as any) = [];
+  ts.regPolyStart = null; (ts.arcPicks as any) = [];
   ts.fixedStart = null; ts.fixedLength = null;
   ts.angleVertex = null; ts.angleDegrees = null;
   ts.polylinePts = []; ts.sectorPicks = []; ts.circArcPicks = [];
