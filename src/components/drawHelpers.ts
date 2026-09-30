@@ -96,29 +96,33 @@ export function drawGrid(renderer: IRenderer, wScreen: number, hScreen: number, 
     const arrowHalf = 3.5 / coord.xScale;
     const xInView = 0 >= startX && 0 <= endX;
     const yInView = 0 >= startY && 0 <= endY;
+    // 轴正端内缩一个箭头长度（arrowLen 已是世界单位）：箭头完整落在视区内，
+    // 不贴画布边缘——工具栏紧贴画布上缘，轴顶到边会在视觉上被压住。
     if (xInView) {
+      const yTip = endY - arrowLen;
       renderer.beginPath();
       renderer.moveTo(0, startY);
-      renderer.lineTo(0, endY);
+      renderer.lineTo(0, yTip);
       renderer.stroke();
-      // Y 轴正方向箭头：世界 y 向上为正，startY 是视区上端（y 最大值），
-      // 箭头画在 startY、朝上方（此前误画在 endY 负方向端且被顶部裁掉，看不见）。
+      // Y 轴正方向箭头：世界 y 向上为正，正端是 endY（视区上端，世界最大值），
+      // 箭头画在正端、翼向 −y 张开（尖端朝上）。startY/endY 现为 min/max 语义。
       renderer.beginPath();
-      renderer.moveTo(-arrowHalf, startY + arrowLen);
-      renderer.lineTo(0, startY);
-      renderer.lineTo(arrowHalf, startY + arrowLen);
+      renderer.moveTo(-arrowHalf, yTip - arrowLen);
+      renderer.lineTo(0, yTip);
+      renderer.lineTo(arrowHalf, yTip - arrowLen);
       renderer.stroke();
     }
     if (yInView) {
+      const xTip = endX - arrowLen;
       renderer.beginPath();
       renderer.moveTo(startX, 0);
-      renderer.lineTo(endX, 0);
+      renderer.lineTo(xTip, 0);
       renderer.stroke();
       // X 轴正方向箭头（向右）
       renderer.beginPath();
-      renderer.moveTo(endX - arrowLen, -arrowHalf);
-      renderer.lineTo(endX, 0);
-      renderer.lineTo(endX - arrowLen, arrowHalf);
+      renderer.moveTo(xTip - arrowLen, -arrowHalf);
+      renderer.lineTo(xTip, 0);
+      renderer.lineTo(xTip - arrowLen, arrowHalf);
       renderer.stroke();
     }
 
