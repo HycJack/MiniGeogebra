@@ -35,7 +35,7 @@ const CanvasOverlay: React.FC<CanvasOverlayProps> = ({
     <>
       {uiElements.map(element => {
         const screenX = element.x * coord.xScale + coord.xZero;
-        const screenY = element.y * coord.yScale + coord.yZero;
+        const screenY = coord.yZero - element.y * coord.yScale;
 
         const handleUIDragStart = (e: React.MouseEvent) => {
           e.stopPropagation();

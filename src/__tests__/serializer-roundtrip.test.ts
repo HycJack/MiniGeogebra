@@ -275,11 +275,12 @@ describe('serialize -> deserialize fidelity', () => {
     expect(result.coord!.height).toBe(600);
   });
 
-  it('emits v2 metadata used by the expression reconstruction path', () => {
+  it('emits v3 metadata used by the expression reconstruction path', () => {
     const kernel = buildSliderFunctionPoint();
     const data = JSON.parse(serialize(kernel)) as any;
 
-    expect(data.version).toBe(2);
+    expect(data.version).toBe(3);
+    expect(data.yUp).toBe(true);
     const functionAlgo = data.algorithms.find((a: any) => a.type === 'AlgoDependentFunction');
     const pointAlgo = data.algorithms.find((a: any) => a.type === 'AlgoPointOnFunction');
     expect(functionAlgo.expressionText).toBe('a*x');

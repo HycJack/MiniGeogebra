@@ -164,6 +164,8 @@ interface SerializedAlgorithm {
 export interface ConstructionJSON {
   version: number;
   generator: string;
+  /** v3 起：世界坐标 y 向上为正。缺省 = 旧 v1/v2 的 y-down 存档，读取时镜像迁移。 */
+  yUp?: boolean;
   view?: {
     xZero: number;
     yZero: number;
@@ -177,7 +179,7 @@ export interface ConstructionJSON {
 }
 
 const GENERATOR = 'MiniGeogebra';
-const VERSION = 2;
+const VERSION = 3;
 
 /** Factory: rebuild algorithm instance by type (inputs already exist in map) */
 function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], scalars?: number[]): AlgoElement {
@@ -718,6 +720,7 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
   const data: ConstructionJSON = {
     version: VERSION,
     generator: GENERATOR,
+    yUp: true,
     independentElements,
     algorithms,
   };
@@ -737,6 +740,41 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
 }
 
 /** Deserialize from JSON string and return the restored coordinate system (if any) */
+/**
+ * y-down（v1/v2）→ y-up（v3）镜像迁移：对 x 轴翻转 (x, y) → (x, -y)。
+ * 覆盖携带坐标数据的独立元素与算法 fallback 标量；算法输入以引用为主，
+ * 其坐标随被引用元素迁移自动一致。3D 点不迁移（3D Y 轴本就向上，
+ * 旧档平面点存的是 to3 的 −worldY，恰为新世界的 worldY）。
+ */
+function migrateYDownToUp(data: ConstructionJSON): void {
+  const flipY = (y: number): number => -y;
+  for (const el of data.independentElements) {
+    if (el.type === 'GeoPoint' && el.coords) el.coords[1] = flipY(el.coords[1]);
+    else if (el.type === 'GeoText' && el.coords) el.coords[1] = flipY(el.coords[1]);
+    else if (el.type === 'GeoLine' && el.lineCoeffs) el.lineCoeffs = [el.lineCoeffs[0], -el.lineCoeffs[1], el.lineCoeffs[2]];
+    else if (el.type === 'GeoConic' && el.coeffs) {
+      const [A, B, C, D, E, F] = el.coeffs;
+      el.coeffs = [A, -B, C, D, -E, F];
+    }
+  }
+  for (const sa of data.algorithms ?? []) {
+    const sc = sa.scalars;
+    if (!sc) continue;
+    // 各算法 fallback 标量中的坐标分量（活引用路径不受影响）
+    if (sa.type === 'AlgoRotate' || sa.type === 'AlgoDilate') {
+      if (sc.length >= 3) sc[2] = flipY(sc[2]);   // [angle|ratio, cx, cy]
+    } else if (sa.type === 'AlgoMirror') {
+      sc[1] = -sc[1];                              // [a, b, c] → b 取反
+    } else if (sa.type === 'AlgoTranslate') {
+      if (sc.length >= 2) sc[1] = flipY(sc[1]);    // [vx, vy]
+    } else if (sa.type === 'AlgoShearStretch') {
+      if (sc.length >= 4) sc[3] = flipY(sc[3]);    // [factor, op, a, b, c]
+    } else if (sa.type === 'AlgoInvert') {
+      if (sc.length >= 2) sc[1] = flipY(sc[1]);    // [cx, cy, r]
+    }
+  }
+}
+
 export function deserialize(kernel: Kernel, json: string): { coord?: CoordinateSystem } {
   // 先完成解析与结构校验，再清空当前画布——避免坏文件把已有构造毁掉。
   const data = JSON.parse(json) as ConstructionJSON;
@@ -745,6 +783,12 @@ export function deserialize(kernel: Kernel, json: string): { coord?: CoordinateS
   }
   const construction = kernel.getConstruction();
   construction.clear();
+
+  // 旧存档（v1/v2，世界 y 向下）迁移：整体对 x 轴镜像到 y-up 世界。
+  // 函数/表达式对象不迁移——表达式语义与朝向无关，翻转后恰为 GeoGebra 语义。
+  if (!data.yUp) {
+    migrateYDownToUp(data);
+  }
 
   if (data.version > VERSION) {
     console.warn(`[ConstructionSerializer] file version ${data.version} is newer than supported ${VERSION}`);

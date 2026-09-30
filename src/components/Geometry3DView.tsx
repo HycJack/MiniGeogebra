@@ -88,7 +88,8 @@ interface LineStyle {
 }
 
 /** 世界坐标 → 3D 坐标（构造面 z=0，世界 y 向下对应三维 −Y）。 */
-const to3 = (x: number, y: number, z = 0): V3 => ({ x, y: -y, z });
+// 世界 y 向上为正后与 3D 的 Y 轴方向一致，2D 平面元素直接映射 z=0
+const to3 = (x: number, y: number, z = 0): V3 => ({ x, y, z });
 
 /** 坐标轴刻度数字格式化（避免浮点尾差）。 */
 function fmtNum(v: number): string {
@@ -848,7 +849,7 @@ function drawLabels(scene: Scene3D, renderer: WebGL3DRenderer, canvas: HTMLCanva
       ctx.fillText(fmtNum(x), sp.x, sp.y + 14 * dpr);
     }
     for (let y = Math.ceil(yMin / step) * step; y <= yMax + 1e-9; y += step) {
-      const sp = renderer.projectToScreen({ x: 0, y: -y, z: 0 });
+      const sp = renderer.projectToScreen({ x: 0, y, z: 0 });
       if (!sp) continue;
       ctx.fillStyle = '#1c1c1f';
       ctx.textAlign = 'right';

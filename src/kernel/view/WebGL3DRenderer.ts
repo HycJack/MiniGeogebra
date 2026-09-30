@@ -1,8 +1,8 @@
 /**
  * WebGL3DRenderer —— 独立的 WebGL2 三维渲染后端。
  *
- * 坐标约定（与 2D 世界坐标保持一致）：
- *   - 构造元素位于 z=0 平面：3D (x, y, z) = (worldX, -worldY, 0)
+ * 坐标约定（与 2D 世界坐标保持一致，2D 世界 y 向上为正）：
+ *   - 构造元素位于 z=0 平面：3D (x, y, z) = (worldX, worldY, 0)
  *   - 相机：轨道相机（yaw 绕 Z 轴 / pitch 俯仰 / 距离缩放）
  *
  * 渲染策略：画家算法（网格 → 填充 → 线 → 点），无深度缓冲。
@@ -306,7 +306,7 @@ export class WebGL3DRenderer {
     const b = content ?? scene.gridBounds;
     const cx = (b.minX + b.maxX) / 2;
     const cy = (b.minY + b.maxY) / 2;
-    this.target = { x: cx, y: -cy, z: 0 };
+    this.target = { x: cx, y: cy, z: 0 };
     const span = Math.max(b.maxX - b.minX, b.maxY - b.minY, 1);
     this.dist = Math.max(60, (span / 2 / Math.tan(FOV_Y / 2)) * 1.25);
     this.yaw = 0;
@@ -325,13 +325,13 @@ export class WebGL3DRenderer {
   /** 当前 3D 显示区域覆盖的 XY 平面范围（网格使用）。 */
   getViewBoundsXY(): { minX: number; maxX: number; minY: number; maxY: number } {
     const b = this.visiblePlaneBounds('xy', { padded: false });
-    return { minX: b.uMin, maxX: b.uMax, minY: -b.vMax, maxY: -b.vMin };
+    return { minX: b.uMin, maxX: b.uMax, minY: b.vMin, maxY: b.vMax };
   }
 
   /** 坐标轴/坐标平面使用的内缩范围。 */
   getCoordinateBoundsXY(): { minX: number; maxX: number; minY: number; maxY: number } {
     const b = this.visiblePlaneBounds('xy', { padded: true });
-    return { minX: b.uMin, maxX: b.uMax, minY: -b.vMax, maxY: -b.vMin };
+    return { minX: b.uMin, maxX: b.uMax, minY: b.vMin, maxY: b.vMax };
   }
 
   /**
@@ -406,7 +406,7 @@ export class WebGL3DRenderer {
   }
 
   private planeUV(axis: PlaneAxis, p: V3): { u: number; v: number } {
-    if (axis === 'xy') return { u: p.x, v: -p.y };
+    if (axis === 'xy') return { u: p.x, v: p.y };
     if (axis === 'xz') return { u: p.x, v: p.z };
     return { u: p.y, v: p.z };
   }
@@ -416,7 +416,7 @@ export class WebGL3DRenderer {
     const halfH = this.dist * tanHalf;
     const halfW = halfH * (this.width / Math.max(1, this.height));
     if (axis === 'xy') {
-      return { uMin: this.target.x - halfW, uMax: this.target.x + halfW, vMin: -this.target.y - halfH, vMax: -this.target.y + halfH };
+      return { uMin: this.target.x - halfW, uMax: this.target.x + halfW, vMin: this.target.y - halfH, vMax: this.target.y + halfH };
     }
     if (axis === 'xz') {
       return { uMin: this.target.x - halfW, uMax: this.target.x + halfW, vMin: this.target.z - halfH, vMax: this.target.z + halfH };
@@ -526,11 +526,11 @@ export class WebGL3DRenderer {
     if (scene.showAxes) {
       // 三坐标轴都从原点双向延伸到当前视野边缘。
       out.push({ a: { x: xMin, y: 0, z: 0 }, b: { x: xMax, y: 0, z: 0 }, color: AXIS_X, widthPx: 2.4 });
-      out.push({ a: { x: 0, y: -yMax, z: 0 }, b: { x: 0, y: -yMin, z: 0 }, color: AXIS_Y, widthPx: 2.4 });
+      out.push({ a: { x: 0, y: yMin, z: 0 }, b: { x: 0, y: yMax, z: 0 }, color: AXIS_Y, widthPx: 2.4 });
       out.push({ a: { x: 0, y: 0, z: zMin }, b: { x: 0, y: 0, z: zMax }, color: AXIS_Z, widthPx: 2.4 });
 
       // 正方向箭头（屏幕空间三角，绘制在轴端点）
-      this.axisArrows(out, { x: xMax, y: 0, z: 0 }, { x: 0, y: -yMax, z: 0 }, { x: 0, y: 0, z: zMax });
+      this.axisArrows(out, { x: xMax, y: 0, z: 0 }, { x: 0, y: yMax, z: 0 }, { x: 0, y: 0, z: zMax });
 
       // 刻度标记：正负两侧都生成，Z 轴也完整生成。
       const tickLen = 6 * wpp;
@@ -541,8 +541,8 @@ export class WebGL3DRenderer {
       }
       for (let y = Math.ceil(yMin / step) * step; y <= yMax + 1e-9; y += step) {
         if (Math.abs(y) < 1e-9) continue;
-        this.pushTick(out, { x: 0, y: -y, z: 0 }, { x: tickLen, y: -y, z: 0 }, AXIS_Y);
-        this.pushTick(out, { x: 0, y: -y, z: 0 }, { x: -tickLen, y: -y, z: 0 }, AXIS_Y);
+        this.pushTick(out, { x: 0, y, z: 0 }, { x: tickLen, y, z: 0 }, AXIS_Y);
+        this.pushTick(out, { x: 0, y, z: 0 }, { x: -tickLen, y, z: 0 }, AXIS_Y);
       }
       const zTickLen = 5 * wpp;
       const minorTickLen = 3 * wpp;
@@ -554,8 +554,8 @@ export class WebGL3DRenderer {
       }
       for (let y = Math.ceil(yMin / minorStep) * minorStep; y <= yMax + 1e-9; y += minorStep) {
         if (Math.abs(y) < 1e-9 || Math.abs(y / step - Math.round(y / step)) < 1e-9) continue;
-        this.pushTick(out, { x: 0, y: -y, z: 0 }, { x: minorTickLen, y: -y, z: 0 }, AXIS_Y);
-        this.pushTick(out, { x: 0, y: -y, z: 0 }, { x: -minorTickLen, y: -y, z: 0 }, AXIS_Y);
+        this.pushTick(out, { x: 0, y, z: 0 }, { x: minorTickLen, y, z: 0 }, AXIS_Y);
+        this.pushTick(out, { x: 0, y, z: 0 }, { x: -minorTickLen, y, z: 0 }, AXIS_Y);
       }
       for (let z = Math.ceil(zMin / step) * step; z <= zMax + 1e-9; z += step) {
         if (Math.abs(z) < 1e-9) continue;
@@ -600,10 +600,10 @@ export class WebGL3DRenderer {
       const minorStep = step / 5;
       const verts: V3[] = pl.axis === 'xy'
         ? [
-            { x: uMin, y: -vMax, z: 0 },
-            { x: uMax, y: -vMax, z: 0 },
-            { x: uMax, y: -vMin, z: 0 },
-            { x: uMin, y: -vMin, z: 0 },
+            { x: uMin, y: vMin, z: 0 },
+            { x: uMax, y: vMin, z: 0 },
+            { x: uMax, y: vMax, z: 0 },
+            { x: uMin, y: vMax, z: 0 },
           ]
         : pl.axis === 'xz'
           ? [
@@ -650,7 +650,7 @@ export class WebGL3DRenderer {
 
   /** 平面内参数点 → 世界坐标。 */
   private planePoint(axis: PlaneAxis, u: number, v: number): V3 {
-    if (axis === 'xy') return { x: u, y: -v, z: 0 };
+    if (axis === 'xy') return { x: u, y: v, z: 0 };
     if (axis === 'xz') return { x: u, y: 0, z: v };
     return { x: 0, y: u, z: v };
   }

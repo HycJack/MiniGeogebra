@@ -147,15 +147,15 @@ describe('B10 addAlgoAndNotify（输出注册回归）', () => {
     expect(rotates[0].getInput()).toContain(b); // 活中心
     const image = rotates[0].getOutput() as GeoPoint;
     expect(image.parentAlgo).toBe(rotates[0]);
-    // +90° = 屏幕逆时针（y-down 世界）：(2,0) → (0,-2)
+    // 世界 y-up，+90° = 数学逆时针：(2,0) → (0,2)
     expect(image.getX()).toBeCloseTo(0, 6);
-    expect(image.getY()).toBeCloseTo(-2, 6);
+    expect(image.getY()).toBeCloseTo(2, 6);
 
-    // 移动中心联动：A(2,0) 绕 B(1,1) 屏幕逆时针 90° → (0,0)
+    // 移动中心联动：A(2,0) 绕 B(1,1) 逆时针 90° → (2,2)
     b.setCoords(1, 1, 1);
     kernel.flushNow();
-    expect(image.getX()).toBeCloseTo(0, 6);
-    expect(image.getY()).toBeCloseTo(0, 6);
+    expect(image.getX()).toBeCloseTo(2, 6);
+    expect(image.getY()).toBeCloseTo(2, 6);
     expect(a.getX()).toBeCloseTo(2, 6);
   });
 
@@ -540,8 +540,8 @@ describe('B10 序列化 roundtrip', () => {
     const restored = roundtrip(kernel);
     const out = ofType(restored, GeoPoint).find(el => el.label === "P'");
     expect(out).toBeDefined();
-    // 正角 = 屏幕逆时针（y-down 世界中数学坐标 y 取负）
+    // 正角 = 数学逆时针（世界 y-up）
     expect(out!.getX()).toBeCloseTo(0, 5);
-    expect(out!.getY()).toBeCloseTo(-1, 5);
+    expect(out!.getY()).toBeCloseTo(1, 5);
   });
 });

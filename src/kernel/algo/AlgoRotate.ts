@@ -65,9 +65,7 @@ const shearStretchPt = (p: { x: number; y: number }, m: AffineMatrix) => ({
 
 /** 变换后的点坐标（供折线、弧等采样对象复用）。 */
 const mapPoint = (p: { x: number; y: number }, op: TransOp, arg: any): { x: number; y: number } => {
-  // rotate 的 angle 语义 = 屏幕视觉逆时针为正（GeoGebra 用户语义）。
-  // 世界坐标 y 向下为正，数学逆时针矩阵在屏幕上呈顺时针，故此处取负。
-  if (op === 'rotate') return rotatePt(p, arg.center, -arg.angle);
+  if (op === 'rotate') return rotatePt(p, arg.center, arg.angle);
   if (op === 'dilate') return scalePt(p, arg.center, arg.ratio);
   if (op === 'translate') return translatePt(p, arg.vector);
   if (op === 'invert') return invertPt(p, arg.center, arg.radius);
@@ -270,8 +268,7 @@ const affineFor = (op: TransOp, arg: any): AffineMatrix | null => {
     return { a: 1, b: 0, c: 0, d: 1, tx: arg.vector.x, ty: arg.vector.y };
   }
   if (op === 'rotate') {
-    // angle 语义 = 屏幕逆时针为正（见 mapPoint 注释）；世界 y 向下，矩阵取 −angle
-    const cos = Math.cos(-arg.angle), sin = Math.sin(-arg.angle);
+    const cos = Math.cos(arg.angle), sin = Math.sin(arg.angle);
     const cx = arg.center.x, cy = arg.center.y;
     return { a: cos, b: -sin, c: sin, d: cos, tx: cx - cos * cx + sin * cy, ty: cy - sin * cx - cos * cy };
   }
@@ -466,7 +463,7 @@ export function buildTransformed(kernel: IKernel, input: GeoElement, op: TransOp
       return new GeoRegularPolygon(input.kernel, { x: c.x + arg.vector.x, y: c.y + arg.vector.y }, input.getRadius(), input.getSides());
     }
     const c = op === 'mirror' ? mirrorPt({ x: input.getCenter().x, y: input.getCenter().y }, arg.A, arg.B, arg.C)
-      : op === 'rotate' ? rotatePt(input.getCenter(), arg.center, -arg.angle)
+      : op === 'rotate' ? rotatePt(input.getCenter(), arg.center, arg.angle)
         : scalePt(input.getCenter(), arg.center, arg.ratio);
     return new GeoRegularPolygon(input.kernel, c, input.getRadius(), input.getSides());
   }

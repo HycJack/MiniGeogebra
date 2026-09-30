@@ -456,7 +456,9 @@ export class WebGLRendererFallback implements IRenderer {
   set textAlign(v: CanvasTextAlign) { this._textAlign = v; }
 
   fillText(text: string, x: number, y: number): void {
-    this.textQueue.push({ text, x, y, font: this._font, fillStyle: this._fillStyle, textBaseline: this._textBaseline, textAlign: this._textAlign, });
+    // 世界渲染变换为 scale(xScale, -yScale)（y-up），文字若直接走该变换会镜像。
+    // 文本 overlay 以正 y 缩放绘制，这里把世界 y 取反即可落在正确的屏幕位置。
+    this.textQueue.push({ text, x, y: -y, font: this._font, fillStyle: this._fillStyle, textBaseline: this._textBaseline, textAlign: this._textAlign, });
   }
   measureText(text: string): { width: number } {
     if (this.textCtx) {

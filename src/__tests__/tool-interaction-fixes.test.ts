@@ -11,13 +11,13 @@ import { GeoConicPart, CONIC_PART_ARC } from '../kernel/geo/GeoConicPart';
 import { buildTransformed } from '../kernel/algo/AlgoRotate';
 import { AlgoIntersect } from '../kernel/algo/AlgoIntersect';
 import { serialize, deserialize } from '../kernel/persistence/ConstructionSerializer';
+import { GeoLine } from '../kernel/geo/GeoLine';
+import { GeoNumeric } from '../kernel/geo/GeoNumeric';
 import { handlePointerDown } from '../components/tools/handlers';
 import { AlgoSegmentTwoPoints } from '../kernel/algo/AlgoSegmentTwoPoints';
 import { parseAlgebraInput } from '../kernel/algebra/EquationRecognizer';
-import { ToolMode } from '../components/tools/types';
-import { ToolContext } from '../components/tools/types';
+import { ToolMode, ToolContext } from '../components/tools/types';
 import { CoordinateSystem } from '../kernel/core/CoordinateSystem';
-import { GeoLine } from '../kernel/geo/GeoLine';
 import { GeoFunction } from '../kernel/geo/GeoFunction';
 
 const makeLine = (kernel: Kernel, a: number, b: number, cc: number, label?: string) => {
@@ -44,7 +44,7 @@ const makePoint = (kernel: Kernel, x: number, y: number, label?: string) => {
 };
 
 describe('AlgoRegularPolygonEdge（GeoGebra 边两点模型）', () => {
-  it('A(0,0)→B(4,0) 的正方形在屏幕上方（y 为负），顶点序屏幕逆时针', () => {
+  it('A(0,0)→B(4,0) 的正方形在上方（世界 y 为正），顶点序逆时针', () => {
     const kernel = makeKernel();
     const a = makePoint(kernel, 0, 0, 'A');
     const b = makePoint(kernel, 4, 0, 'B');
@@ -56,11 +56,11 @@ describe('AlgoRegularPolygonEdge（GeoGebra 边两点模型）', () => {
     const poly = algo.getOutput();
     expect(poly).toBeInstanceOf(GeoPolygon);
     expect(poly.vertices).toHaveLength(4);
-    // v2、v3 的世界 y 为负 → 屏幕在 AB 上方（GeoGebra 视觉一致）
+    // 世界 y-up，v2、v3 在 AB 上方（y 为正），顶点序逆时针
     expect(poly.vertices[2].getX()).toBeCloseTo(4, 6);
-    expect(poly.vertices[2].getY()).toBeCloseTo(-4, 6);
+    expect(poly.vertices[2].getY()).toBeCloseTo(4, 6);
     expect(poly.vertices[3].getX()).toBeCloseTo(0, 6);
-    expect(poly.vertices[3].getY()).toBeCloseTo(-4, 6);
+    expect(poly.vertices[3].getY()).toBeCloseTo(4, 6);
     // 前两个顶点引用输入点（拖动联动）
     expect(poly.vertices[0]).toBe(a);
     expect(poly.vertices[1]).toBe(b);
@@ -181,9 +181,9 @@ describe('GeoConicPart（弧/扇形）变换保留部分圆语义', () => {
     const out = buildTransformed(kernel, arc, 'rotate', { center, angle: Math.PI / 2 }) as GeoConicPart;
     expect(out).toBeInstanceOf(GeoConicPart);
     expect(out.getPartType()).toBe(CONIC_PART_ARC);
-    // 正角 = 屏幕逆时针（y-down 世界即数学 −90°）：0°→−90°，90°→0°
-    expect(out.getStartAngle()).toBeCloseTo(-Math.PI / 2, 5);
-    expect(out.getEndAngle()).toBeCloseTo(0, 5);
+    // 正角 = 数学逆时针（世界 y-up）：0°→90°，90°→180°
+    expect(out.getStartAngle()).toBeCloseTo(Math.PI / 2, 5);
+    expect(out.getEndAngle()).toBeCloseTo(Math.PI, 5);
     expect(out.getRadius()).toBeCloseTo(2, 5);
   });
 });
@@ -347,5 +347,44 @@ describe('命令参数中的方程字符串（GeoGebra 对齐）', () => {
     const image = returned.find(el => el instanceof GeoConic) as GeoConic;
     expect(image).toBeDefined();
     expect(image.getConicType()).toBe('ellipse');
+  });
+});
+
+describe('旧存档 y-down → y-up 迁移', () => {
+  it('无 yUp 标记的 v2 存档：点/直线/圆锥/文本 y 镜像，表达式不动', () => {
+    const kernel = makeKernel();
+    // 手工构造一份 v2 y-down 存档：点 (1,3)、直线 y=-2（[0,1,2]）、圆 x²+(y+1)²=4
+    const legacy = {
+      version: 2,
+      generator: 'MiniGeogebra',
+      independentElements: [
+        { type: 'GeoPoint', constIndex: 0, label: 'A', coords: [1, 3, 1] },
+        { type: 'GeoLine', constIndex: 1, label: 'l', lineCoeffs: [0, 1, 2] },
+        { type: 'GeoConic', constIndex: 2, label: 'c', coeffs: [1, 0, 1, 0, 2, -3] },
+        { type: 'GeoNumeric', constIndex: 3, label: 'a', value: 2 },
+      ],
+      algorithms: [],
+    };
+    const restored = new Kernel();
+    deserialize(restored, JSON.stringify(legacy));
+    const els = restored.getConstruction().getElements();
+    const pt = els.find(el => el instanceof GeoPoint && (el as GeoPoint).label === 'A') as GeoPoint;
+    expect(pt.getY()).toBeCloseTo(-3, 6);
+    const line = els.find(el => el instanceof GeoLine && (el as GeoLine).label === 'l') as GeoLine;
+    expect([line.a, line.b, line.c]).toEqual([0, -1, 2]); // y=-2 保持不变（镜像后同一条线）
+    const conic = els.find(el => el instanceof GeoConic && (el as GeoConic).label === 'c') as GeoConic;
+    // (x)²+(y+1)²=4 镜像 → x²+(y-1)²=4：E 系数 2 → −2
+    expect(conic.coeffs[4]).toBeCloseTo(-2, 6);
+  });
+
+  it('带 yUp 标记的新存档不二次镜像', () => {
+    const kernel = makeKernel();
+    makePoint(kernel, 1, 3, 'A');
+    const json = JSON.parse(serialize(kernel));
+    expect(json.yUp).toBe(true);
+    const restored = new Kernel();
+    deserialize(restored, serialize(kernel));
+    const pt = restored.getConstruction().getElements().find(el => el instanceof GeoPoint) as GeoPoint;
+    expect(pt.getY()).toBeCloseTo(3, 6);
   });
 });

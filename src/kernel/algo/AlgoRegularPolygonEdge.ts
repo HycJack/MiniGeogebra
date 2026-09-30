@@ -2,8 +2,8 @@
  * 正多边形构造（GeoGebra RegularPolygon(A, B, n) 语义）——
  * A、B 为相邻两顶点（第一条边），n 为边数，弹出数值输入后创建。
  *
- * 方向语义：多边形顶点序在屏幕上呈逆时针（与 GeoGebra y-up 世界的
- * 数学逆时针视觉一致）。世界坐标 y 向下为正，故边向量按 −2π/n 旋转。
+ * 方向语义：世界坐标 y 向上为正（GeoGebra 语义），顶点序数学逆时针
+ * 即屏幕视觉逆时针，边向量按 +2π/n 旋转。
  */
 
 import { IKernel } from '../core/Interfaces';
@@ -46,7 +46,7 @@ export class AlgoRegularPolygonEdge extends AlgoElement {
     const ax = this.a.getX(), ay = this.a.getY();
     const bx = this.b.getX(), by = this.b.getY();
     const ex = bx - ax, ey = by - ay;
-    const delta = (-2 * Math.PI) / this.nSides;
+    const delta = (2 * Math.PI) / this.nSides;
     // 边 k（v_k → v_{k+1}）= e0 旋转 k·δ；v_{k+1} = v_k + 边 k。
     // newPoints[j] 存放 v_{j+2}，故 k ∈ [1, n−2] 对应 newPoints[k−1]。
     let vx = bx, vy = by;

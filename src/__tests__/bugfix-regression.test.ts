@@ -100,17 +100,17 @@ describe('transform algorithms recompute (regression: frozen outputs)', () => {
   it('AlgoRotate follows a moving source point', () => {
     const kernel = makeKernel();
     const P = makePoint(kernel, 1, 0, 'P');
-    // 正角 = 屏幕逆时针（GeoGebra 语义）；世界 y 向下，(1,0) 逆时针 90° → 屏幕上方 (0,-1)
+    // 世界 y-up，正角 = 数学/屏幕逆时针一致：(1,0) 旋转 90° → (0,1)
     const algo = new AlgoRotate(kernel, P, { x: 0, y: 0 }, Math.PI / 2);
     c(kernel).addElement(algo);
     const out = algo.getOutput() as GeoPoint;
     expect(out.getX()).toBeCloseTo(0, 5);
-    expect(out.getY()).toBeCloseTo(-1, 5);
+    expect(out.getY()).toBeCloseTo(1, 5);
 
     P.setCoords(2, 0, 1);
     c(kernel).updateAllAlgorithms();
     expect(out.getX()).toBeCloseTo(0, 5);
-    expect(out.getY()).toBeCloseTo(-2, 5);
+    expect(out.getY()).toBeCloseTo(2, 5);
   });
 });
 
@@ -194,9 +194,9 @@ describe('serializer coverage (regression: unimportable types)', () => {
     const restored = roundtrip(kernel);
     const rotated = ofType(restored, GeoPoint).find(p => p.label === "P'");
     expect(rotated).toBeDefined();
-    // 正角 = 屏幕逆时针（y-down 世界中数学坐标 y 取负）
+    // 正角 = 数学逆时针（世界 y-up）
     expect(rotated!.getX()).toBeCloseTo(0, 5);
-    expect(rotated!.getY()).toBeCloseTo(-1, 5);
+    expect(rotated!.getY()).toBeCloseTo(1, 5);
   });
 
   it('round-trips an arc built by AlgoArc', () => {

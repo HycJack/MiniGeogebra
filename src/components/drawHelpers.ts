@@ -35,8 +35,9 @@ export interface DrawBounds { minX: number; maxX: number; minY: number; maxY: nu
 export function drawGrid(renderer: IRenderer, wScreen: number, hScreen: number, coord: CoordinateSystem, showGrid: boolean, showAxes: boolean): void {
   const startX = coord.screenToWorldX(0);
   const endX = coord.screenToWorldX(wScreen);
-  const startY = coord.screenToWorldY(0);
-  const endY = coord.screenToWorldY(hScreen);
+  // y-up：屏幕顶部是世界 y 最大值；统一为 min/max 使循环方向无关
+  const startY = Math.min(coord.screenToWorldY(0), coord.screenToWorldY(hScreen));
+  const endY = Math.max(coord.screenToWorldY(0), coord.screenToWorldY(hScreen));
 
   const targetStepScreen = 50;
   const targetStepWorld = targetStepScreen / coord.xScale;
@@ -164,7 +165,7 @@ export function drawGrid(renderer: IRenderer, wScreen: number, hScreen: number, 
     for (let x = firstX, labelIndex = 0; x <= endX; x += step, labelIndex++) {
       if (labelIndex % xLabelEvery !== 0) continue;
       if (Math.abs(x) > 1e-10) {
-        renderer.fillText(parseFloat(x.toPrecision(4)).toString(), x, 4 / coord.xScale);
+        renderer.fillText(parseFloat(x.toPrecision(4)).toString(), x, -4 / coord.xScale);
       }
     }
     renderer.textAlign = 'right';
@@ -178,7 +179,7 @@ export function drawGrid(renderer: IRenderer, wScreen: number, hScreen: number, 
     }
     renderer.textAlign = 'right';
     renderer.textBaseline = 'top';
-    renderer.fillText('0', -4 / coord.xScale, 4 / coord.xScale);
+    renderer.fillText('0', -4 / coord.xScale, -4 / coord.xScale);
   }
 }
 
@@ -223,7 +224,7 @@ export function drawPoint(renderer: IRenderer, p: GeoPoint, selected: boolean, s
   // Label offsets are screen-space: convert them back to world units because
   // the whole 2D canvas is already transformed by the current view scale.
   const labelOffset = (baseRadius + (selected ? 8 : 4)) / scale;
-  renderer.fillText(label, x + labelOffset, y - labelOffset);
+  renderer.fillText(label, x + labelOffset, y + labelOffset);
 }
 
 /** 直线（贯穿整个视野）。 */

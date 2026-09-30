@@ -6,8 +6,8 @@
  *
  * 约定：
  *   - 屏幕坐标：以 canvas 左上角为原点 (0,0)，向右 x 增大，向下 y 增大（逻辑像素）。
- *   - 世界坐标：x 向右为正，y 向下为正，默认画布中心为世界原点。与改造前的 transform
- *     { x: width/2, y: height/2, scale: 1 } 语义完全等价，保证缩放/平移行为不回归。
+ *   - 世界坐标：x 向右为正，y 向上为正（GeoGebra 语义），默认画布中心为世界原点。
+ *     世界 → 屏幕的 y 映射取负（worldToScreenY），几何数据全部是数学方向的 y-up。
  */
 export class CoordinateSystem {
   readonly width: number;      // 画布逻辑宽度（已除以 DPR）
@@ -43,19 +43,19 @@ export class CoordinateSystem {
     return this.xZero + worldX * this.xScale;
   }
 
-  /** 世界 y → 屏幕 y（几何内部约定世界 y 向上为正；屏幕向下为正，故镜像） */
+  /** 世界 y → 屏幕 y（世界 y 向上为正；屏幕向下为正，故取负） */
   worldToScreenY(worldY: number): number {
-    return this.yZero + worldY * this.yScale;
+    return this.yZero - worldY * this.yScale;
   }
 
-  /** 屏幕 x → 世界 x（约定：世界 y 与屏幕 y 同向，向下为正；与改造前 transform 语义一致） */
+  /** 屏幕 x → 世界 x */
   screenToWorldX(screenX: number): number {
     return (screenX - this.xZero) / this.xScale;
   }
 
-  /** 屏幕 y → 世界 y */
+  /** 屏幕 y → 世界 y（与 worldToScreenY 互逆） */
   screenToWorldY(screenY: number): number {
-    return (screenY - this.yZero) / this.yScale;
+    return (this.yZero - screenY) / this.yScale;
   }
 
   /** 批量：世界 → 屏幕 */
@@ -80,11 +80,12 @@ export class CoordinateSystem {
     const sy = screenY ?? this.height / 2;
     const wx = this.screenToWorldX(sx);
     const wy = this.screenToWorldY(sy);
+    // 焦点世界点缩放后仍映射到同一屏幕点：y 方向映射取负，xZero/yZero 解出来带符号
     return new CoordinateSystem(
       this.width,
       this.height,
       sx - wx * newScale,
-      sy - wy * newScale,
+      sy + wy * newScale,
       newScale,
       newScale
     );
@@ -116,15 +117,13 @@ export class CoordinateSystem {
     );
   }
 
-  /** 当前可见区域的世界坐标范围 */
+  /** 当前可见区域的世界坐标范围（y-up：上边界大于下边界） */
   visibleWorldBounds(): { minX: number; maxX: number; minY: number; maxY: number } {
-    const tl = this.screenToWorld(0, 0);                   // 左上（y 最大）
-    const br = this.screenToWorld(this.width, this.height); // 右下（y 最小）
     return {
-      minX: Math.min(tl.x, br.x),
-      maxX: Math.max(tl.x, br.x),
-      minY: Math.min(tl.y, br.y),
-      maxY: Math.max(tl.y, br.y),
+      minX: Math.min(this.screenToWorldX(0), this.screenToWorldX(this.width)),
+      maxX: Math.max(this.screenToWorldX(0), this.screenToWorldX(this.width)),
+      minY: this.screenToWorldY(this.height),
+      maxY: this.screenToWorldY(0),
     };
   }
 

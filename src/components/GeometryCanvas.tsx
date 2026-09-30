@@ -407,7 +407,8 @@ export const GeometryCanvas: React.FC = () => {
     renderer.viewportSize(canvas.width, canvas.height);
     const dpr = window.devicePixelRatio || 1;
     renderer.clearRect(0, 0, canvas.width, canvas.height);
-    renderer.save(); renderer.scale(dpr, dpr); renderer.translate(coord.xZero, coord.yZero); renderer.scale(coord.xScale, coord.yScale);
+    // 世界 y 向上为正：渲染变换 y 取负（文本由 fillText 瓶颈点屏幕化，不会镜像）
+    renderer.save(); renderer.scale(dpr, dpr); renderer.translate(coord.xZero, coord.yZero); renderer.scale(coord.xScale, -coord.yScale);
 
     drawGrid(renderer, canvas.width / dpr, canvas.height / dpr, coord, showGrid, showAxes);
 
@@ -457,6 +458,8 @@ export const GeometryCanvas: React.FC = () => {
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.clearRect(0, 0, textCanvas.width, textCanvas.height);
         if (items.length > 0) {
+          // 文本 overlay 不随世界变换翻转：WebGLRendererFallback.fillText 入队时
+          // 已把世界 y 取反，这里保持正 y 缩放即可得到正确位置与正立文字
           ctx.save(); ctx.scale(dpr, dpr); ctx.translate(coord.xZero, coord.yZero); ctx.scale(coord.xScale, coord.yScale);
           for (const item of items) {
             ctx.font = item.font; ctx.fillStyle = item.fillStyle; ctx.textBaseline = item.textBaseline; ctx.textAlign = item.textAlign;

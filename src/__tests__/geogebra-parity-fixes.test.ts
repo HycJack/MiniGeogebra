@@ -194,16 +194,16 @@ describe('变换活输入（中心/镜轴联动）', () => {
     const result = addInput(kernel, 'Rotate(A, 90, B)');
     const image = result.find(el => el instanceof GeoPoint) as GeoPoint;
     expect(image).toBeDefined();
-    // 正角 = 屏幕逆时针（GeoGebra 语义）；A(2,0) 绕原点 90° → 屏幕上方 (0, -2)
+    // 世界 y-up，正角 = 数学逆时针：A(2,0) 绕原点 90° → (0, 2)
     expect(image.getX()).toBeCloseTo(0, 6);
-    expect(image.getY()).toBeCloseTo(-2, 6);
+    expect(image.getY()).toBeCloseTo(2, 6);
 
-    // 移动中心到 (1, 1)：A(2,0) 绕 B(1,1) 屏幕逆时针 90° → (0, 0)
+    // 移动中心到 (1, 1)：A(2,0) 绕 B(1,1) 逆时针 90° → (2, 2)
     const bPoint = kernel.getConstruction().getElements().find(el => el instanceof GeoPoint && (el as GeoPoint).label === 'B') as GeoPoint;
     bPoint.setCoords(1, 1, 1);
     kernel.getConstruction().updateAllAlgorithms();
-    expect(image.getX()).toBeCloseTo(0, 6);
-    expect(image.getY()).toBeCloseTo(0, 6);
+    expect(image.getX()).toBeCloseTo(2, 6);
+    expect(image.getY()).toBeCloseTo(2, 6);
   });
 
   it('Mirror(A, l)：移动镜轴 l 像随之移动', () => {
