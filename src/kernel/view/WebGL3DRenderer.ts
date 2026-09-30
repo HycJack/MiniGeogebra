@@ -377,12 +377,19 @@ export class WebGL3DRenderer {
         origin = eye;
       }
       const denom = dot3(dir, normal);
-      if (Math.abs(denom) < 1e-5) continue;
-      const t = (planeOffset - dot3(origin, normal)) / denom;
-      if (!Number.isFinite(t) || t <= 0) continue;
-      const p = add3(origin, scale3(dir, t));
-      if (dist3(p, this.target) > maxRadius) continue;
-      pts.push(p);
+      // 掠射角（近平视/近俯视）下部分角光线与平面无正向交点（近平行、背向、
+      // 交点远超可视半径）。直接丢弃会让 4 角只剩 1~2 个，包围盒塌缩/反转/偏斜，
+      // 表现为坐标轴长短失衡、网格碎片化、Z 轴爆长。失效角钳制到 maxRadius
+      // 作保守估计，保证 4 个角点齐全、包围盒始终良定义，再由 clampPlaneBounds 收敛。
+      let t = maxRadius;
+      if (Math.abs(denom) >= 1e-5) {
+        const raw = (planeOffset - dot3(origin, normal)) / denom;
+        if (Number.isFinite(raw) && raw > 0) {
+          const p = add3(origin, scale3(dir, raw));
+          if (dist3(p, this.target) <= maxRadius) t = raw;
+        }
+      }
+      pts.push(add3(origin, scale3(dir, t)));
     }
 
     let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
@@ -423,12 +430,14 @@ export class WebGL3DRenderer {
     const halfW = halfH * (this.width / Math.max(1, this.height));
     const uLimit = Math.max(halfW * 1.5, 40);
     const vLimit = Math.max(halfH * 1.5, 40);
-    return {
-      uMin: Math.max(targetUV.u - uLimit, b.uMin),
-      uMax: Math.min(targetUV.u + uLimit, b.uMax),
-      vMin: Math.max(targetUV.v - vLimit, b.vMin),
-      vMax: Math.min(targetUV.v + vLimit, b.vMax),
-    };
+    let uMin = Math.max(targetUV.u - uLimit, b.uMin);
+    let uMax = Math.min(targetUV.u + uLimit, b.uMax);
+    let vMin = Math.max(targetUV.v - vLimit, b.vMin);
+    let vMax = Math.min(targetUV.v + vLimit, b.vMax);
+    // 输入区间整体落在窗口同一侧时上述钳制会反转；此时退回对称窗口。
+    if (uMin > uMax) { uMin = targetUV.u - uLimit; uMax = targetUV.u + uLimit; }
+    if (vMin > vMax) { vMin = targetUV.v - vLimit; vMax = targetUV.v + vLimit; }
+    return { uMin, uMax, vMin, vMax };
   }
 
   /** 某条坐标轴相对原点的正/负可见半径。 */
