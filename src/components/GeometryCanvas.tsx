@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useRenderLoop } from '../hooks/useRenderLoop';
 import { Kernel } from '../kernel/core/Kernel';
 import { parseAlgebraInput } from '../kernel/algebra/EquationRecognizer';
+import { AlgoElement } from '../kernel/algo/AlgoElement';
 import { GeoPoint } from '../kernel/geo/GeoPoint';
 import { GeoPoint3D } from '../kernel/geo/GeoPoint3D';
 import { GeoLine } from '../kernel/geo/GeoLine';
@@ -41,7 +42,7 @@ import { importOFF } from '../kernel/io/OffParser';
 import { toolHandlers, clearToolState } from './tools/handlers';
 import { drawGrid, drawPoint, drawLine, drawSegment, drawPolygon, drawConic, drawLocus, drawBooleanRegion, drawFunction, renderPreviews, drawVector, drawPolyLine, drawArc, drawConicPart, drawRay, drawHoverMarker, drawCurve, drawInequality, drawText } from './drawHelpers';
 import { useLanguage } from '../i18n/LanguageContext';
-import { Undo2, Redo2, Globe, ZoomIn, ZoomOut, Home, Maximize, ListOrdered, Trash2, Eye, EyeOff, Tag, MousePointerClick, Play, Pause, Lock, LockOpen, Waypoints, ChevronsUp, ChevronsDown, Copy, Pencil } from 'lucide-react';
+import { Undo2, Redo2, Globe, ZoomIn, ZoomOut, Home, Maximize, ListOrdered, Trash2, Eye, EyeOff, Tag, MousePointerClick, Play, Pause, Lock, LockOpen, Waypoints, ChevronsUp, ChevronsDown, Copy, Pencil, Eraser } from 'lucide-react';
 import { ToolMode } from './tools/types';
 
 // 切换到这些工具时保留选区（先选对象 → 再选变换工具的 GeoGebra 工作流）
@@ -1033,12 +1034,67 @@ export const GeometryCanvas: React.FC = () => {
     // 隐藏对象/导航未到的对象不弹菜单
     const els = kernel.getConstruction().getElements().filter(el => el.isEffectivelyVisible() && (navStep === null || el.constIndex <= navStep));
     const hit = hitScreenObject(els, world.x, world.y, coord.xScale);
-    if (!hit) { setContextMenuState(null); return; }
+    if (!hit) {
+      // 空白右键：有轨迹残影时提供清除入口（对标 GeoGebra「重新绘制所有对象」）
+      const hasTraces = kernel.getConstruction().getElements().some(el => el.trace && traceRecorder.getStamps(() => true).length > 0);
+      if (hasTraces) {
+        setContextMenuState({
+          x: screenX, y: screenY,
+          items: [{
+            id: 'clearTraces',
+            label: t('ctxClearTraces'),
+            icon: Eraser,
+            onClick: () => { traceRecorder.clear(); setRenderRev(r => r + 1); },
+          }],
+        });
+      } else setContextMenuState(null);
+      return;
+    }
 
     const items = [] as import('./ContextMenu').ContextMenuItem[];
     items.push({ id: 'delete', label: t('ctxDelete'), icon: Trash2, onClick: () => deleteWithDependents([hit]) });
     // 重定义（对标 GeoGebra ContextMenuGeoElement → Redefine）：画布内输入新定义式，
     // 代数输入的同一条重定义路径（rebuildReplace）在此复用
+    // Attach/Detach（对标官方 MODE_ATTACH_DETACH 的右键路径）：附着 = 重定义为
+    // PointOn（位置经 updateParameter 保持），脱离 = 重定义为同坐标自由点——
+    // 两者都走 rebuildReplace，依赖者保留
+    if (hit instanceof GeoPoint && hit.isIndependent()) {
+      const worldHere = coord.screenToWorld(screenX, screenY);
+      const pathEl = hitScreenObject(els.filter(el => el !== hit && el instanceof GeoElement && ((el as GeoElement).isOnPath?.(hit as GeoPoint, 8 / coord.xScale) || false)) as GeoElement[], worldHere.x, worldHere.y, coord.xScale)
+        ?? els.find(el => el instanceof GeoElement && el !== hit && el.visible !== false && (el as GeoElement).isOnPath?.(hit as GeoPoint, 8 / coord.xScale)) as GeoElement | undefined;
+      const carrier = pathEl ?? null;
+      if (carrier && carrier.label) {
+        items.push({
+          id: 'attach',
+          label: t('ctxAttach'),
+          icon: Pencil,
+          onClick: () => {
+            try {
+              const elements = parseAlgebraInput(kernel, `${hit.label} = PointOn(${carrier.label})`);
+              // 位置保持：附着后把参数解到原坐标
+              const algo = elements.find(el => el instanceof AlgoElement && 'updateParameter' in el) as unknown as { updateParameter(x: number, y: number): void; update(): void } | undefined;
+              const pt = elements.find(el => el instanceof GeoPoint && (el as GeoPoint).label === hit.label) as GeoPoint | undefined;
+              if (algo && pt) { algo.updateParameter(hit.getX(), hit.getY()); algo.update(); kernel.recomputeDependents(pt); }
+              setRenderRev(r => r + 1);
+            } catch (err) { alert(err instanceof Error ? err.message : String(err)); }
+          },
+        });
+      }
+    }
+    if (hit instanceof GeoPoint && !hit.isIndependent() && hit.parentAlgo?.getClassName().startsWith('AlgoPointOn')) {
+      items.push({
+        id: 'detach',
+        label: t('ctxDetach'),
+        icon: Pencil,
+        onClick: () => {
+          try {
+            const elements = parseAlgebraInput(kernel, `${hit.label} = (${hit.getX()}, ${hit.getY()})`);
+            handleAlgebraElementsCreated(elements);
+            setRenderRev(r => r + 1);
+          } catch (err) { alert(err instanceof Error ? err.message : String(err)); }
+        },
+      });
+    }
     items.push({
       id: 'redefine',
       label: t('ctxRedefine'),

@@ -348,3 +348,76 @@ describe('2D 函数拖拽（moveFunction 语义）', () => {
     expect(f2.evaluateAt(2)).toBeCloseTo(f.evaluateAt(2), 9);
   });
 });
+
+describe('Tangent(P, f) 活切线', () => {
+  it('切线作于点的横坐标处，点动切线跟随', () => {
+    const k = new Kernel();
+    addInput(k, 'f(x) = x²');
+    makePoint(k, 2, 0, 'P');
+    addInput(k, 't = Tangent(P, f)');
+    const line = byLabel<GeoLine>(k, 't');
+    // f'(2) = 4，f(2) = 4 → y = 4x - 4
+    expect(line.b === 0 ? Infinity : -line.a / line.b).toBeCloseTo(4, 6);
+    makePoint; // noop
+    byLabel<GeoPoint>(k, 'P').setCoords(3, 0, 1);
+    k.flushNow();
+    const line2 = byLabel<GeoLine>(k, 't');
+    expect(line2.b === 0 ? Infinity : -line2.a / line2.b).toBeCloseTo(6, 6);
+  });
+});
+
+describe('Attach / Detach（附着/脱离，经重定义路径）', () => {
+  it('附着：自由点重定义为 PointOn 后落在路径上并跟随', () => {
+    const k = new Kernel();
+    makePoint(k, 0, 0, 'A');
+    makePoint(k, 4, 0, 'B');
+    addInput(k, 's = Segment(A, B)');
+    makePoint(k, 2, 3, 'P'); // 自由点，不在段上
+    addInput(k, 'P = PointOn(s)'); // 附着
+    const p = byLabel<GeoPoint>(k, 'P');
+    expect(p.isIndependent()).toBe(false);
+    // 段上某处
+    expect(p.getY()).toBeCloseTo(0, 6);
+    expect(p.getX()).toBeGreaterThanOrEqual(0);
+    expect(p.getX()).toBeLessThanOrEqual(4);
+  });
+
+  it('脱离：PointOn 点重定义为同坐标自由点', () => {
+    const k = new Kernel();
+    makePoint(k, 0, 0, 'A');
+    makePoint(k, 4, 0, 'B');
+    addInput(k, 's = Segment(A, B)');
+    addInput(k, 'P = PointOn(s)');
+    const p0 = byLabel<GeoPoint>(k, 'P');
+    const x0 = p0.getX();
+    addInput(k, `P = (${x0}, 1)`); // 脱离为自由点
+    const p = byLabel<GeoPoint>(k, 'P');
+    expect(p.isIndependent()).toBe(true);
+    expect(p.getX()).toBeCloseTo(x0, 6);
+    expect(p.getY()).toBeCloseTo(1, 6);
+  });
+});
+
+describe('Trace 扩容（线/函数/非圆二次曲面）', () => {
+  it('直线/函数产生签名与 stamp', async () => {
+    const { elementTraceSignature, elementTraceStamps, TraceRecorder } = await import('../components/TraceLayer');
+    const { CoordinateSystem } = await import('../kernel/core/CoordinateSystem');
+    const coord = new CoordinateSystem(800, 600, 400, 300, 50, 50);
+    const k = new Kernel();
+    addInput(k, '2x + 3y = 6');
+    addInput(k, 'fn(x) = x²/4');
+    const line = k.getConstruction().getElements().find(e => e instanceof GeoLine) as GeoLine;
+    const fn = k.getConstruction().getElements().find(e => e instanceof GeoFunction) as GeoFunction;
+    (line as any).trace = true;
+    (fn as any).trace = true;
+    expect(elementTraceSignature(line)).not.toBeNull();
+    expect(elementTraceSignature(fn)).not.toBeNull();
+    const stamps = [...(elementTraceStamps(line, coord) ?? []), ...(elementTraceStamps(fn, coord) ?? [])];
+    expect(stamps.length).toBe(2);
+    expect(stamps.every(st => st.data.length >= 4)).toBe(true);
+    // 录入与容量
+    const rec = new TraceRecorder();
+    rec.update([line, fn], coord);
+    expect(rec.getStamps(() => true).length).toBeGreaterThanOrEqual(2);
+  });
+});

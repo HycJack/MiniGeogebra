@@ -106,9 +106,9 @@ export class AlgoPointOnCurve extends AlgoElement {
 export class AlgoTangentFunctionNumber extends AlgoElement {
   private outputLine: GeoLine;
   private fPrime: ExpressionNode;
-  private at: number | GeoNumeric;
+  private at: number | GeoNumeric | GeoPoint;
 
-  constructor(kernel: IKernel, private fn: GeoFunction, at: number | GeoNumeric) {
+  constructor(kernel: IKernel, private fn: GeoFunction, at: number | GeoNumeric | GeoPoint) {
     super(kernel);
     this.at = at;
     this.fPrime = differentiate(fn.expression, fn.variableName);
@@ -123,11 +123,14 @@ export class AlgoTangentFunctionNumber extends AlgoElement {
 
   getOutput(): GeoLine { return this.outputLine; }
 
-  getAtValue(): number | GeoNumeric { return this.at; }
+  getAtValue(): number | GeoNumeric | GeoPoint { return this.at; }
 
   compute(): void {
     this.outputLine.setUndefined();
-    const a = typeof this.at === 'number' ? this.at : this.at.getValue();
+    // 切点横坐标：常量 / 滑块 / 点（Tangent(P, f)——点移动时切线跟随）
+    const a = typeof this.at === 'number' ? this.at
+      : this.at instanceof GeoPoint ? this.at.getX()
+      : this.at.getValue();
     const y = this.fn.evaluateAt(a);
     const scope = this.buildScope(a);
     const m = evaluateInto(this.fPrime, scope);

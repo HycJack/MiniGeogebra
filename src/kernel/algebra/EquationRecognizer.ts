@@ -2225,6 +2225,14 @@ const dispatchCommand = (
         assignOutputLabels(ctx, algo.getGeoElements());
         return [algo, ...algo.getGeoElements()];
       }
+      // Tangent(P, f) / Tangent(f, P)：函数在点的横坐标处的切线（活依赖：点动切线跟随）
+      const pt0 = ctx.findPoint(target);
+      const fn1 = ctx.findFunction(args[1].trim());
+      if (pt0 && fn1) {
+        const algo = new AlgoTangentFunctionNumber(kernel, fn1, pt0);
+        assignOutputLabels(ctx, algo.getGeoElements());
+        return [algo, ...algo.getGeoElements()];
+      }
       // Tangent(P, conic)：过点作圆锥曲线的切线（极线法）
       const point = ctx.findPoint(target);
       const conic = ctx.findConic(args[1].trim());
@@ -2233,7 +2241,7 @@ const dispatchCommand = (
         assignOutputLabels(ctx, algo.getGeoElements());
         return [algo, ...algo.getGeoElements()];
       }
-      throw new Error(`Tangent expects (function|curve, number) or (point, conic)`);
+      throw new Error(`Tangent expects (function|curve, number|point) or (point, conic)`);
     }
 
     case 'Curvature':

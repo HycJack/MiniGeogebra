@@ -189,11 +189,11 @@ describe('TraceLayer：签名 / stamp / 记录器', () => {
     expect(stamps[0].data[1]).toBeCloseTo(250, 6);
   });
 
-  it('直线/函数不可追踪（签名 null）', () => {
+  it('直线可追踪（2026-10-26 Trace 扩容：签名来自系数）', () => {
     const kernel = makeKernel();
     const line = new GeoLine(kernel, 0, 1, 0);
     kernel.getConstruction().addElement(line);
-    expect(elementTraceSignature(line)).toBeNull();
+    expect(elementTraceSignature(line)).toContain('l:');
   });
 
   it('TraceRecorder：位置变化追加深影，容量截断，prune/clear 生效', () => {

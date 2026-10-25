@@ -14,23 +14,26 @@ import { GeoSegment } from '../kernel/geo/GeoSegment';
 import { GeoVector } from '../kernel/geo/GeoVector';
 import { GeoPolygon } from '../kernel/geo/GeoPolygon';
 import { GeoConic } from '../kernel/geo/GeoConic';
+import { GeoLine } from '../kernel/geo/GeoLine';
+import { GeoFunction } from '../kernel/geo/GeoFunction';
+import { GeoCurve } from '../kernel/geo/GeoCurve';
 import { CoordinateSystem } from '../kernel/core/CoordinateSystem';
 
 /** 单条轨迹残影（屏幕坐标）。 */
 export interface TraceStamp {
-  kind: 'point' | 'line' | 'circle' | 'polygon';
+  kind: 'point' | 'line' | 'circle' | 'polygon' | 'polyline';
   /** point: [sx, sy]；line: [sx1, sy1, sx2, sy2]；circle: [sx, sy, sr]；polygon: [sx, sy, …] */
   data: number[];
   color: string;
 }
 
 /** 每个对象保留的最大残影数（约等于最近 N 次位置变化）。 */
-export const MAX_STAMPS_PER_ELEMENT = 150;
+export const MAX_STAMPS_PER_ELEMENT = 600; // 30fps ≈ 20 秒残影（此前 150 ≈ 5 秒）
 
 const p = (v: number): number => Math.round(v * 100) / 100;
 
 /** 位置签名：变化才追加深影；不可追踪类型返回 null。 */
-export function elementTraceSignature(el: GeoElement): string | null {
+export function elementTraceSignature(el: GeoElement, coord?: CoordinateSystem): string | null {
   if (el instanceof GeoPoint) return `p:${p(el.getX())},${p(el.getY())}`;
   if (el instanceof GeoSegment) {
     return `s:${p(el.startPoint.getX())},${p(el.startPoint.getY())},${p(el.endPoint.getX())},${p(el.endPoint.getY())}`;
@@ -45,7 +48,44 @@ export function elementTraceSignature(el: GeoElement): string | null {
     const c = el.getCenter();
     return `c:${p(c.x)},${p(c.y)},${p(el.getRadius())}`;
   }
+  if (el instanceof GeoLine) {
+    return `l:${p(el.a)},${p(el.b)},${p(el.c)}`;
+  }
+  if (el instanceof GeoConic) {
+    // 非圆二次曲线：系数即位置（整体乘常数不影响形状，取比值签名）
+    const [A, B, C, D, E, F] = el.coeffs;
+    const base = Math.max(Math.abs(A), Math.abs(B), Math.abs(C), Math.abs(D), Math.abs(E), Math.abs(F), 1e-12);
+    return `q:${[A, B, C, D, E, F].map(v => p(v / base)).join(',')}`;
+  }
+  if (el instanceof GeoFunction) {
+    const sig = sampleFnSignature(el);
+    return sig ? `f:${sig}` : null;
+  }
+  if (el instanceof GeoCurve) {
+    const sig = sampleCurveSignature(el);
+    return sig ? `u:${sig}` : null;
+  }
   return null;
+}
+
+/** 函数位置签名：可视区采样折线（表达式相同的函数位置未必相同——依赖滑块）。 */
+function sampleFnSignature(fn: GeoFunction, coord?: CoordinateSystem): string | null {
+  const { minX, maxX } = visibleRangeX(coord);
+  const samples = fn.updateSamples(minX, maxX, 120);
+  if (samples.length < 2) return null;
+  return samples.filter(s => Number.isFinite(s.y)).map(s => `${p(s.x)},${p(s.y)}`).join(';');
+}
+
+function sampleCurveSignature(curve: GeoCurve): string | null {
+  const samples = curve.updateSamples(120);
+  if (samples.length < 2) return null;
+  return samples.filter(s => Number.isFinite(s.x) && Number.isFinite(s.y)).map(s => `${p(s.x)},${p(s.y)}`).join(';');
+}
+
+function visibleRangeX(coord?: CoordinateSystem): { minX: number; maxX: number } {
+  if (!coord) return { minX: -10, maxX: 10 };
+  const b = coord.visibleWorldBounds();
+  return { minX: b.minX, maxX: b.maxX };
 }
 
 /** 世界坐标 → 屏幕坐标的 stamp 数据；不可追踪返回 null。 */
@@ -75,6 +115,44 @@ export function elementTraceStamps(el: GeoElement, coord: CoordinateSystem): Tra
     const c = el.getCenter();
     return [{ kind: 'circle', data: [sx(c.x), sy(c.y), el.getRadius() * coord.xScale], color }];
   }
+  if (el instanceof GeoConic) {
+    const pts = el.samplePoints(90).filter(pt => Number.isFinite(pt.x) && Number.isFinite(pt.y));
+    if (pts.length < 2) return null;
+    return [{ kind: 'polyline', data: pts.flatMap(pt => [sx(pt.x), sy(pt.y)]), color }];
+  }
+  if (el instanceof GeoLine) {
+    // 无限直线：截距点 + 方向按可视区宽度延伸（屏幕坐标）
+    const len = Math.hypot(el.a, el.b);
+    if (len < 1e-12) return null;
+    let ax: number, ay: number;
+    if (Math.abs(el.b) > 1e-9) { ax = 0; ay = -el.c / el.b; } else { ax = -el.c / el.a; ay = 0; }
+    const dx = -el.b / len, dy = el.a / len;
+    const half = (coord.visibleWorldBounds().maxX - coord.visibleWorldBounds().minX) + (coord.visibleWorldBounds().maxY - coord.visibleWorldBounds().minY);
+    return [{
+      kind: 'line',
+      data: [sx(ax - dx * half), sy(ay - dy * half), sx(ax + dx * half), sy(ay + dy * half)],
+      color,
+    }];
+  }
+  if (el instanceof GeoFunction) {
+    const b = coord.visibleWorldBounds();
+    const samples = el.updateSamples(b.minX, b.maxX, 240);
+    const data: number[] = [];
+    for (const smp of samples) {
+      if (!Number.isFinite(smp.y)) continue;
+      data.push(sx(smp.x), sy(smp.y));
+    }
+    return data.length >= 4 ? [{ kind: 'polyline', data, color }] : null;
+  }
+  if (el instanceof GeoCurve) {
+    const samples = el.updateSamples(180);
+    const data: number[] = [];
+    for (const smp of samples) {
+      if (!Number.isFinite(smp.x) || !Number.isFinite(smp.y)) continue;
+      data.push(sx(smp.x), sy(smp.y));
+    }
+    return data.length >= 4 ? [{ kind: 'polyline', data, color }] : null;
+  }
   return null;
 }
 
@@ -89,8 +167,8 @@ export class TraceRecorder {
   update(els: readonly GeoElement[], coord: CoordinateSystem): boolean {
     let changed = false;
     for (const el of els) {
-      if (!el.trace || el.visible === false) continue;
-      const sig = elementTraceSignature(el);
+      if (!el.trace || !el.isEffectivelyVisible()) continue;
+      const sig = elementTraceSignature(el, coord);
       if (sig === null) continue;
       if (this.signatures.get(el.id) === sig) continue;
       this.signatures.set(el.id, sig);
@@ -164,6 +242,11 @@ export function drawTraceStamps(ctx: CanvasRenderingContext2D, stamps: readonly 
       ctx.moveTo(stamp.data[0], stamp.data[1]);
       for (let i = 2; i < stamp.data.length; i += 2) ctx.lineTo(stamp.data[i], stamp.data[i + 1]);
       ctx.closePath();
+      ctx.stroke();
+    } else if (stamp.kind === 'polyline') {
+      ctx.beginPath();
+      ctx.moveTo(stamp.data[0], stamp.data[1]);
+      for (let i = 2; i < stamp.data.length; i += 2) ctx.lineTo(stamp.data[i], stamp.data[i + 1]);
       ctx.stroke();
     }
   }

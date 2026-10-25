@@ -44,7 +44,17 @@ const CanvasOverlay: React.FC<CanvasOverlayProps> = ({
         const screenX = element.x * coord.xScale + coord.xZero;
         const screenY = coord.yZero - element.y * coord.yScale;
 
-        const handleUIDragStart = (e: React.MouseEvent) => {
+        /** 滑块显示值：绑定内核数值时读其当前值（动画/重定义后保持同步），否则用 UI 状态。 */
+  const sliderLiveValue = (el: UIElement): number => {
+    if (el.numericLabel && kernel) {
+      const numeric = kernel.getConstruction().getElements()
+        .find(n => n instanceof GeoNumeric && (n as GeoNumeric).label === el.numericLabel) as GeoNumeric | undefined;
+      if (numeric && Number.isFinite(numeric.getValue())) return numeric.getValue();
+    }
+    return el.value ?? 0;
+  };
+
+  const handleUIDragStart = (e: React.MouseEvent) => {
           e.stopPropagation();
           setDraggingUIElement(element.id);
         };
@@ -112,7 +122,7 @@ const CanvasOverlay: React.FC<CanvasOverlayProps> = ({
                 min={element.min}
                 max={element.max}
                 step={element.step}
-                value={element.value}
+                value={sliderLiveValue(element)}
                 onChange={(e) => {
                   e.stopPropagation();
                   const val = Number(e.target.value);
@@ -133,7 +143,7 @@ const CanvasOverlay: React.FC<CanvasOverlayProps> = ({
                 className="w-32"
                 onMouseDown={(e) => e.stopPropagation()}
               />
-              <div className="text-xs text-gray-600 mt-1 text-center">{element.value}</div>
+              <div className="text-xs text-gray-600 mt-1 text-center">{sliderLiveValue(element)}</div>
             </div>
           );
         } else if (element.type === 'button') {
