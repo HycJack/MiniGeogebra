@@ -12,6 +12,7 @@ import { GeoConic } from '../geo/GeoConic';
 import { GeoConicPart, CONIC_PART_SEGMENT } from '../geo/GeoConicPart';
 import { GeoPolygon } from '../geo/GeoPolygon';
 import { GeoNumeric } from '../geo/GeoNumeric';
+import { GeoFunction } from '../geo/GeoFunction';
 import { GeoVec3D } from '../core/GeoVec3D';
 import { GeoArc } from '../geo/GeoArc';
 import { GeoRay } from '../geo/GeoRay';
@@ -416,6 +417,13 @@ export function applyTransformed(result: GeoElement, source: GeoElement, op: Tra
 /** 按类型重建经变换后的几何副本（变换对象自身不变）。 */
 export function buildTransformed(kernel: IKernel, input: GeoElement, op: TransOp, arg: any): GeoElement {
   if (input instanceof GeoPoint) return transformPoint(input, op, arg);
+  if (input instanceof GeoFunction && op !== 'translate') {
+    // Rotate/Dilate/Mirror/Invert/Shear/Stretch 作用在函数上的像一般不是函数
+    // （如旋转 90° 的抛物线）——此前落到末尾静默 return input（输出=原函数，
+    // 变换"看似成功实则恒等"）。Translate 有函数语义（表达式平移）。显式报错与
+    // Shear 对函数的处理一致。
+    throw new Error(`${op} is not supported for functions (use Translate or a Curve instead)`);
+  }
   if (input instanceof GeoNumeric) {
     const copy = new GeoNumeric(kernel, input.getValue());
     // 标签交给调用方统一分配（assignOutputLabel / assignNextLabel）——

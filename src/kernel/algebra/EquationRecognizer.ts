@@ -56,6 +56,7 @@ import { AlgoMidpoint } from '../algo/AlgoMidpoint';
 import { AlgoIntersect } from '../algo/AlgoIntersect';
 import { AlgoIntersectFunctions, INTERSECT_FUNCTIONS_CAPACITY } from '../algo/AlgoIntersectFunctions';
 import { AlgoPolygonBoolean } from '../algo/AlgoPolygonBoolean';
+import { AlgoPolygonPoints } from '../algo/AlgoPolygonPoints';
 import { GeoBooleanRegion } from '../geo/GeoBooleanRegion';
 import { AlgoDistance } from '../algo/AlgoDistance';
 import { AlgoSlope } from '../algo/AlgoSlope';
@@ -146,7 +147,7 @@ const COMMAND_ARITY: Record<string, [number, number]> = {
   Rotate: [2, 3],
   FitPoly: [3, 12],
   Text: [2, 4],
-  Angle: [3, 3],
+  Angle: [2, 3], // 2 = 两线角 Angle(l1,l2)，3 = 三点角
   Slider: [0, 5],
   DirectedAngle: [3, 3],
   Dilate: [2, 3],
@@ -2081,9 +2082,11 @@ const dispatchCommand = (
 
     case 'Polygon': {
       const pts = args.map(arg => resolvePointArg(ctx, arg));
-      const poly = new GeoPolygon(kernel, pts);
+      // 有 Algo 的多边形：顶点→多边形的正向依赖边随之注册（拖顶点/删除级联才生效）
+      const algo = new AlgoPolygonPoints(kernel, pts);
+      const poly = algo.getOutput();
       poly.label = ctx.construction.getNextPolygonLabel(ctx.existingLabels);
-      return [poly];
+      return [algo, poly];
     }
 
     case 'TaylorSeries': {
@@ -2153,6 +2156,7 @@ const dispatchCommand = (
       const fn = ctx.findFunction(label);
       const curve = ctx.findCurve(label);
       const ray = construction.getElements().find(el => el instanceof GeoRay && (el as GeoRay).label === label) as GeoRay | undefined;
+      // GeoArc extends GeoConic：arc 必须在 conic 分支前取（否则弧被当圆锥曲线处理，扫窗丢失）
       const arc = construction.getElements().find(el => el instanceof GeoArc && (el as GeoArc).label === label) as GeoArc | undefined;
       const line3 = ctx.findLine3D(label);
       const circle3 = ctx.findCircle3D(label);
@@ -2171,6 +2175,9 @@ const dispatchCommand = (
       } else if (fn) {
         param.setValue(0);
         algo = new AlgoPointOnFunction(kernel, fn, param);
+      } else if (arc) {
+        param.setValue((arc.getStartAngle() + arc.getEndAngle()) / 2);
+        algo = new AlgoPointOnArc(kernel, arc, param);
       } else if (conic) {
         param.setValue(0);
         algo = new AlgoPointOnConic(kernel, conic, param);
@@ -2189,9 +2196,6 @@ const dispatchCommand = (
       } else if (ray) {
         param.setValue(1);
         algo = new AlgoPointOnRay(kernel, ray, param);
-      } else if (arc) {
-        param.setValue((arc.getStartAngle() + arc.getEndAngle()) / 2);
-        algo = new AlgoPointOnArc(kernel, arc, param);
       } else if (line instanceof GeoSegment) {
         // findLine 按 GeoLine 匹配，线段会落进这里——必须用段参数 [0,1] 的专用算法
         param.setValue(0.5);

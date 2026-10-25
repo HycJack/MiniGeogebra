@@ -47,7 +47,7 @@ export function isConicDegenerate(coeffs: number[]): boolean {
   if (qmag === 0) return true; // 无二次项：本身是直线（或空集）
 
   const detQ = A * C - (B * B) / 4;
-  if (Math.abs(detQ) < 1e-10 * qmag * qmag) {
+  if (Math.abs(detQ) < 1e-8 * qmag * qmag) {
     // 二次型降秩：抛物线型或一对平行线
     const halfB = B / 2;
     const sqrtDisc = Math.sqrt(((A - C) / 2) ** 2 + halfB * halfB);
@@ -280,6 +280,38 @@ export function intersectConicConic(
   coeffs1: number[],
   coeffs2: number[],
 ): { x: number; y: number }[] {
+  // 圆×圆特判（对标官方 equalSubmatrixS 根轴法）：Plücker pencil 在内切（重根）
+  // 附近的分解对数值误差敏感——内切时混合矩阵二次项整体消失，退化为虚平行线
+  // 拿不到切点。根轴 + 一元二次在全部 0/1/2 交点情形下稳定。
+  const circleOf = (c: number[]): { h: number; k: number; r: number } | null => {
+    const [A, B, C, D, E, F] = c;
+    if (Math.abs(B) > 1e-12 * Math.max(1, Math.abs(A), Math.abs(C))) return null;
+    if (Math.abs(A - C) > 1e-12 * Math.max(1, Math.abs(A), Math.abs(C)) || Math.abs(A) < 1e-12) return null;
+    const h = -D / (2 * A), k = -E / (2 * A);
+    const r2 = h * h + k * k - F / A;
+    return r2 >= -1e-12 ? { h, k, r: Math.sqrt(Math.max(0, r2)) } : null;
+  };
+  const c1 = circleOf(coeffs1);
+  const c2 = circleOf(coeffs2);
+  if (c1 && c2) {
+    const dx = c2.h - c1.h, dy = c2.k - c1.k;
+    const d = Math.hypot(dx, dy);
+    const r1 = c1.r, r2 = c2.r;
+    if (d < 1e-12) return []; // 同心
+    if (d > r1 + r2 + 1e-9 || d < Math.abs(r1 - r2) - 1e-9) return []; // 相离/内含
+    // 根轴上的交点：沿连心线参数化
+    const a = (r1 * r1 - r2 * r2 + d * d) / (2 * d);
+    const h2 = r1 * r1 - a * a;
+    const mid = { x: c1.h + (a * dx) / d, y: c1.k + (a * dy) / d };
+    if (h2 < -1e-9 * Math.max(1, r1 * r1)) return []; // 数值上的相离
+    if (h2 <= 0 || Math.abs(h2) < 1e-12 * Math.max(1, r1 * r1)) return [mid]; // 相切（含/外）
+    const hh = Math.sqrt(h2);
+    return [
+      { x: mid.x - (hh * dy) / d, y: mid.y + (hh * dx) / d },
+      { x: mid.x + (hh * dy) / d, y: mid.y - (hh * dx) / d },
+    ];
+  }
+
   const M1 = conicMatrix(coeffs1);
   const M2 = conicMatrix(coeffs2);
 
@@ -385,7 +417,9 @@ export function analyzeConic(coeffs: number[]): CanonicalConic | null {
   // 中心/抛物线的分界只看二次块（平移不变量）。此前 relDetQ 把 |F| 混进
   // 基准，远离原点的曲线 F 巨大，正常圆会被推进抛物线分支后判 null。
   const detQ = A * C - halfB * halfB;
-  if (Math.abs(detQ) > 1e-10 * qmag * qmag) {
+  // 分界阈值 1e-8（相对）：平移+旋转+缩放组合变换会在判别式上留下 ~1e-12 的
+  // 相对噪声，此前 1e-10 的阈值把真抛物线误判成双曲线（分类与下游属性全错）
+  if (Math.abs(detQ) > 1e-8 * qmag * qmag) {
     // ---- 中心型 ----
     const denom = 4 * detQ;
     const center = {

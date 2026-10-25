@@ -33,6 +33,7 @@ import { AlgoTangent } from '../algo/AlgoTangent';
 import { AlgoLocus } from '../algo/AlgoLocus';
 import { AlgoLocus3D } from '../algo/AlgoLocus3D';
 import { AlgoPolygonBoolean } from '../algo/AlgoPolygonBoolean';
+import { AlgoPolygonPoints } from '../algo/AlgoPolygonPoints';
 import { GeoBooleanRegion } from '../geo/GeoBooleanRegion';
 import { GeoMesh3D } from '../geo/GeoMesh3D';
 import { AlgoVector } from '../algo/AlgoVector';
@@ -612,6 +613,10 @@ export function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], s
       return new AlgoPolyhedronNet(kernel, inputs[0] as GeoPolyhedron3D, factor, scalars?.[0]);
     }
     // C11 多边形布尔：scalars[0] 0=union 1=intersection 2=difference 3=xor
+    case 'AlgoPolygonPoints': {
+      // 顶点即输入（GeoPoint[]）；输出在 createAlgo 之后由调用方 addElement
+      return new AlgoPolygonPoints(kernel, inputs as import('../geo/GeoPoint').GeoPoint[]);
+    }
     case 'AlgoPolygonBoolean': {
       const ops = ['union', 'intersection', 'difference', 'xor'] as const;
       const op = ops[scalars?.[0] ?? 0] ?? 'union';
@@ -885,9 +890,12 @@ export function deserialize(kernel: Kernel, json: string): { coord?: CoordinateS
         continue;
       }
       try {
-        const poly = new GeoPolygon(kernel, verts as GeoPoint[]);
+        // 经 AlgoPolygonPoints 重建：恢复顶点→多边形依赖边（否则重载后拖顶点联动失效）
+        const algo = new AlgoPolygonPoints(kernel, verts as GeoPoint[]);
+        const poly = algo.getOutput();
         poly.label = stub.label;
         restoreStyle(poly, stub.style);
+        construction.addElement(algo);
         construction.addElement(poly);
         index.set(stub.constIndex, poly);
       } catch (e) {

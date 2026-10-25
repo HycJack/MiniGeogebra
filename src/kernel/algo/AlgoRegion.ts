@@ -118,9 +118,9 @@ export class AlgoIsInRegion extends AlgoElement {
 
   compute(): void {
     const region = this.region as unknown as Region;
-    const inside = typeof region.isInRegion === 'function'
-      ? region.isInRegion(this.point)
-      : region.isInRegionXY(this.point.getX(), this.point.getY());
+    // 优先 isInRegionXY：GeoConic 只覆写了 XY 版本，isInRegion 是基类恒 false 桩
+    // （此前圆/椭圆/不等式区域的 IsInRegion 恒返回 0）
+    const inside = region.isInRegionXY(this.point.getX(), this.point.getY());
     (this.output[0] as GeoNumeric).setValue(inside ? 1 : 0);
   }
 }

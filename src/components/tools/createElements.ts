@@ -22,7 +22,8 @@ import { AlgoPointOnLine } from '../../kernel/algo/AlgoPointOnLine';
 import { AlgoPointOnConic } from '../../kernel/algo/AlgoPointOnConic';
 import { AlgoPointOnPolyLine } from '../../kernel/algo/AlgoPointOnPolyLine';
 import { AlgoPointOnRay } from '../../kernel/algo/AlgoPointOnRay';
-import { AlgoPointOnArc } from '../../kernel/algo/AlgoPointOnArc';import { AlgoPointOnCurve } from '../../kernel/algo/AlgoCurveFamily';
+import { AlgoPointOnArc } from '../../kernel/algo/AlgoPointOnArc';
+import { AlgoPointOnCurve } from '../../kernel/algo/AlgoCurveFamily';
 import { AlgoPointOnFunction } from '../../kernel/algo/AlgoPointOnFunction';
 
 /** 创建一个带唯一标签的独立点（A, B, C, D...）。 */
@@ -74,9 +75,12 @@ export function createParameterPointOnPath(
   } else if (path instanceof GeoLine) {
     param.intervalMin = -10; param.intervalMax = 10;
     algo = new AlgoPointOnLine(kernel, path, param);
-  } else if (path instanceof GeoConic) {
-    param.intervalMin = 0; param.intervalMax = 2 * Math.PI;
-    algo = new AlgoPointOnConic(kernel, path, param);
+  } else if (path instanceof GeoArc) {
+    // 圆弧参数 = 起止角区间（GeoArc extends GeoConic，必须先于 Conic 分支，否则弧分支死代码）
+    param.intervalMin = path.getStartAngle();
+    param.intervalMax = path.getEndAngle();
+    param.animationIncrement = 0;
+    algo = new AlgoPointOnArc(kernel, path, param);
   } else if (path instanceof GeoRay) {
     // 射线：t 为距原点弧长（AlgoPointOnRay 内部夹取 t≥0）
     param.intervalMin = 0; param.intervalMax = 10;
@@ -84,12 +88,6 @@ export function createParameterPointOnPath(
   } else if (path instanceof GeoPolyLine) {
     param.intervalMin = 0; param.intervalMax = path.vertices.length - 1;
     algo = new AlgoPointOnPolyLine(kernel, path, param);
-  } else if (path instanceof GeoArc) {
-    // 圆弧参数 = 起止角区间（Path 接口与圆锥曲线同构）
-    param.intervalMin = path.getStartAngle();
-    param.intervalMax = path.getEndAngle();
-    param.animationIncrement = 0;
-    algo = new AlgoPointOnArc(kernel, path, param);
   } else if (path instanceof GeoCurve) {
     // 参数曲线：参数区间即定义域
     param.intervalMin = path.getMinParameter();

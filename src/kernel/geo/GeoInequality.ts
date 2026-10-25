@@ -38,6 +38,8 @@ export class GeoInequality extends GeoElement {
     return evaluate(this.lhs, scope) - evaluate(this.rhs, scope);
   }
 
+  isInRegionXY(x: number, y: number): boolean { return this.satisfied(x, y); }
+
   satisfied(x: number, y: number): boolean {
     const g = this.evaluateDiff(x, y);
     if (!Number.isFinite(g)) return false;

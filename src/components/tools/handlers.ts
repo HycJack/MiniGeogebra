@@ -37,6 +37,7 @@ import {
 import { AlgoElement } from '../../kernel/algo/AlgoElement';
 import { GeoNumeric } from '../../kernel/geo/GeoNumeric';
 import { AlgoRayTwoPoints } from '../../kernel/algo/AlgoRayTwoPoints';
+import { AlgoPolygonPoints } from '../../kernel/algo/AlgoPolygonPoints';
 import {
   AlgoVector, AlgoPolyLine, AlgoSemicircle, AlgoCircularSector,
   AlgoCircumcircularArc, AlgoCircumcircularSector, AlgoSlope, AlgoEllipse, AlgoHyperbola,
@@ -512,14 +513,18 @@ export const handlePointerDown = (
       const pts = ctx.polygonPoints ?? [];
       if (pHit) {
         if (pts.length > 2 && pHit === pts[0]) {
-          const poly = new GeoPolygon(kernel, [...pts]);
+          // 有 Algo 的多边形：注册顶点→多边形依赖边（拖顶点 Area/周长/变换像才联动）
+          const polyAlgo = new AlgoPolygonPoints(kernel, [...pts]);
+          const poly = polyAlgo.getOutput();
           poly.label = construction.getNextPolygonLabel();
+          kernel.getConstruction().addElement(polyAlgo);
           kernel.getConstruction().addElement(poly);
           for (let i = 0; i < pts.length; i++) {
             const seg = new AlgoSegmentTwoPoints(kernel, pts[i], pts[(i + 1) % pts.length]);
             kernel.getConstruction().addElement(seg);
             kernel.getConstruction().addElement(seg.getOutput());
           }
+          polyAlgo.update();
           kernel.notifyUpdate(poly);
           // 顶点已归属多边形：清掉"本工具新建"记录，之后 Escape 不得回收它们
           ctx.polygonCreatedPoints?.splice(0);

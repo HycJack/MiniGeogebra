@@ -73,7 +73,10 @@ export class AlgoConicFocus extends AlgoConicPropertyBase {
       return 1;
     }
     const dir = dirAt(c.majorAngle!);
-    const c0 = Math.sqrt(Math.abs(c.a! * c.a! - c.b! * c.b!));
+    // 半焦距：椭圆 c²=a²−b²；双曲线 c²=a²+b²（此前误用 |a²−b²|，双曲线焦点/离心率/准线全错）
+    const c0 = c.type === 'hyperbola'
+      ? Math.sqrt(c.a! * c.a! + c.b! * c.b!)
+      : Math.sqrt(Math.abs(c.a! * c.a! - c.b! * c.b!));
     f1.setCoords(c.center!.x + c0 * dir.x, c.center!.y + c0 * dir.y, 1);
     f2.setCoords(c.center!.x - c0 * dir.x, c.center!.y - c0 * dir.y, 1);
     return 2;
@@ -155,7 +158,9 @@ export class AlgoConicDirectrix extends AlgoConicPropertyBase {
     }
     if (c.type === 'circle') return 0;
     const dir = dirAt(c.majorAngle!);
-    const c0 = Math.sqrt(Math.abs(c.a! * c.a! - c.b! * c.b!));
+    const c0 = c.type === 'hyperbola'
+      ? Math.sqrt(c.a! * c.a! + c.b! * c.b!)
+      : Math.sqrt(Math.abs(c.a! * c.a! - c.b! * c.b!));
     const offset = c.a! * c.a! / c0; // a/e = a²/c0
     d1.a = dir.x;
     d1.b = dir.y;
@@ -212,7 +217,9 @@ export class AlgoConicEccentricity extends AlgoConicPropertyBase {
     const num = this.output[0] as GeoNumeric;
     if (c.type === 'circle') { num.setValue(0); return 1; }
     if (c.type === 'parabola') { num.setValue(1); return 1; }
-    const c0 = Math.sqrt(Math.abs(c.a! * c.a! - c.b! * c.b!));
+    const c0 = c.type === 'hyperbola'
+      ? Math.sqrt(c.a! * c.a! + c.b! * c.b!)
+      : Math.sqrt(Math.abs(c.a! * c.a! - c.b! * c.b!));
     num.setValue(c0 / c.a!);
     return 1;
   }

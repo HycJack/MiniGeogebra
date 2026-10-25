@@ -81,6 +81,33 @@ export function findRoots(
     } else if (prevY * y < 0) {
       const root = bisect(f, prevX, x);
       if (root !== null) roots.push(root);
+    } else {
+      // 相切重根（极值触零、无变号）：该段内 |f| 的极小值与二次触零量级匹配
+      // （≈ C·step²，C 为 |f''| 量级）→ 三分搜索求 |f| 极小，足够小则记切根。
+      // Intersect(f,g) 的相切交点（如 x² 与 0）此前静默丢失。
+      if (prevY * y > 0) {
+        // 段内可能有极值触零（无变号重根）。两种进入条件：
+        //   a) 线性外推零点落在段内（常规鼓包）；b) 两端几乎相等（平坦段，
+        //      对称函数在极值点两侧的对称采样恰好同值——外推除零会失败）
+        const flat = Math.abs(y - prevY) < 1e-15 * Math.max(1, Math.abs(y), Math.abs(prevY));
+        const xm = flat ? (prevX + x) / 2 : prevX - (step * prevY) / (y - prevY);
+        if ((flat || (xm > prevX && xm < x)) && Math.min(Math.abs(prevY), Math.abs(y)) < Math.max(1e-6, 100 * step)) {
+          let lo = prevX, hi = x;
+          for (let k = 0; k < 60; k++) {
+            const m1 = lo + (hi - lo) / 3;
+            const m2 = hi - (hi - lo) / 3;
+            if (Math.abs(f(m1)) < Math.abs(f(m2))) hi = m2; else lo = m1;
+          }
+          const cand = (lo + hi) / 2;
+          const fmin = Math.abs(f(cand));
+          // 触零判据：|f|(极小) 远小于段端（真极值凹陷）且绝对量级 < O(step²)（真触零，
+          // 如 x² 的极小 ≈ (step/2)²·|f''|；远离触零的普通极小值（(x−1)²+0.01）不满足）
+          if (fmin < Math.min(Math.abs(prevY), Math.abs(y)) * 1e-3
+              && fmin < 1000 * step * step) {
+            if (!roots.some(r => Math.abs(r - cand) < step)) roots.push(cand);
+          }
+        }
+      }
     }
 
     prevX = x;
