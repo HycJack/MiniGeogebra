@@ -42,6 +42,12 @@ export function evaluate(node: ExpressionNode, scope: Scope): number {
         case '+': return left + right;
         case '-': return left - right;
         case '*': return left * right;
+        case '>': return left > right ? 1 : 0;
+        case '<': return left < right ? 1 : 0;
+        case '>=': return left >= right ? 1 : 0;
+        case '<=': return left <= right ? 1 : 0;
+        case '==': return left === right ? 1 : 0;
+        case '!=': return left !== right ? 1 : 0;
         case '/': return right === 0 ? NaN : left / right;
         case '^': return Math.pow(left, right);
       }

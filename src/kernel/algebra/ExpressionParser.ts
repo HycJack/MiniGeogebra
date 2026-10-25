@@ -3,7 +3,7 @@ import { ExpressionNode } from './ExpressionNode';
 type Token =
   | { type: 'number'; value: number }
   | { type: 'identifier'; value: string }
-  | { type: 'operator'; value: '+' | '-' | '*' | '/' | '^' }
+  | { type: 'operator'; value: '+' | '-' | '*' | '/' | '^' | '>' | '<' | '>=' | '<=' | '==' | '!=' }
   | { type: 'leftParen' }
   | { type: 'rightParen' }
   | { type: 'comma' }
@@ -94,6 +94,8 @@ const IDENT_START = /[a-zA-Z_\u0370-\u03FF]/;
  */
 export function preprocessInput(input: string): string {
   let s = input.replace(/²/g, '^2').replace(/³/g, '^3');
+  // GeoGebra 式比较符：≥/≤/≠ 归一化为 ASCII（条件显隐表达式用）
+  s = s.replace(/≥/g, '>=').replace(/≤/g, '<=').replace(/≠/g, '!=');
   s = replaceAbsBars(s);
   s = replaceDegrees(s);
   s = s.replace(/π/g, PI_LITERAL);
@@ -243,6 +245,17 @@ const tokenize = (input: string): Token[] => {
       index += name.length;
       continue;
     }
+    if ('><'.includes(char) || (char === '=' && input[index + 1] === '=') || (char === '!' && input[index + 1] === '=')) {
+      const two = input.slice(index, index + 2);
+      if (two === '>=' || two === '<=' || two === '==' || two === '!=') {
+        tokens.push({ type: 'operator', value: two });
+        index += 2;
+        continue;
+      }
+      tokens.push({ type: 'operator', value: char as '>' | '<' });
+      index++;
+      continue;
+    }
     if ('+-*/^'.includes(char)) {
       tokens.push({ type: 'operator', value: char as '+' | '-' | '*' | '/' | '^' });
       index++;
@@ -264,6 +277,25 @@ class Parser {
   constructor(private readonly tokens: Token[]) {}
 
   parseExpression(): ExpressionNode {
+    return this.parseRelational();
+  }
+
+  /** 关系层（最低优先级）：比较运算产出 1/0，供条件显隐表达式。 */
+  private parseRelational(): ExpressionNode {
+    let left = this.parseArith();
+    while (true) {
+      const token = this.peek();
+      if (token.type === 'operator' && (token.value === '>' || token.value === '<' || token.value === '>=' || token.value === '<=' || token.value === '==' || token.value === '!=')) {
+        const op = (token as { value: '>' | '<' | '>=' | '<=' | '==' | '!=' }).value;
+        this.index++;
+        const right = this.parseArith();
+        left = { kind: 'binary', op, left, right };
+      } else break;
+    }
+    return left;
+  }
+
+  private parseArith(): ExpressionNode {
     let left = this.parseTerm();
     let token = this.peek();
     while (token.type === 'operator' && (token.value === '+' || token.value === '-')) {
@@ -372,7 +404,7 @@ class Parser {
 
   private peek(): Token { return this.tokens[this.index]; }
   private advance(): Token { return this.tokens[this.index++]; }
-  private advanceOperator(value: '+' | '-' | '*' | '/' | '^'): { type: 'operator'; value: '+' | '-' | '*' | '/' | '^' } {
+  private advanceOperator(value: '+' | '-' | '*' | '/' | '^' | '>' | '<' | '>=' | '<=' | '==' | '!='): { type: 'operator'; value: '+' | '-' | '*' | '/' | '^' | '>' | '<' | '>=' | '<=' | '==' | '!=' } {
     const token = this.advance();
     if (token.type !== 'operator' || token.value !== value) {
       throw new Error(`Expected operator "${value}"`);

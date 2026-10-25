@@ -37,6 +37,15 @@ export abstract class AlgoElement extends ConstructionElement {
   }
 
   isIndependent(): boolean { return this.input.length === 0; }
+
+  /**
+   * 重定义支持：把输入中的 oldEl 原位替换为 newEl（依赖者改接新对象）。
+   * 正向依赖边的重登记由 Construction.replaceElement 统一处理；更新也由
+   * 调用方编排（先新对象、后依赖链）。
+   */
+  replaceInput(oldEl: GeoElement, newEl: GeoElement): void {
+    this.input = this.input.map(i => (i === oldEl ? newEl : i));
+  }
   isGeoElement(): boolean { return false; }
   isAlgoElement(): boolean { return true; }
   getGeoElements(): GeoElement[] { return this.output; }

@@ -307,7 +307,7 @@ export const GeometryCanvas: React.FC = () => {
   /** 显示全部对象（GeoGebra zoomToFit）：取有限对象的并集包围盒取景。 */
   const zoomToFit = useCallback(() => {
     const geoList = kernel.getConstruction().getElements()
-      .filter((el): el is GeoElement => el instanceof GeoElement && el.visible !== false);
+      .filter((el): el is GeoElement => el instanceof GeoElement && el.isEffectivelyVisible());
     let rect: { minX: number; maxX: number; minY: number; maxY: number } | null = null;
     for (const el of geoList) {
       const b = getElementBounds(el);
@@ -425,7 +425,7 @@ export const GeometryCanvas: React.FC = () => {
   const _renderToSvg = useCallback((renderer: IRenderer, bounds: { minX: number; maxX: number; minY: number; maxY: number }) => {
     const vw = (bounds.maxX - bounds.minX) * coord.xScale, vh = (bounds.maxY - bounds.minY) * coord.xScale;
     drawGrid(renderer, vw, vh, coord, showGrid, showAxes, kernel.getOptions().rounding);
-    const elements = kernel.getConstruction().getElements().filter(el => el.visible !== false);
+    const elements = kernel.getConstruction().getElements().filter(el => el.isEffectivelyVisible());
     elements.forEach(el => { if (el instanceof GeoPolygon) drawPolygon(renderer, el, false, coord.xScale); });
     elements.forEach(el => {
       if (el instanceof GeoConicPart) drawConicPart(renderer, el, false, coord.xScale);
@@ -790,7 +790,7 @@ export const GeometryCanvas: React.FC = () => {
     if (mode === 'zoom_out') { zoom(1 / 1.25); return; }
     // 标签拖拽优先于对象命中（GeoGebra：labels > objects）；隐藏对象与导航未到的对象不可命中
     if ((mode === 'move' || mode === 'select') && e.button === 0) {
-      const labelHit = hitLabel(kernel.getConstruction().getElements().filter(el => el.visible !== false && (navStep === null || el.constIndex <= navStep)), x, y, coord.xScale, coord.visibleWorldBounds());
+      const labelHit = hitLabel(kernel.getConstruction().getElements().filter(el => el.isEffectivelyVisible() && (navStep === null || el.constIndex <= navStep)), x, y, coord.xScale, coord.visibleWorldBounds());
       if (labelHit) {
         setDraggingLabel(labelHit);
         setLabelDragStart({ sx: screenX, sy: screenY, ox: labelHit.labelOffsetX, oy: labelHit.labelOffsetY });
@@ -802,7 +802,7 @@ export const GeometryCanvas: React.FC = () => {
     // GeoGebra Move 语义：空白拖拽 = 平移视图（Alt = 框选；Ctrl+空白交给 handlers 清选区）
     if (mode === 'move' && e.button === 0 && !e.altKey) {
       // 隐藏对象/导航未到的对象不拦平移：点在"看不见的点"上应表现为空白拖拽
-      const els = kernel.getConstruction().getElements().filter(el => el.visible !== false && (navStep === null || el.constIndex <= navStep));
+      const els = kernel.getConstruction().getElements().filter(el => el.isEffectivelyVisible() && (navStep === null || el.constIndex <= navStep));
       const ptHit = hitScreenPoint(els, x, y, SNAP_POINT_RADIUS / coord.xScale);
       const objHit = ptHit ? undefined : hitScreenObject(els, x, y, coord.xScale);
       if (!ptHit && !objHit && !e.ctrlKey && !e.metaKey) {
@@ -851,7 +851,7 @@ export const GeometryCanvas: React.FC = () => {
       setRenderRev(r => r + 1);
       return;
     }
-    const elements = kernel.getConstruction().getElements().filter(el => el.visible !== false && (navStep === null || el.constIndex <= navStep));
+    const elements = kernel.getConstruction().getElements().filter(el => el.isEffectivelyVisible() && (navStep === null || el.constIndex <= navStep));
     const hovered = elements.slice().reverse().find(el => el instanceof GeoPoint && Math.hypot(el.getX() - x, el.getY() - y) < 10 / coord.xScale) as GeoPoint | undefined;
     setHoveredPoint(hovered || null);
     // 函数曲线 hover 数值提示：用 rAF 节流避免过频采样
@@ -863,7 +863,7 @@ export const GeometryCanvas: React.FC = () => {
         const dpr = window.devicePixelRatio || 1;
         const bounds = coord.visibleWorldBounds();
         const eps = 10 / coord.xScale;
-        const functions = kernel.getConstruction().getElements().filter(el => el instanceof GeoFunction && el.visible !== false) as GeoFunction[];
+        const functions = kernel.getConstruction().getElements().filter(el => el instanceof GeoFunction && el.isEffectivelyVisible()) as GeoFunction[];
         let bestFn: GeoFunction | null = null;
         let bestDist = Infinity;
         for (const fn of functions) {
@@ -968,7 +968,7 @@ export const GeometryCanvas: React.FC = () => {
       // 容差 eps 按像素换算成世界单位（默认 5 是世界单位，缩放下框选会抓到矩形外很远的对象）
       const marqueeEps = 5 / coord.xScale;
       for (const el of kernel.getConstruction().getElements()) {
-        if (el.visible === false) continue;
+        if (!el.isEffectivelyVisible()) continue;
         if (navStep !== null && el.constIndex > navStep) continue;
         if (elementIntersectsRect(el, rect, marqueeEps)) hitElements.push(el);
       }
@@ -1017,7 +1017,7 @@ export const GeometryCanvas: React.FC = () => {
     const screenY = e.clientY - rect.top;
     const world = coord.screenToWorld(screenX, screenY);
     // 隐藏对象/导航未到的对象不弹菜单
-    const els = kernel.getConstruction().getElements().filter(el => el.visible !== false && (navStep === null || el.constIndex <= navStep));
+    const els = kernel.getConstruction().getElements().filter(el => el.isEffectivelyVisible() && (navStep === null || el.constIndex <= navStep));
     const hit = hitScreenObject(els, world.x, world.y, coord.xScale);
     if (!hit) { setContextMenuState(null); return; }
 

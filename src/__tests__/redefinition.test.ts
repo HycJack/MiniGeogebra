@@ -9,6 +9,7 @@ import { Kernel } from '../kernel/core/Kernel';
 import { ConstructionElement } from '../kernel/core/ConstructionElement';
 import { GeoNumeric } from '../kernel/geo/GeoNumeric';
 import { GeoPoint } from '../kernel/geo/GeoPoint';
+import { GeoFunction } from '../kernel/geo/GeoFunction';
 import { parseAlgebraInput } from '../kernel/algebra/EquationRecognizer';
 import { makeKernel } from './helpers';
 
@@ -56,9 +57,11 @@ describe('B12：标签重定义', () => {
     expect(m.getY()).toBeCloseTo(1, 9);
   });
 
-  it('函数标签重定义仍报错（不在本次范围）', () => {
+  it('函数标签重定义已支持（2026-10-25）：换定义式成功且值更新', () => {
     const kernel = makeKernel();
     addInput(kernel, 'f(x) = x^2');
-    expect(() => addInput(kernel, 'f(x) = x^3')).toThrow(/already exists/);
+    addInput(kernel, 'f(x) = x^3');
+    const f = kernel.getConstruction().getElements().find(e => e instanceof GeoFunction) as GeoFunction;
+    expect(f.evaluateAt(2)).toBeCloseTo(8, 6);
   });
 });

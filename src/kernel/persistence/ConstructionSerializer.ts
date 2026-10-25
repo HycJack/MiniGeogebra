@@ -23,7 +23,7 @@ import { AlgoPointOnSegment } from '../algo/AlgoPointOnSegment';
 import { AlgoPointOnConic } from '../algo/AlgoPointOnConic';
 import { AlgoPointOnPolyLine } from '../algo/AlgoPointOnPolyLine';
 import { AlgoPointOnRay } from '../algo/AlgoPointOnRay';
-import { AlgoPointOnLine3D, AlgoPointOnCircle3D, AlgoPointOnConic3D, AlgoPointOnPolyline3D, AlgoPointInPlane3D } from '../algo/AlgoPointOn3D';
+import { AlgoPointOnLine3D, AlgoPointOnCircle3D, AlgoPointOnConic3D, AlgoPointOnPolyline3D, AlgoPointInPlane3D, AlgoPointOnSphere3D } from '../algo/AlgoPointOn3D';
 import { AlgoTranslate } from '../algo/AlgoTranslate';
 import { AlgoDistance } from '../algo/AlgoDistance';
 import { AlgoAngle } from '../algo/AlgoAngle';
@@ -160,7 +160,7 @@ interface SerializedElement {
   style?: Record<string, unknown>;
 }
 
-interface SerializedAlgorithm {
+export interface SerializedAlgorithm {
   type: string;
   constIndex: number;
   inputs: number[];
@@ -219,8 +219,143 @@ function styleOf(el: GeoElement): Record<string, unknown> {
   };
 }
 
+/** 提取算法的重建附加信息（scalars/expressionText/类型改写），序列化与重定义重建共用。 */
+export function collectAlgoExtras(algo: AlgoElement): Partial<SerializedAlgorithm> {
+  const extras: Partial<SerializedAlgorithm> = {};
+      if (algo instanceof AlgoDependentFunction) {
+        extras.expressionText = algo.getExpressionText();
+        extras.variableName = algo.getVariableName();
+      } else if (algo instanceof AlgoDependentNumeric) {
+        extras.expressionText = algo.getExpressionText();
+      } else if (algo instanceof AlgoDependentInequality) {
+        // 不等式按原始文本重建（parseAlgebraInput 会重新走不等式分支）
+        extras.expressionText = algo.getExpressionText();
+      } else if (algo instanceof AlgoDependentQuadric3D) {
+        // 一般二次曲面按原始方程文本重建
+        extras.expressionText = algo.getExpressionText();
+      } else if (algo instanceof AlgoDerivative) {
+        // 导函数没有可直接重建的输入（其输入是源函数的数值依赖），
+        // 改用"导数表达式 → 依赖函数"的等价重建路径。
+        extras.type = 'AlgoDependentFunction';
+        extras.expressionText = expressionToString(algo.getExpression());
+        extras.variableName = algo.getVariableName();
+      } else if (algo instanceof AlgoCirclePointRadius) {
+        // P0-1：半径必须落盘，否则重载后恒回退 50，下游（面积/交点/切线/轨迹）全错
+        extras.scalars = [algo.getRadiusValue()];
+      } else if (algo instanceof AlgoRotate) {
+        extras.scalars = [algo.getAngle(), algo.getCenterCoords().x, algo.getCenterCoords().y];
+      } else if (algo instanceof AlgoDilate) {
+        extras.scalars = [algo.getRatio(), algo.getCenterCoords().x, algo.getCenterCoords().y];
+      } else if (algo instanceof AlgoFitPoly) {
+        extras.scalars = [algo.getDegree()];
+      } else if (algo instanceof AlgoFunctionRootPoint) {
+        const [rlo, rhi] = algo.getSearchRange();
+        // scalars[2] = 当前锁定根（NaN→null）：重建时恢复窗口位置
+        extras.scalars = [rlo, rhi, algo.getLastSeedX()];
+      } else if (algo instanceof AlgoIntersectFunctions) {
+        const [rlo, rhi] = algo.getSearchRange();
+        // scalars[2..] = 各槽位当前交点 x（NaN→null 占位），重建时恢复槽位连续性
+        const slots = algo.getSlotXs().map(v => (Number.isFinite(v) ? v : null));
+        extras.scalars = [rlo, rhi, ...slots];
+      } else if (algo instanceof AlgoRootList) {
+        const [rlo, rhi] = algo.getSearchRange();
+        // 额外保存每个槽位的当前根（NaN→null 占位，scalars[2..]），重建时恢复窗口播种
+        const slotRoots = algo.getSlotRoots().map(v => (Number.isFinite(v) ? v : null));
+        extras.scalars = [rlo, rhi, ...slotRoots];
+      } else if (algo instanceof AlgoFunctionExtremumPoint) {
+        const [elo, ehi] = algo.getSearchRange();
+        // scalars[2] = 当前锁定极值 x（NaN→null）：重建时恢复窗口位置
+        extras.scalars = [elo, ehi, algo.getLastSeedX()];
+      } else if (algo instanceof AlgoExtremumList) {
+        const [elo, ehi] = algo.getSearchRange();
+        // 额外保存每个槽位的当前极值 x（NaN→null 占位，scalars[2..]），重建时恢复窗口播种
+        const slotXs = algo.getSlotRoots().map(v => (Number.isFinite(v) ? v : null));
+        extras.scalars = [elo, ehi, ...slotXs];
+      } else if (algo instanceof AlgoText) {
+        extras.expressionText = algo.getOutput().text;
+        extras.scalars = [...algo.getOffset()];
+      } else if (algo instanceof AlgoMirror) {
+        extras.scalars = [...algo.getMirrorLine()];
+      } else if (algo instanceof AlgoShearStretch) {
+        // [factor, opFlag, a, b, c]：opFlag 1=stretch
+        extras.scalars = [algo.getFactor(), algo.getOp() === 'stretch' ? 1 : 0, ...algo.getAxis()];
+      } else if (algo instanceof AlgoInvert) {
+        extras.scalars = [...algo.getCircleCoords()];
+      } else if (algo instanceof AlgoTranslate) {
+        const v = algo.getVectorCoords();
+        extras.scalars = [v.x, v.y];
+      } else if (algo instanceof AlgoRegularPolygon) {
+        extras.scalars = [algo.getRadiusValue(), algo.getSidesValue()];
+      } else if (algo instanceof AlgoRegularPolygonEdge) {
+        extras.scalars = [algo.getSidesValue()];
+      } else if (algo instanceof AlgoDependentCurve) {
+        extras.variableName = algo.getParameterName();
+        extras.scalars = [...algo.getRange()];
+        extras.curveX = algo.getExpressionTexts().x;
+        extras.curveY = algo.getExpressionTexts().y;
+      } else if (algo instanceof AlgoJoinPoints3D) {
+        // asSegment 标志：Scalars[0] = 1 表示线段
+        const isSegment = (algo.getOutput() as GeoLine3D).getLimits() !== null;
+        extras.scalars = [isSegment ? 1 : 0];
+      } else if (algo instanceof AlgoSphere3D) {
+        extras.scalars = [algo.getRadiusValue()];
+      } else if (algo instanceof AlgoCylinder3D) {
+        // 活高已在 inputs；冻结高存 scalars[1]
+        const h = algo.getHeightInput();
+        extras.scalars = typeof h === 'number'
+          ? [algo.getRadiusValue(), h]
+          : [algo.getRadiusValue()];
+      } else if (algo instanceof AlgoCone3D) {
+        const h = algo.getHeightInput();
+        extras.scalars = typeof h === 'number'
+          ? [algo.getHalfAngle(), h]
+          : [algo.getHalfAngle()];
+      } else if (algo instanceof AlgoPrism3D) {
+        const h = algo.getHeight();
+        extras.scalars = h === null ? [] : [h];
+      } else if (algo instanceof AlgoTranslate3D) {
+        extras.scalars = [algo.getDx(), algo.getDy(), algo.getDz()];
+      } else if (algo instanceof AlgoRotatePoint3D) {
+        extras.scalars = [algo.getAngle()];
+      } else if (algo instanceof AlgoEllipsoid3D) {
+        extras.scalars = [...algo.getRadiiValue()];
+      } else if (
+        algo instanceof AlgoTransformLine3D ||
+        algo instanceof AlgoTransformCircle3D ||
+        algo instanceof AlgoTransformPolyhedron3D
+      ) {
+        const args = algo.getArgs();
+        extras.scalars = args.op === 'translate'
+          ? [0, args.dx ?? 0, args.dy ?? 0, args.dz ?? 0]
+          : args.op === 'rotate'
+            ? [1, args.angle ?? 0]
+            : [2];
+      } else if (algo instanceof AlgoDependentSurface) {
+        extras.expressionText = algo.getCommandText();
+      } else if (algo instanceof AlgoSurfaceOfRevolution) {
+        extras.expressionText = algo.getCommandText();
+      } else if (
+        algo instanceof AlgoTangentFunctionNumber ||
+        algo instanceof AlgoTangentCurve ||
+        algo instanceof AlgoCurvature ||
+        algo instanceof AlgoOsculatingCircle
+      ) {
+        const at = algo.getAtValue();
+        if (typeof at === 'number') extras.scalars = [at];
+      } else if (algo instanceof AlgoPolyhedronNet) {
+        const fv = algo.getFactorInput();
+        extras.scalars = typeof fv === 'number'
+          ? [algo.getBaseN(), fv]
+          : [algo.getBaseN()];
+      } else if (algo instanceof AlgoPolygonBoolean) {
+        const opIndex = { union: 0, intersection: 1, difference: 2, xor: 3 }[algo.getOp()] ?? 0;
+        extras.scalars = [opIndex];
+      }
+  return extras;
+}
+
 /** Factory: rebuild algorithm instance by type (inputs already exist in map) */
-function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], scalars?: number[]): AlgoElement {
+export function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], scalars?: (number | null)[]): AlgoElement {
   const asPoint = (n: number) => inputs[n] as import('../geo/GeoPoint').GeoPoint;
   const asConic = (n: number) => inputs[n] as import('../geo/GeoConic').GeoConic;
   const asLine = (n: number) => inputs[n] as import('../geo/GeoLine').GeoLine;
@@ -248,6 +383,7 @@ function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], scalars?
     case 'AlgoPointOnConic':         return new AlgoPointOnConic(kernel, asConic(0), inputs[1] as GeoNumeric);
     case 'AlgoPointOnPolyLine':      return new AlgoPointOnPolyLine(kernel, asPolyLine(0), inputs[1] as GeoNumeric);
     case 'AlgoPointOnRay':           return new AlgoPointOnRay(kernel, asRay(0), inputs[1] as GeoNumeric);
+    case 'AlgoPointOnSphere3D':      return new AlgoPointOnSphere3D(kernel, inputs[0] as import('../geo/GeoQuadric3D').GeoQuadric3D, inputs[1] as GeoNumeric, inputs[2] as GeoNumeric);
     // ---- C10：3D path/region 依附点 ----
     case 'AlgoPointOnLine3D':        return new AlgoPointOnLine3D(kernel, inputs[0] as GeoLine3D, inputs[1] as GeoNumeric);
     case 'AlgoPointOnCircle3D':      return new AlgoPointOnCircle3D(kernel, inputs[0] as GeoCircle3D, inputs[1] as GeoNumeric);
@@ -623,138 +759,10 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
         outputLabels: algo.getGeoElements().map(o => o.label),
         outputIndices: algo.getGeoElements().map(o => o.constIndex),
       };
-      // Persist expression info for function/numeric dependency algorithms
-      if (algo instanceof AlgoDependentFunction) {
-        sa.expressionText = algo.getExpressionText();
-        sa.variableName = algo.getVariableName();
-      } else if (algo instanceof AlgoDependentNumeric) {
-        sa.expressionText = algo.getExpressionText();
-      } else if (algo instanceof AlgoDependentInequality) {
-        // 不等式按原始文本重建（parseAlgebraInput 会重新走不等式分支）
-        sa.expressionText = algo.getExpressionText();
-      } else if (algo instanceof AlgoDependentQuadric3D) {
-        // 一般二次曲面按原始方程文本重建
-        sa.expressionText = algo.getExpressionText();
-      } else if (algo instanceof AlgoDerivative) {
-        // 导函数没有可直接重建的输入（其输入是源函数的数值依赖），
-        // 改用"导数表达式 → 依赖函数"的等价重建路径。
-        sa.type = 'AlgoDependentFunction';
-        sa.expressionText = expressionToString(algo.getExpression());
-        sa.variableName = algo.getVariableName();
-      } else if (algo instanceof AlgoCirclePointRadius) {
-        // P0-1：半径必须落盘，否则重载后恒回退 50，下游（面积/交点/切线/轨迹）全错
-        sa.scalars = [algo.getRadiusValue()];
-      } else if (algo instanceof AlgoRotate) {
-        sa.scalars = [algo.getAngle(), algo.getCenterCoords().x, algo.getCenterCoords().y];
-      } else if (algo instanceof AlgoDilate) {
-        sa.scalars = [algo.getRatio(), algo.getCenterCoords().x, algo.getCenterCoords().y];
-      } else if (algo instanceof AlgoFitPoly) {
-        sa.scalars = [algo.getDegree()];
-      } else if (algo instanceof AlgoFunctionRootPoint) {
-        const [rlo, rhi] = algo.getSearchRange();
-        // scalars[2] = 当前锁定根（NaN→null）：重建时恢复窗口位置
-        sa.scalars = [rlo, rhi, algo.getLastSeedX()];
-      } else if (algo instanceof AlgoIntersectFunctions) {
-        const [rlo, rhi] = algo.getSearchRange();
-        // scalars[2..] = 各槽位当前交点 x（NaN→null 占位），重建时恢复槽位连续性
-        const slots = algo.getSlotXs().map(v => (Number.isFinite(v) ? v : null));
-        sa.scalars = [rlo, rhi, ...slots];
-      } else if (algo instanceof AlgoRootList) {
-        const [rlo, rhi] = algo.getSearchRange();
-        // 额外保存每个槽位的当前根（NaN→null 占位，scalars[2..]），重建时恢复窗口播种
-        const slotRoots = algo.getSlotRoots().map(v => (Number.isFinite(v) ? v : null));
-        sa.scalars = [rlo, rhi, ...slotRoots];
-      } else if (algo instanceof AlgoFunctionExtremumPoint) {
-        const [elo, ehi] = algo.getSearchRange();
-        // scalars[2] = 当前锁定极值 x（NaN→null）：重建时恢复窗口位置
-        sa.scalars = [elo, ehi, algo.getLastSeedX()];
-      } else if (algo instanceof AlgoExtremumList) {
-        const [elo, ehi] = algo.getSearchRange();
-        // 额外保存每个槽位的当前极值 x（NaN→null 占位，scalars[2..]），重建时恢复窗口播种
-        const slotXs = algo.getSlotRoots().map(v => (Number.isFinite(v) ? v : null));
-        sa.scalars = [elo, ehi, ...slotXs];
-      } else if (algo instanceof AlgoText) {
-        sa.expressionText = algo.getOutput().text;
-        sa.scalars = [...algo.getOffset()];
-      } else if (algo instanceof AlgoMirror) {
-        sa.scalars = [...algo.getMirrorLine()];
-      } else if (algo instanceof AlgoShearStretch) {
-        // [factor, opFlag, a, b, c]：opFlag 1=stretch
-        sa.scalars = [algo.getFactor(), algo.getOp() === 'stretch' ? 1 : 0, ...algo.getAxis()];
-      } else if (algo instanceof AlgoInvert) {
-        sa.scalars = [...algo.getCircleCoords()];
-      } else if (algo instanceof AlgoTranslate) {
-        const v = algo.getVectorCoords();
-        sa.scalars = [v.x, v.y];
-      } else if (algo instanceof AlgoRegularPolygon) {
-        sa.scalars = [algo.getRadiusValue(), algo.getSidesValue()];
-      } else if (algo instanceof AlgoRegularPolygonEdge) {
-        sa.scalars = [algo.getSidesValue()];
-      } else if (algo instanceof AlgoDependentCurve) {
-        sa.variableName = algo.getParameterName();
-        sa.scalars = [...algo.getRange()];
-        sa.curveX = algo.getExpressionTexts().x;
-        sa.curveY = algo.getExpressionTexts().y;
-      } else if (algo instanceof AlgoJoinPoints3D) {
-        // asSegment 标志：Scalars[0] = 1 表示线段
-        const isSegment = (algo.getOutput() as GeoLine3D).getLimits() !== null;
-        sa.scalars = [isSegment ? 1 : 0];
-      } else if (algo instanceof AlgoSphere3D) {
-        sa.scalars = [algo.getRadiusValue()];
-      } else if (algo instanceof AlgoCylinder3D) {
-        // 活高已在 inputs；冻结高存 scalars[1]
-        const h = algo.getHeightInput();
-        sa.scalars = typeof h === 'number'
-          ? [algo.getRadiusValue(), h]
-          : [algo.getRadiusValue()];
-      } else if (algo instanceof AlgoCone3D) {
-        const h = algo.getHeightInput();
-        sa.scalars = typeof h === 'number'
-          ? [algo.getHalfAngle(), h]
-          : [algo.getHalfAngle()];
-      } else if (algo instanceof AlgoPrism3D) {
-        const h = algo.getHeight();
-        sa.scalars = h === null ? [] : [h];
-      } else if (algo instanceof AlgoTranslate3D) {
-        sa.scalars = [algo.getDx(), algo.getDy(), algo.getDz()];
-      } else if (algo instanceof AlgoRotatePoint3D) {
-        sa.scalars = [algo.getAngle()];
-      } else if (algo instanceof AlgoEllipsoid3D) {
-        sa.scalars = [...algo.getRadiiValue()];
-      } else if (
-        algo instanceof AlgoTransformLine3D ||
-        algo instanceof AlgoTransformCircle3D ||
-        algo instanceof AlgoTransformPolyhedron3D
-      ) {
-        const args = algo.getArgs();
-        sa.scalars = args.op === 'translate'
-          ? [0, args.dx ?? 0, args.dy ?? 0, args.dz ?? 0]
-          : args.op === 'rotate'
-            ? [1, args.angle ?? 0]
-            : [2];
-      } else if (algo instanceof AlgoDependentSurface) {
-        sa.expressionText = algo.getCommandText();
-      } else if (algo instanceof AlgoSurfaceOfRevolution) {
-        sa.expressionText = algo.getCommandText();
-      } else if (
-        algo instanceof AlgoTangentFunctionNumber ||
-        algo instanceof AlgoTangentCurve ||
-        algo instanceof AlgoCurvature ||
-        algo instanceof AlgoOsculatingCircle
-      ) {
-        const at = algo.getAtValue();
-        if (typeof at === 'number') sa.scalars = [at];
-      } else if (algo instanceof AlgoPolyhedronNet) {
-        const fv = algo.getFactorInput();
-        sa.scalars = typeof fv === 'number'
-          ? [algo.getBaseN(), fv]
-          : [algo.getBaseN()];
-      } else if (algo instanceof AlgoPolygonBoolean) {
-        const opIndex = { union: 0, intersection: 1, difference: 2, xor: 3 }[algo.getOp()] ?? 0;
-        sa.scalars = [opIndex];
-      }
+      Object.assign(sa, collectAlgoExtras(algo));
       return sa;
     });
+
 
   const data: ConstructionJSON = {
     version: VERSION,
@@ -1021,7 +1029,7 @@ function restoreStyle(instance: GeoElement, style: Record<string, unknown> | und
 }
 
 /** 重建单个算法并登记其输出（表达式类算法走 parseAlgebraInput 路径）。 */
-function rebuildAlgorithm(
+export function rebuildAlgorithm(
   kernel: Kernel,
   construction: ReturnType<Kernel['getConstruction']>,
   index: Map<number, GeoElement>,

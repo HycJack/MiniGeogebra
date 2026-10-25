@@ -83,7 +83,7 @@ export const handlePointerDown = (
 
   // ----- 工具专用辅助闭包 -----
   // 隐藏对象不参与普通命中，但 show/hide 工具仍可用 hitAny* 找到它。
-  const visibleElements = elements.filter(el => (el as GeoElement).visible !== false);
+  const visibleElements = elements.filter(el => (el as GeoElement).isEffectivelyVisible?.() !== false);
   const hitPoint = () => hitScreenPoint(visibleElements, point.x, point.y, POINT_EPS / coord.xScale);
   // hitScreenObject 的第三个参数是“每世界单位多少像素”（即 coord.xScale），
   // 内部自持像素热区；不能传世界 eps（OBJ_EPS / xScale），否则命中半径随 xScale² 漂移。

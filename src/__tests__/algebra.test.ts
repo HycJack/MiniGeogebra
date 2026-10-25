@@ -87,7 +87,10 @@ describe('algebra input recognition', () => {
     expect(samples.some(sample => Number.isNaN(sample.y))).toBe(true);
     expect(samples[samples.length - 1].y).toBeCloseTo(0.5, 8);
 
-    expect(() => parseAlgebraInput(kernel, 'f(x) = 1/(x-2)')).toThrow('already exists');
+    // 函数重定义（2026-10-25 起支持，对标 GeoGebra changeGeoElement）：换定义式成功
+    parseAlgebraInput(kernel, 'f(x) = 1/(x-2)');
+    const redefined = kernel.getConstruction().getElements().find(e => e instanceof GeoFunction) as GeoFunction;
+    expect(redefined.evaluateAt(2.5)).toBeCloseTo(2, 6);
     expect(() => parseAlgebraInput(kernel, '= 5')).toThrow();
   });
 

@@ -220,6 +220,8 @@ const COMMAND_ARITY: Record<string, [number, number]> = {
   Rotate3D: [3, 3],
   Mirror3D: [2, 2],
   IntersectPath: [2, 2],
+  SetConditionToShowObject: [2, 2],
+  SetDynamicColor: [4, 5],
   Ellipsoid3D: [4, 4],
   Ellipse3D: [3, 3],
   Hyperbola3D: [3, 3],
@@ -404,6 +406,7 @@ function parseAlgebraInputImpl(
   // 参数本身是已知命令时先递归求值并把产物加入构造，再以输出标签代入外层命令。
   // 例：Midpoint(A, Midpoint(B, C))、Circle(A, Distance(B, C))。
   const MAX_COMMAND_NESTING = 8;
+let redefineSeq = 0;
   const expandNestedCommand = (arg: string): string => {
     const trimmed = arg.trim();
     const m = /^([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)$/.exec(trimmed);
@@ -666,6 +669,37 @@ function parseAlgebraInputImpl(
   // 定义式
   // ------------------------------------------------------------------
 
+  // 完整重定义：用临时标签走正常 RHS 构造（命令/元组/表达式/隐式方程各路径复用），
+  // 校验类型族后整体替换旧对象（依赖者改接新对象、保 constIndex、旧定义算法移除）
+  const redefineElement = (existing: GeoElement, label: string, rhs: string): ConstructionElement[] => {
+    const tempLabel = `__redef${++redefineSeq}`;
+    const created = parseAlgebraInput(kernel, `${tempLabel} = ${rhs}`, viewBounds, depth + 1);
+    const newGeo = created.find(
+      el => el instanceof GeoElement && (el as GeoElement).label === tempLabel) as GeoElement | undefined;
+    if (!newGeo) throw new Error(`Cannot redefine "${label}" with "${rhs}"`);
+    // 类型族校验（v1 收紧为同类）：跨类替换会让期望特定类型的依赖算法失效
+    if (existing.constructor !== newGeo.constructor) {
+      throw new Error(`Cannot redefine "${label}": ${existing.getClassName()} → ${newGeo.getClassName()} (type change not supported)`);
+    }
+    const oldAlgo = existing.parentAlgo;
+    if (oldAlgo && oldAlgo.getGeoElements().length !== 1) {
+      throw new Error(`Cannot redefine "${label}": it is one output of a multi-output object`);
+    }
+    const newAlgo = created.find(el => el instanceof AlgoElement) as AlgoElement | undefined;
+    // 循环定义守卫（对标 CircularDefinitionException）：新定义引用了被重定义对象本身
+    if (newAlgo?.getInput().includes(existing)) {
+      throw new Error(`Circular definition of "${label}"`);
+    }
+    // 构造段重建：依赖算法按 (类型, 输入, extras) 捕获后在 newGeo 之上原样重建
+    //（算法把输入缓存在私有字段，仅换 input 数组 compute 读不到新对象）
+    construction.rebuildReplace(existing, newGeo, newAlgo);
+    if (oldAlgo) construction.removeAlgoKeepOutputs(oldAlgo);
+    // 定向重算：新算法先算出新对象，再让重建后的依赖链跟随
+    newAlgo?.update();
+    construction.updateDependentAlgorithms(newGeo);
+    return []; // 已登记进构造
+  };
+
   const definition = splitAtTopLevelEquals(raw);
   if (definition) {
     const [leftText, rightText] = definition;
@@ -673,7 +707,21 @@ function parseAlgebraInputImpl(
 
     if (functionHeader) {
       if (functionHeader.variableName !== 'x') throw new Error('Only f(x) is supported');
-      if (existingLabels.has(functionHeader.label)) throw new Error(`Label "${functionHeader.label}" already exists`);
+      if (existingLabels.has(functionHeader.label)) {
+        // 函数重定义：f(x) = 新表达式（旧定义算法随替换移除，依赖者改接新函数）
+        const existingFn = construction.getElements().find(
+          el => el instanceof GeoElement && (el as unknown as { label?: string }).label === functionHeader.label);
+        if (!(existingFn instanceof GeoFunction)) throw new Error(`Label "${functionHeader.label}" already exists`);
+        const expression = parseExpression(rightText);
+        const dependencies = makeNumericDependencies(expression, [functionHeader.variableName]);
+        const algo = new AlgoDependentFunction(kernel, expression, functionHeader.variableName, rightText, dependencies);
+        const oldAlgo = existingFn.parentAlgo;
+        construction.replaceElement(existingFn, algo.getOutput(), algo);
+        if (oldAlgo && oldAlgo !== algo) construction.removeAlgoKeepOutputs(oldAlgo);
+        algo.update();
+        construction.updateDependentAlgorithms(algo.getOutput());
+        return [];
+      }
       const expression = parseExpression(rightText);
       const dependencies = makeNumericDependencies(expression, [functionHeader.variableName]);
       const algo = new AlgoDependentFunction(kernel, expression, functionHeader.variableName, rightText, dependencies);
@@ -706,36 +754,36 @@ function parseAlgebraInputImpl(
           el => el instanceof GeoElement && (el as unknown as { label?: string }).label === leftText);
         const isFreeNumeric = existing instanceof GeoNumeric && existing.isIndependent();
         const isFreePoint = existing instanceof GeoPoint && existing.isIndependent();
-        if (!isFreeNumeric && !isFreePoint) throw new Error(`Label "${leftText}" already exists`);
 
         if (isFreeNumeric) {
-          // 数值分支：RHS 必须是无依赖的数字（带依赖的升级需要替换对象，暂不支持）
+          // 快路径：RHS 为无依赖常量 → 原位 setValue
           const newDeps = (() => {
             try {
               const expr = parseExpression(rightText);
               return makeNumericDependencies(expr);
             } catch { return [null as unknown as GeoNumeric]; }
           })();
-          if (newDeps === null || newDeps.length > 0) {
-            throw new Error(`Cannot redefine "${leftText}" with dependencies; delete dependents of "${leftText}" first`);
-          }
           const value = Number(rightText);
-          if (!Number.isFinite(value)) throw new Error(`"${rightText}" is not a number`);
-          (existing as GeoNumeric).setValue(value);
-          construction.updateDependentAlgorithms(existing as GeoElement);
-          // 空数组 = 已原位更新（对象已在构造中），调用方无需再 addElement
-          return [];
+          if ((newDeps === null || newDeps.length === 0) && Number.isFinite(value)) {
+            (existing as GeoNumeric).setValue(value);
+            construction.updateDependentAlgorithms(existing as GeoElement);
+            return []; // 原位更新，调用方无需 addElement
+          }
         }
-        // 自由点分支：新 RHS 必须是坐标元组（原位 setCoords）
-        const point3 = tryParseCoordTuple3(rightText, kernel);
-        const coordPoint = point3 ? null : tryParseCoordTuple(rightText, kernel);
-        const np = point3 ?? coordPoint;
-        if (!np) throw new Error(`Cannot redefine "${leftText}" with "${rightText}": expected (x, y) coordinates`);
-        np.label = leftText;
-        const ep = existing as GeoPoint;
-        ep.setCoords(np.getX(), np.getY(), np.getZ?.() ?? 1);
-        construction.updateDependentAlgorithms(ep);
-        return []; // 同上：原位更新
+        if (isFreePoint) {
+          // 快路径：RHS 为坐标元组 → 原位 setCoords
+          const point3 = tryParseCoordTuple3(rightText, kernel);
+          const np = point3 ?? tryParseCoordTuple(rightText, kernel);
+          if (np) {
+            const ep = existing as GeoPoint;
+            ep.setCoords(np.getX(), np.getY(), np.getZ?.() ?? 1);
+            construction.updateDependentAlgorithms(ep);
+            return [];
+          }
+        }
+        // 慢路径：完整重定义（自由↔依赖、换定义式），保标签保依赖者
+        // （对标 GeoGebra AlgebraProcessor.changeGeoElement + Construction.replace）
+        return redefineElement(existing as GeoElement, leftText, rightText);
       }
 
       // 命令式 RHS：`poly = Polygon(A, B, C)` → 递归走命令分发，把第一个输出命名为 leftText。
@@ -2496,6 +2544,56 @@ const dispatchCommand = (
             : new AlgoTransformPolyhedron3D(kernel, obj as GeoPolyhedron3D, tArgs);
       assignNextLabel(algo.getGeoElements()[0], () => construction.getNextLineLabel(existingLabels));
       return [algo, ...algo.getGeoElements()];
+    }
+
+    // 条件显隐 / 动态颜色（对标 SetConditionToShowObject / SetDynamicColor）：
+    // 条件与颜色表达式惰性求值（绘制/命中时读依赖当前值），依赖变动经
+    // notifyUpdate 触发重绘，无需独立算法参与
+    case 'SetConditionToShowObject': {
+      const target = ctx.findPoint(args[1].trim())
+        ?? ctx.findLine(args[1].trim())
+        ?? ctx.findConic(args[1].trim())
+        ?? ctx.findFunction(args[1].trim())
+        ?? ctx.findPolygon(args[1].trim())
+        ?? ctx.findCurve(args[1].trim());
+      if (!target) throw new Error(`Unknown object "${args[1].trim()}"`);
+      const ast = parseExpression(args[0]);
+      const deps: GeoNumeric[] = [];
+      for (const name of collectVariables(ast)) {
+        const dep = ctx.findNumeric(name);
+        if (!dep) throw new Error(`Unknown variable "${name}" in condition`);
+        deps.push(dep);
+      }
+      target.visibleCondition = { ast, deps };
+      target.update();
+      return [];
+    }
+
+    case 'SetDynamicColor': {
+      const target = ctx.findPoint(args[0].trim())
+        ?? ctx.findLine(args[0].trim())
+        ?? ctx.findConic(args[0].trim())
+        ?? ctx.findFunction(args[0].trim())
+        ?? ctx.findPolygon(args[0].trim())
+        ?? ctx.findCurve(args[0].trim());
+      if (!target) throw new Error(`Unknown object "${args[0].trim()}"`);
+      const depSet = new Set<GeoNumeric>();
+      const parse = (text: string) => {
+        const ast = parseExpression(text);
+        for (const name of collectVariables(ast)) {
+          const dep = ctx.findNumeric(name);
+          if (!dep) throw new Error(`Unknown variable "${name}" in color`);
+          depSet.add(dep);
+        }
+        return ast;
+      };
+      const r = parse(args[1]);
+      const g = parse(args[2]);
+      const b = parse(args[3]);
+      const a = args.length >= 5 ? parse(args[4]) : undefined;
+      target.dynamicColor = { r, g, b, a, deps: Array.from(depSet) };
+      target.update();
+      return [];
     }
 
     case 'IntersectPath': {

@@ -2,6 +2,7 @@ import { IKernel } from './Interfaces';
 import { ConstructionElement } from './ConstructionElement';
 import { AlgoElement } from '../algo/AlgoElement';
 import { GeoElement } from '../geo/GeoElement';
+import { collectAlgoExtras, rebuildAlgorithm, SerializedAlgorithm } from '../persistence/ConstructionSerializer';
 
 /**
  * Construction 承载几何构造的“代数依赖图”。
@@ -239,6 +240,97 @@ export class Construction {
 
   getElements(): ConstructionElement[] {
     return [...this.elements];
+  }
+
+  /**
+   * 重定义（对标 GeoGebra Construction.replace）：用 newGeo 换下 oldGeo——
+   * 保标签、保依赖者（直接依赖算法的输入改接 newGeo 并重登记正向边）、
+   * 保留原 constIndex 与数组位置（拓扑序不破坏）。
+   * newAlgo：newGeo 若是新建算法的输出，随本方法登记（追加到构造末尾，
+   * 调用方需在其后手动 newAlgo.update() + updateDependentAlgorithms(newGeo) 补一次定向重算，
+   * 因为全量 pass 中旧依赖者的 constIndex 小于新算法，会先于新算法执行）。
+   * oldGeo 原则上不能有 parentAlgo（依赖对象的替换由调用方先移除其算法——
+   * 单输出算法场景见 redefineElement 流程）。
+   */
+  replaceElement(oldGeo: GeoElement, newGeo: GeoElement, newAlgo?: AlgoElement): void {
+    // 直接持有 oldGeo 输入的算法：改接 newGeo 并重登记正向边
+    const direct = this.getForwardDependentAlgorithms(oldGeo).filter(algo => algo.getInput().includes(oldGeo));
+    for (const algo of direct) {
+      algo.replaceInput(oldGeo, newGeo);
+      this.unregisterAlgoEdges(algo);
+      this.registerForwardDeps(algo);
+    }
+    const idx = this.elements.indexOf(oldGeo);
+    const keepIndex = oldGeo.constIndex;
+    this.removeElement(oldGeo);
+    newGeo.label = oldGeo.label;
+    if (idx >= 0) this.elements.splice(idx, 0, newGeo);
+    else this.elements.push(newGeo);
+    newGeo.construction = this;
+    newGeo.constIndex = keepIndex;
+    if (newAlgo) {
+      newAlgo.construction = this;
+      newAlgo.constIndex = this.stepCounter + 0.5; // 排在新对象之后、下一元素之前
+      this.stepCounter = Math.ceil(newAlgo.constIndex);
+      this.algoElements.push(newAlgo);
+      this.registerForwardDeps(newAlgo);
+    }
+  }
+
+  /**
+   * 重定义的**构造段重建**（对标 GeoGebra 硬重定义路径 isGettingXMLForReplace）：
+   * 算法把输入缓存在子类私有字段，仅换 input 数组无法让 compute 读到新对象，
+   * 因此把 oldGeo 的全部传递依赖算法按 (类型, 输入, scalars/expressionText) 捕获后移除，
+   * 经序列化器的 rebuildAlgorithm 工厂在 newGeo 之上原样重建（标签保留、按旧 constIndex
+   * 解析输入引用）。newGeo 的定义若引用 oldGeo 本身属循环定义，调用方须先校验。
+   */
+  rebuildReplace(oldGeo: GeoElement, newGeo: GeoElement, newAlgo?: AlgoElement): void {
+    const depAlgos = this.getForwardDependentAlgorithms(oldGeo)
+      .sort((a, b) => a.constIndex - b.constIndex);
+
+    // 捕获：SerializedAlgorithm 形态（inputs/outputIndices 用旧 constIndex，
+    // 重建时经 index 映射回新对象——与反序列化同一套机制）
+    const depOutputs = new Set<GeoElement>();
+    for (const algo of depAlgos) algo.getGeoElements().forEach(o => depOutputs.add(o));
+    const index = new Map<number, GeoElement>([[oldGeo.constIndex, newGeo]]);
+    for (const algo of depAlgos) {
+      for (const i of algo.getInput()) {
+        if (i !== oldGeo && !depOutputs.has(i)) index.set(i.constIndex, i as GeoElement);
+      }
+    }
+    const captured: SerializedAlgorithm[] = depAlgos.map(algo => ({
+      type: algo.getClassName(),
+      constIndex: algo.constIndex,
+      inputs: algo.getInput().map(i => i.constIndex),
+      outputLabels: algo.getGeoElements().map(o => o.label),
+      outputIndices: algo.getGeoElements().map(o => o.constIndex),
+      ...collectAlgoExtras(algo),
+    }));
+
+    // 逆序移除依赖算法及其输出；oldGeo 的依赖者随之清空
+    for (let i = depAlgos.length - 1; i >= 0; i--) {
+      for (const out of depAlgos[i].getGeoElements()) this.removeElement(out);
+      this.removeElement(depAlgos[i]);
+    }
+    // 替换 oldGeo → newGeo（已无依赖者，保标签/位置/constIndex；newAlgo 一并登记）
+    this.replaceElement(oldGeo, newGeo, newAlgo);
+    // 依原拓扑序重建依赖算法（表达式类经 parseAlgebraInput、其余经 createAlgo）
+    for (const sa of captured) {
+      rebuildAlgorithm(this.kernel as Parameters<typeof rebuildAlgorithm>[0], this, index, sa);
+    }
+    this.updateAllAlgorithms();
+  }
+
+  /** 移除算法但保留其全部输出（重定义时换掉旧定义算法用；边随 unregister 清理）。 */
+  removeAlgoKeepOutputs(algo: AlgoElement): void {
+    const idx = this.elements.indexOf(algo);
+    if (idx >= 0) this.elements.splice(idx, 1);
+    const aIdx = this.algoElements.indexOf(algo);
+    if (aIdx >= 0) this.algoElements.splice(aIdx, 1);
+    this.unregisterForwardDeps(algo);
+    if (algo.getGeoElements().length > 0) {
+      for (const out of algo.getGeoElements()) out.parentAlgo = null;
+    }
   }
 
   getElementById(id: string): ConstructionElement | undefined {

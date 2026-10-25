@@ -209,7 +209,7 @@ export function drawGrid(renderer: IRenderer, wScreen: number, hScreen: number, 
  * 各 draw* 函数在绘制完几何本体后调用。
  */
 export function drawLabel(renderer: IRenderer, el: GeoElement, selected: boolean, scale: number, bounds?: DrawBounds): void {
-  if (!labelDrawable(el) || el.visible === false) return;
+  if (!labelDrawable(el) || !el.isEffectivelyVisible()) return;
   const anchor = getLabelAnchor(el, scale, bounds);
   if (!anchor) return;
   // save/restore：font/textAlign/baseline/fillStyle 不外泄（评审 U-M4），
@@ -225,7 +225,7 @@ export function drawLabel(renderer: IRenderer, el: GeoElement, selected: boolean
 
 /** 点。 */
 export function drawPoint(renderer: IRenderer, p: GeoPoint, selected: boolean, scale: number): void {
-  if (!p.isDefined() || p.visible === false) return;
+  if (!p.isDefined() || !p.isEffectivelyVisible()) return;
   const x = p.getX(), y = p.getY();
   // 点尺寸（像素）：比 GeoGebra 默认略大，投屏/高 DPI 下更醒目
   const baseRadius = selected ? 10 : 8;
@@ -260,7 +260,7 @@ export function drawPoint(renderer: IRenderer, p: GeoPoint, selected: boolean, s
 
 /** 直线（贯穿整个视野）。 */
 export function drawLine(renderer: IRenderer, l: GeoLine, selected: boolean, bounds: DrawBounds, scale: number): void {
-  if (!l.isDefined() || l.visible === false) return;
+  if (!l.isDefined() || !l.isEffectivelyVisible()) return;
   const stroke = l.strokeColor ?? l.defaultStrokeColor;
   const baseWidth = l.strokeWidth ?? l.defaultLineWidth;
   renderer.strokeStyle = selected ? '#3b82f6' : stroke;
@@ -283,7 +283,7 @@ export function drawLine(renderer: IRenderer, l: GeoLine, selected: boolean, bou
 
 /** 线段。 */
 export function drawSegment(renderer: IRenderer, s: GeoSegment, selected: boolean, scale: number): void {
-  if (!s.isDefined() || s.visible === false) return;
+  if (!s.isDefined() || !s.isEffectivelyVisible()) return;
   const stroke = s.strokeColor ?? s.defaultStrokeColor;
   const baseWidth = s.strokeWidth ?? s.defaultLineWidth;
   renderer.strokeStyle = selected ? '#3b82f6' : stroke;
@@ -297,7 +297,7 @@ export function drawSegment(renderer: IRenderer, s: GeoSegment, selected: boolea
 
 /** 多边形（填充+描边）。 */
 export function drawPolygon(renderer: IRenderer, poly: GeoPolygon, selected: boolean, scale: number): void {
-  if (!poly.isDefined() || poly.visible === false) return;
+  if (!poly.isDefined() || !poly.isEffectivelyVisible()) return;
   if (poly.vertices.length < 3) return;
   const fill = poly.fillColor ?? poly.defaultFillColor ?? (selected ? 'rgba(59, 130, 246, 0.4)' : 'rgba(59, 130, 246, 0.2)');
   const stroke = poly.strokeColor ?? poly.defaultStrokeColor;
@@ -318,7 +318,7 @@ export function drawPolygon(renderer: IRenderer, poly: GeoPolygon, selected: boo
 
 /** 圆锥曲线（圆 / 椭圆 / 双曲线 / 抛物线）。 */
 export function drawConic(renderer: IRenderer, c: GeoConic, selected: boolean, scale: number): void {
-  if (!c.isDefined() || c.visible === false) return;
+  if (!c.isDefined() || !c.isEffectivelyVisible()) return;
 
   const stroke = c.strokeColor ?? c.defaultStrokeColor;
   const baseWidth = c.strokeWidth ?? c.defaultLineWidth;
@@ -380,7 +380,7 @@ export function drawConic(renderer: IRenderer, c: GeoConic, selected: boolean, s
 
 /** 轨迹曲线（断段绘制）。 */
 export function drawLocus(renderer: IRenderer, locus: GeoLocus, selected: boolean, scale: number): void {
-  if (!locus.isDefined() || locus.visible === false) return;
+  if (!locus.isDefined() || !locus.isEffectivelyVisible()) return;
   const samples = locus.getSamples();
   const segments = locus.getSegments();
   if (samples.length < 2 || segments.length === 0) return;
@@ -400,7 +400,7 @@ export function drawLocus(renderer: IRenderer, locus: GeoLocus, selected: boolea
 
 /** 多边形布尔结果区域（可变轮廓填充 + 描边）。 */
 export function drawBooleanRegion(renderer: IRenderer, region: GeoBooleanRegion, selected: boolean, scale: number): void {
-  if (!region.isDefined() || region.visible === false) return;
+  if (!region.isDefined() || !region.isEffectivelyVisible()) return;
   const fill = selected ? 'rgba(59, 130, 246, 0.35)' : (region.fillColor ?? region.defaultFillColor ?? 'rgba(59, 130, 246, 0.25)');
   const stroke = selected ? '#3b82f6' : (region.strokeColor ?? region.defaultStrokeColor);
   for (const contour of region.contours) {
@@ -421,7 +421,7 @@ export function drawBooleanRegion(renderer: IRenderer, region: GeoBooleanRegion,
 export function drawText(
   renderer: IRenderer, el: GeoText, selected: boolean, scale: number,
 ): void {
-  if (!el.isDefined() || el.visible === false) return;
+  if (!el.isDefined() || !el.isEffectivelyVisible()) return;
   renderer.save();
   renderer.font = `${14 / scale}px sans-serif`;
   renderer.fillStyle = selected ? '#2563eb' : (el.strokeColor || '#111827');
@@ -433,7 +433,7 @@ export function drawFunction(
   renderer: IRenderer, fn: GeoFunction, selected: boolean,
   bounds: DrawBounds, scale: number, pixelWidth: number,
 ): void {
-  if (!fn.isDefined() || fn.visible === false) return;
+  if (!fn.isDefined() || !fn.isEffectivelyVisible()) return;
   // 把可视 y 范围传给自适应采样器：采样密度、细分容差与渐近线判据
   // 都以「一个屏幕高度有多少世界单位」为基准，而不是固定默认视高。
   const samples = fn.updateSamples(bounds.minX, bounds.maxX, pixelWidth, bounds);
@@ -477,7 +477,7 @@ export function drawCurve(
   scale: number,
   pixelWidth: number,
 ): void {
-  if (!curve.isDefined() || curve.visible === false) return;
+  if (!curve.isDefined() || !curve.isEffectivelyVisible()) return;
   const viewHeight = Math.abs(bounds.maxY - bounds.minY) || 20;
   const samples = curve.updateSamples(pixelWidth, viewHeight);
   if (samples.length < 2) return;
@@ -513,7 +513,7 @@ export function drawCurve(
 
 /** 向量（带箭头的线段）。 */
 export function drawVector(renderer: IRenderer, v: GeoVector, selected: boolean, scale: number): void {
-  if (!v.isDefined() || v.visible === false) return;
+  if (!v.isDefined() || !v.isEffectivelyVisible()) return;
   const sx = v.startX, sy = v.startY, ex = v.endX, ey = v.endY;
   const stroke = v.strokeColor ?? v.defaultStrokeColor;
   const baseWidth = v.strokeWidth ?? v.defaultLineWidth;
@@ -539,7 +539,7 @@ export function drawVector(renderer: IRenderer, v: GeoVector, selected: boolean,
 
 /** 折线。 */
 export function drawPolyLine(renderer: IRenderer, pl: GeoPolyLine, selected: boolean, scale: number): void {
-  if (!pl.isDefined() || pl.visible === false || pl.vertices.length < 2) return;
+  if (!pl.isDefined() || !pl.isEffectivelyVisible() || pl.vertices.length < 2) return;
   const stroke = pl.strokeColor ?? pl.defaultStrokeColor;
   const baseWidth = pl.strokeWidth ?? pl.defaultLineWidth;
   renderer.strokeStyle = selected ? '#3b82f6' : stroke;
@@ -555,7 +555,7 @@ export function drawPolyLine(renderer: IRenderer, pl: GeoPolyLine, selected: boo
 
 /** 圆弧（GeoArc 和 GeoConicPart ARC 类型）。 */
 export function drawArc(renderer: IRenderer, arc: GeoArc, selected: boolean, scale: number): void {
-  if (!arc.isDefined() || arc.visible === false) return;
+  if (!arc.isDefined() || !arc.isEffectivelyVisible()) return;
   const center = arc.getCenter();
   const r = arc.getRadius();
   if (r <= 0) return;
@@ -571,7 +571,7 @@ export function drawArc(renderer: IRenderer, arc: GeoArc, selected: boolean, sca
 
 /** 圆锥曲线片段（扇形 / 弓形 / 弧）。 */
 export function drawConicPart(renderer: IRenderer, cp: GeoConicPart, selected: boolean, scale: number): void {
-  if (!cp.isDefined() || cp.visible === false) return;
+  if (!cp.isDefined() || !cp.isEffectivelyVisible()) return;
   const center = cp.getCenter();
   const r = cp.getRadius();
   if (r <= 0) return;
@@ -605,7 +605,7 @@ export function drawConicPart(renderer: IRenderer, cp: GeoConicPart, selected: b
 
 /** 射线。 */
 export function drawRay(renderer: IRenderer, ray: GeoRay, selected: boolean, bounds: DrawBounds, scale: number): void {
-  if (!ray.isDefined() || ray.visible === false) return;
+  if (!ray.isDefined() || !ray.isEffectivelyVisible()) return;
   const sp = ray.getStartPoint();
   const dp = ray.getSecondPoint();
   const dx = dp.getX() - sp.getX(), dy = dp.getY() - sp.getY();
@@ -781,7 +781,7 @@ export function drawInequality(
   bounds: DrawBounds,
   scale: number,
 ): void {
-  if (!ineq.isDefined() || ineq.visible === false) return;
+  if (!ineq.isDefined() || !ineq.isEffectivelyVisible()) return;
   const width = bounds.maxX - bounds.minX;
   const height = bounds.maxY - bounds.minY;
   if (width <= 0 || height <= 0) return;

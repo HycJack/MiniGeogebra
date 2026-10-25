@@ -18,6 +18,8 @@ import { GeoConic } from '../kernel/geo/GeoConic';
 import { GeoRay } from '../kernel/geo/GeoRay';
 import { GeoSegment } from '../kernel/geo/GeoSegment';
 import { GeoFunction } from '../kernel/geo/GeoFunction';
+import { AlgoPointOnSphere3D } from '../kernel/algo/AlgoPointOn3D';
+import { GeoQuadric3D } from '../kernel/geo/GeoQuadric3D';
 import { GeoList } from '../kernel/geo/GeoList';
 import { serialize, deserialize } from '../kernel/persistence/ConstructionSerializer';
 
@@ -36,6 +38,9 @@ const addInput = (kernel: Kernel, text: string): ConstructionElement[] => {
   kernel.getConstruction().updateAllAlgorithms();
   return elements;
 };
+
+const byLabel = <T extends ConstructionElement>(kernel: Kernel, label: string): T =>
+  kernel.getConstruction().getElements().find(el => (el as { label?: string }).label === label) as T;
 
 const ofType = <T extends ConstructionElement>(kernel: Kernel, type: new (...args: any[]) => T): T[] =>
   kernel.getConstruction().getElements().filter((el): el is T => el instanceof type);
@@ -229,5 +234,63 @@ describe('Intersect(f, g) 两函数交点列表', () => {
     expect(children.length).toBe(2);
     const xs = children.map((p: any) => p.getX()).sort((a: number, b: number) => a - b);
     expect(xs[1]).toBeCloseTo(Math.sqrt(8), 4);
+  });
+});
+
+describe('条件显隐 / 动态颜色（对标 SetConditionToShowObject / SetDynamicColor）', () => {
+  it('SetConditionToShowObject：数值驱动显隐', () => {
+    const k = new Kernel();
+    makePoint(k, 1, 1, 'P');
+    addInput(k, 't = 0');
+    addInput(k, 'SetConditionToShowObject(t > 0.5, P)');
+    const p = byLabel<GeoPoint>(k, 'P');
+    // t=0 → 条件为假 → 不可见（用户开关仍为 true）
+    expect(p.visible).not.toBe(false);
+    expect(p.isEffectivelyVisible()).toBe(false);
+    // t=1 → 可见
+    byLabel<GeoNumeric>(k, 't').setValue(1);
+    expect(p.isEffectivelyVisible()).toBe(true);
+    // 用户显式隐藏优先于条件
+    p.visible = false;
+    expect(p.isEffectivelyVisible()).toBe(false);
+    p.visible = true;
+  });
+
+  it('SetDynamicColor：数值驱动描边色（rgba 字符串）', () => {
+    const k = new Kernel();
+    makePoint(k, 1, 1, 'P');
+    addInput(k, 't = 0');
+    addInput(k, 'SetDynamicColor(P, t, 0, 1 - t)');
+    const p = byLabel<GeoPoint>(k, 'P');
+    const c0 = p.resolveDynamicColor();
+    expect(c0).toEqual({ r: 0, g: 0, b: 1, a: 1 });
+    byLabel<GeoNumeric>(k, 't').setValue(0.25);
+    const c1 = p.resolveDynamicColor();
+    expect(c1).toEqual({ r: 0.25, g: 0, b: 0.75, a: 1 });
+  });
+});
+
+describe('球面依附点（AlgoPointOnSphere3D）', () => {
+  it('参数化在球面上；updateParameter 重投影回球面', () => {
+    const k = new Kernel();
+    addInput(k, 'O = (0, 0, 0)');
+    addInput(k, 's = Sphere3D(O, 2)');
+    const sphere = k.getConstruction().getElements().find(e => e instanceof GeoQuadric3D) as any;
+    const theta = new GeoNumeric(k, 0);
+    const phi = new GeoNumeric(k, Math.PI / 2);
+    const algo = new AlgoPointOnSphere3D(k, sphere, theta, phi);
+    k.getConstruction().addElement(algo);
+    const p = algo.getOutput();
+    algo.compute();
+    // φ=π/2, θ=0 → (2, 0, 0)
+    expect(p.getX()).toBeCloseTo(2, 6);
+    expect(p.getY()).toBeCloseTo(0, 6);
+    expect(p.getZ()).toBeCloseTo(0, 6);
+    // 拖到 (0, 0, 2) 方向 → 重投影 θ 任意/φ=0 → (0,0,2)
+    algo.updateParameter(0, 0, 5);
+    algo.compute();
+    expect(p.getX()).toBeCloseTo(0, 6);
+    expect(p.getY()).toBeCloseTo(0, 6);
+    expect(p.getZ()).toBeCloseTo(2, 6);
   });
 });

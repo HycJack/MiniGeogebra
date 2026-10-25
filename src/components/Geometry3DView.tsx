@@ -23,9 +23,11 @@ import { GeoFunction } from '../kernel/geo/GeoFunction';
 import { GeoLocus } from '../kernel/geo/GeoLocus';
 import { GeoLocus3D } from '../kernel/geo/GeoLocus3D';
 import { GeoPoint3D } from '../kernel/geo/GeoPoint3D';
+import { GeoNumeric } from '../kernel/geo/GeoNumeric';
 import { GeoLine3D } from '../kernel/geo/GeoLine3D';
 import { GeoPlane3D } from '../kernel/geo/GeoPlane3D';
 import { GeoQuadric3D } from '../kernel/geo/GeoQuadric3D';
+import { AlgoPointOnSphere3D } from '../kernel/algo/AlgoPointOn3D';
 import { GeoPolyhedron3D } from '../kernel/algo/AlgoPolyhedron3D';
 import { GeoSurface } from '../kernel/geo/GeoSurface';
 import { GeoCircle3D } from '../kernel/geo/GeoCircle3D';
@@ -269,7 +271,7 @@ function buildScene(
   const pxPerUnit = estimatePxPerUnit(renderer);
 
   for (const el of elements) {
-    if (!(el instanceof GeoElement) || !el.isDefined()) continue;
+    if (!(el instanceof GeoElement) || !el.isDefined() || !el.isEffectivelyVisible()) continue;
     if (el instanceof GeoSegment) {
       const st = styleOf(el, selSet.has(el));
       pushSegment(lines, el.startPoint.getX(), el.startPoint.getY(), el.endPoint.getX(), el.endPoint.getY(), st, pxPerUnit);
@@ -1188,6 +1190,87 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
     return best;
   };
 
+  /** 屏幕坐标 → 非点对象（线/圆/二次曲面/多面体）的最近命中（select 工具用）。 */
+  const pickObject3D = (clientX: number, clientY: number): GeoElement | null => {
+    const canvas = canvasRef.current;
+    const renderer = rendererRef.current;
+    if (!canvas || !renderer) return null;
+    const rect = canvas.getBoundingClientRect();
+    const x = (clientX - rect.left) * dprRef.current;
+    const y = (clientY - rect.top) * dprRef.current;
+    const hitR = 14 * dprRef.current;
+    const clip = computeClippingBox(renderer.getVisibleBounds3(), clipReduction);
+    const samplePointsOf = (el: GeoElement): { x: number; y: number; z: number }[] => {
+      const pts: { x: number; y: number; z: number }[] = [];
+      if (el instanceof GeoLine3D) {
+        const o = el.getOrigin().toPoint();
+        const d = el.getDirection().toPoint();
+        const lim = el.getLimits();
+        const t0 = lim ? lim.tMin : -1e3;
+        const t1 = lim ? lim.tMax : 1e3;
+        for (let k = 0; k <= 8; k++) {
+          const t = t0 + ((t1 - t0) * k) / 8;
+          pts.push({ x: o.x + t * d.x, y: o.y + t * d.y, z: o.z + t * d.z });
+        }
+      } else if (el instanceof GeoCircle3D || el instanceof GeoConic3D) {
+        for (let k = 0; k < 16; k++) {
+          const p = (el as GeoCircle3D).pointAt((k / 16) * 2 * Math.PI).toPoint();
+          pts.push(p);
+        }
+      } else if (el instanceof GeoQuadric3D) {
+        // 二次曲面：沿三族截线采样（精确拾取走 intersectLine，这里做屏幕空间近似）
+        const c = el.getBase().toPoint();
+        const r = Math.max(el.getParam(), 1);
+        for (let k = 0; k < 24; k++) {
+          const th = (k / 24) * 2 * Math.PI;
+          pts.push({ x: c.x + r * Math.cos(th), y: c.y + r * Math.sin(th), z: c.z });
+          pts.push({ x: c.x + r * Math.cos(th), y: c.y, z: c.z + r * Math.sin(th) });
+        }
+      } else if (el instanceof GeoPolyhedron3D) {
+        for (const v of el.vertices) pts.push(v.toPoint());
+      }
+      return pts.filter(p => Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z) && isPointInBox(p, clip.box));
+    };
+    let best: GeoElement | null = null;
+    let bestDist = hitR;
+    for (const el of kernel.getConstruction().getElements()) {
+      if (!(el instanceof GeoElement) || !el.isDefined() || !el.isEffectivelyVisible()) continue;
+      if (el instanceof GeoPoint3D || el instanceof GeoPlane3D) continue;
+      for (const p of samplePointsOf(el)) {
+        const sp = renderer.projectToScreen(p);
+        if (!sp) continue;
+        const d = Math.hypot(sp.x - x, sp.y - y);
+        if (d < bestDist) { bestDist = d; best = el; }
+      }
+    }
+    return best;
+  };
+
+  /** 视线与球面的最近正交根（点工具球面依附创建用）。 */
+  const pickSphereSurface = (clientX: number, clientY: number): [GeoQuadric3D, { x: number; y: number; z: number }] | null => {
+    const canvas = canvasRef.current;
+    const renderer = rendererRef.current;
+    if (!canvas || !renderer) return null;
+    const rect = canvas.getBoundingClientRect();
+    const sx = (clientX - rect.left) * dprRef.current;
+    const sy = (clientY - rect.top) * dprRef.current;
+    const ray = renderer.screenRay(sx, sy);
+    const rayLine = new GeoLine3D(kernel, Coords4.fromPoint(ray.origin.x, ray.origin.y, ray.origin.z), Coords4.fromDirection(ray.dir.x, ray.dir.y, ray.dir.z));
+    const clip = computeClippingBox(renderer.getVisibleBounds3(), clipReduction);
+    let best: [GeoQuadric3D, { x: number; y: number; z: number }] | null = null;
+    let bestT = Infinity;
+    for (const el of kernel.getConstruction().getElements()) {
+      if (!(el instanceof GeoQuadric3D) || el.getKind() !== 'sphere' || !el.isDefined()) continue;
+      for (const { t, point } of el.intersectLine(rayLine)) {
+        if (t <= 0) continue;
+        const p = point.toPoint();
+        if (!isPointInBox(p, clip.box)) continue;
+        if (t < bestT) { bestT = t; best = [el, p]; }
+      }
+    }
+    return best;
+  };
+
   /** 建一个带标签的 3D 自由点并注册到构造。 */
   const addPoint3D = (coords: Coords4): GeoPoint3D => {
     const point = new GeoPoint3D(kernel, coords);
@@ -1268,6 +1351,30 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
       const snapped = pickPoint3D(clientX, clientY);
       let point: GeoPoint3D | null = snapped;
       if (!point) {
+        // 球面依附点：视线与球面的最近正交根即落点（对标官方 createNewPointForModePoint
+        // 对 Region3D 载体的覆盖——球面是立体几何最高频依附载体）
+        const sphereHit = pickSphereSurface(clientX, clientY);
+        if (sphereHit) {
+          const [sphere, hitPoint] = sphereHit;
+          const theta = new GeoNumeric(kernel, 0);
+          const phi = new GeoNumeric(kernel, 0);
+          theta.label = kernel.getConstruction().getNextNumericLabel();
+          phi.label = kernel.getConstruction().getNextNumericLabel();
+          const algo = new AlgoPointOnSphere3D(kernel, sphere, theta, phi);
+          kernel.getConstruction().addElement(theta);
+          kernel.getConstruction().addElement(phi);
+          kernel.getConstruction().addElement(algo);
+          point = algo.getOutput();
+          kernel.getConstruction().addElement(point);
+          algo.updateParameter(hitPoint.x, hitPoint.y, hitPoint.z);
+          algo.update();
+          kernel.notifyUpdate(point);
+          picksCreatedRef.current.add(point);
+          picks3dRef.current = [...picks3dRef.current, point];
+          setPickCount3d(picks3dRef.current.length);
+          draw();
+          return;
+        }
         const hit = pickOnPlane(clientX, clientY);
         if (!hit) return; // 视线近乎平行于构造平面（如平视视角点击地平线上方）
         point = addPoint3D(hit);
@@ -1285,7 +1392,7 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
       draw();
       return;
     }
-    const picked = pickPoint3D(clientX, clientY);
+    const picked = pickPoint3D(clientX, clientY) ?? pickObject3D(clientX, clientY);
     setSelectedElements?.(picked ? [picked] : []);
     draw();
   };

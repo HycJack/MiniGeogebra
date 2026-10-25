@@ -52,7 +52,7 @@ function hitOrder(els: readonly ConstructionElement[]): number[] {
 export function hitLabel(els: readonly ConstructionElement[], x: number, y: number, scale: number, bounds?: LabelBounds): GeoElement | undefined {
   for (const i of hitOrder(els)) {
     const el = els[i];
-    if (!(el instanceof GeoElement) || el.visible === false) continue;
+    if (!(el instanceof GeoElement) || !el.isEffectivelyVisible()) continue;
     if (!labelDrawable(el)) continue;
     const anchor = getLabelAnchor(el, scale, bounds);
     if (!anchor) continue;

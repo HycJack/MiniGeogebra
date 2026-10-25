@@ -4,6 +4,8 @@ import { GeoVec3D } from '../core/GeoVec3D';
 import { formatNumber } from '../core/Options';
 import type { GeoPoint } from './GeoPoint';
 import type { GeoLine } from './GeoLine';
+import type { GeoNumeric } from './GeoNumeric';
+import { evaluate } from '../algebra/ExpressionEvaluator';
 import type { AlgoElement } from '../algo/AlgoElement';
 
 /**
@@ -123,6 +125,47 @@ export abstract class GeoElement extends ConstructionElement
   isDefined(): boolean { return this.isDefined_; }
   setUndefined() { this.isDefined_ = false; this.update(); }
   setDefined() { this.isDefined_ = true; this.update(); }
+
+  // ---- 条件显隐 / 动态颜色（对标 GeoGebra setShowObjectCondition / setObjColor 函数版）----
+  /** 显示条件：数值表达式 AST + 数值依赖；求值 ≠ 0 才可见（在用户 visible 开关之上）。
+   *  惰性求值（每次绘制/命中时读取依赖当前值），依赖变动经 notifyUpdate 触发重绘。 */
+  public visibleCondition: { ast: import('../algebra/ExpressionNode').ExpressionNode; deps: GeoNumeric[] } | null = null;
+  /** 动态颜色：r/g/b(/a) 表达式（0~1），绘制时求值覆盖静态颜色。 */
+  public dynamicColor: { r: import('../algebra/ExpressionNode').ExpressionNode; g: import('../algebra/ExpressionNode').ExpressionNode; b: import('../algebra/ExpressionNode').ExpressionNode; a?: import('../algebra/ExpressionNode').ExpressionNode; deps: GeoNumeric[] } | null = null;
+
+  isEffectivelyVisible(): boolean {
+    if (this.visible === false) return false;
+    const cond = this.visibleCondition;
+    if (!cond) return true;
+    const scope = new Map<string, number>();
+    for (const d of cond.deps) scope.set(d.label || '', d.getValue());
+    try {
+      const v = evaluate(cond.ast, scope);
+      return Number.isFinite(v) && v !== 0;
+    } catch {
+      return true; // 条件求值失败按可见处理，显隐开关仍在用户手里
+    }
+  }
+
+  /** 动态颜色求值；无条件/出错返回 null（调用方回退静态颜色）。 */
+  resolveDynamicColor(): { r: number; g: number; b: number; a: number } | null {
+    const dyn = this.dynamicColor;
+    if (!dyn) return null;
+    const scope = new Map<string, number>();
+    for (const d of dyn.deps) scope.set(d.label || '', d.getValue());
+    try {
+      const ch = (ast: import('../algebra/ExpressionNode').ExpressionNode) => {
+        const v = evaluate(ast, scope);
+        return Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : null;
+      };
+      const r = ch(dyn.r), g = ch(dyn.g), b = ch(dyn.b);
+      if (r === null || g === null || b === null) return null;
+      const a = dyn.a ? ch(dyn.a) : null;
+      return { r, g, b, a: a ?? 1 };
+    } catch {
+      return null;
+    }
+  }
 
   abstract getClassName(): string;
 

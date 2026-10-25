@@ -17,6 +17,7 @@ import { GeoCircle3D } from '../geo/GeoCircle3D';
 import { GeoConic3D } from '../geo/GeoConic3D';
 import { GeoPolyline3D } from '../geo/GeoPolyline3D';
 import { GeoPlane3D } from '../geo/GeoPlane3D';
+import { GeoQuadric3D } from '../geo/GeoQuadric3D';
 import { GeoNumeric } from '../geo/GeoNumeric';
 import { Coords4 } from '../core/Coords4';
 
@@ -245,5 +246,55 @@ export class AlgoPointInPlane3D extends AlgoElement {
     const { u, v } = this.plane.getPlaneCoords(Coords4.fromPoint(x, y, z));
     this.lastU = u;
     this.lastV = v;
+  }
+}
+
+/**
+ * 球面上的点：双参数 (θ 方位角, φ 极角) 球坐标参数化，
+ * 点 = 球心 + R·(sinφ·cosθ, sinφ·sinθ, cosφ)。
+ * 拖拽 updateParameter 把目标位置向球面重投影（对标 AlgoPoint3DOnPath 对球面的覆盖）。
+ * 动画只推进 θ（φ 固定）——纬线圈路径。
+ */
+export class AlgoPointOnSphere3D extends AlgoElement {
+  private outputPoint: GeoPoint3D;
+
+  constructor(kernel: IKernel, private sphere: GeoQuadric3D, private theta: GeoNumeric, private phi: GeoNumeric) {
+    super(kernel);
+    this.outputPoint = new GeoPoint3D(kernel, Coords4.origin());
+    this.outputPoint.label = kernel.getConstruction().getNextPointLabel();
+    this.setInputOutput();
+  }
+
+  setInputOutput(): void {
+    this.input = [this.sphere, this.theta, this.phi];
+    this.setOutput([this.outputPoint]);
+  }
+
+  getOutput(): GeoPoint3D { return this.outputPoint; }
+
+  compute(): void {
+    const c = this.sphere.getBase().toPoint();
+    const r = this.sphere.getParam();
+    const theta = this.theta.getValue();
+    const phi = this.phi.getValue();
+    const sp = Math.sin(phi);
+    this.outputPoint.setCoords(
+      c.x + r * sp * Math.cos(theta),
+      c.y + r * sp * Math.sin(theta),
+      c.z + r * Math.cos(phi),
+    );
+    this.outputPoint.setDefined();
+  }
+
+  updateParameter(x: number, y: number, z: number): void {
+    const c = this.sphere.getBase().toPoint();
+    const dx = x - c.x, dy = y - c.y, dz = z - c.z;
+    const len = Math.hypot(dx, dy, dz);
+    if (len < 1e-12) return;
+    const phi = Math.acos(Math.max(-1, Math.min(1, dz / len)));
+    let theta = Math.atan2(dy, dx);
+    if (!Number.isFinite(theta)) theta = 0;
+    this.phi.setValue(phi, false);
+    this.theta.setValue(theta, false);
   }
 }
