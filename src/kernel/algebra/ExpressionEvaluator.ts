@@ -22,21 +22,35 @@ const evaluateCall = (name: string, args: number[]): number => {
   }
 };
 
-export function evaluate(node: ExpressionNode, scope: Scope): number {
+/** 用户函数最小视图（避免 algebra → geo 运行期依赖；GeoFunction 结构兼容）。 */
+export interface UserFunctionView {
+  expression: ExpressionNode;
+  variableName: string;
+}
+
+/** 求值表达式。userFunctions 提供表达式内调用用户函数的能力（f(2) 一类）。 */
+export function evaluate(node: ExpressionNode, scope: Scope, userFunctions?: Map<string, UserFunctionView>): number {
   switch (node.kind) {
     case 'number': return node.value;
     case 'variable': return scope.get(node.name) ?? NaN;
     case 'call': {
-      const args = node.args.map(arg => evaluate(arg, scope));
+      const args = node.args.map(arg => evaluate(arg, scope, userFunctions));
+      if (userFunctions?.has(node.name)) {
+        const userFn = userFunctions.get(node.name)!;
+        if (args.length !== 1 || args.some(value => !Number.isFinite(value))) return NaN;
+        const callScope: Scope = new Map(scope);
+        callScope.set(userFn.variableName, args[0]);
+        return evaluate(userFn.expression, callScope, userFunctions);
+      }
       return args.some(value => !Number.isFinite(value)) ? NaN : evaluateCall(node.name, args);
     }
     case 'unary': {
-      const value = evaluate(node.operand, scope);
+      const value = evaluate(node.operand, scope, userFunctions);
       return Number.isFinite(value) ? -value : NaN;
     }
     case 'binary': {
-      const left = evaluate(node.left, scope);
-      const right = evaluate(node.right, scope);
+      const left = evaluate(node.left, scope, userFunctions);
+      const right = evaluate(node.right, scope, userFunctions);
       if (!Number.isFinite(left) || !Number.isFinite(right)) return NaN;
       switch (node.op) {
         case '+': return left + right;

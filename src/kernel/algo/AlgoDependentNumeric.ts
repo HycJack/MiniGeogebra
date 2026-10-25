@@ -4,7 +4,8 @@ import { GeoElement } from '../geo/GeoElement';
 import { GeoNumeric } from '../geo/GeoNumeric';
 import { Scope } from '../algebra/ExpressionNode';
 import { ExpressionNode } from '../algebra/ExpressionNode';
-import { evaluate } from '../algebra/ExpressionEvaluator';
+import { evaluate, UserFunctionView } from '../algebra/ExpressionEvaluator';
+import { GeoFunction } from '../geo/GeoFunction';
 
 export class AlgoDependentNumeric extends AlgoElement {
   private outputNumeric: GeoNumeric;
@@ -15,6 +16,7 @@ export class AlgoDependentNumeric extends AlgoElement {
     private expression: ExpressionNode,
     private dependencies: GeoNumeric[],
     expressionText = '',
+    private functionDependencies: GeoFunction[] = [],
   ) {
     super(kernel);
     this.expressionText = expressionText;
@@ -25,14 +27,14 @@ export class AlgoDependentNumeric extends AlgoElement {
   }
 
   setInputOutput(): void {
-    this.input = this.dependencies;
+    this.input = [...this.dependencies, ...this.functionDependencies];
     this.setOutput([this.outputNumeric]);
   }
 
   compute(): void {
     const scope: Scope = new Map();
     this.dependencies.forEach((dependency, index) => scope.set(dependency.label || `dep${index}`, dependency.getValue()));
-    const value = evaluate(this.expression, scope);
+    const value = evaluate(this.expression, scope, buildUserFnMap(this.functionDependencies));
     this.outputNumeric.setValue(value, false);
     this.outputNumeric.setDefined();
   }
@@ -40,4 +42,13 @@ export class AlgoDependentNumeric extends AlgoElement {
   getOutput(): GeoNumeric { return this.outputNumeric; }
 
   getExpressionText(): string { return this.expressionText; }
+}
+
+/** GeoFunction[] → 求值器用户函数表（按标签索引）。 */
+export function buildUserFnMap(fns: GeoFunction[]): Map<string, UserFunctionView> {
+  const map = new Map<string, UserFunctionView>();
+  for (const fn of fns) {
+    if (fn.label) map.set(fn.label, { expression: fn.expression, variableName: fn.variableName });
+  }
+  return map;
 }

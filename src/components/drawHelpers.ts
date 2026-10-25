@@ -624,7 +624,7 @@ export function drawRay(renderer: IRenderer, ray: GeoRay, selected: boolean, bou
 // ---- 绘制预览（工具构造中，未提交前的临时效果）----
 
 /** 根据当前模式渲染构造预览（预览线、预览圆、预览多边形等）。 */
-export function renderPreviews(mode: string, selectedElements: readonly GeoElement[], mousePos: WorldPoint, hoveredPoint: GeoPoint | null, coord: CoordinateSystem, renderer: IRenderer, bounds?: DrawBounds): void {
+export function renderPreviews(mode: string, selectedElements: readonly GeoElement[], mousePos: WorldPoint, hoveredPoint: GeoPoint | null, coord: CoordinateSystem, renderer: IRenderer, bounds?: DrawBounds, pathHit?: GeoElement | null): void {
   if (!bounds) return;
   const { minX, maxX, minY, maxY } = bounds;
   const targetX = hoveredPoint ? hoveredPoint.getX() : mousePos.x;
@@ -744,6 +744,44 @@ export function renderPreviews(mode: string, selectedElements: readonly GeoEleme
       }
     }
   }
+  // 幽灵点预览（对标官方 previewable point）：点类工具 hover 在路径上时
+    // 画出约束落点（线族线性投影 / 圆心向径投影），与随后 PointOn 的实际落点一致
+    if ((mode === 'point' || mode === 'point_on_object') && pathHit && !hoveredPoint) {
+      let gx: number | null = null;
+      let gy: number | null = null;
+      if (pathHit instanceof GeoSegment || pathHit instanceof GeoLine || pathHit instanceof GeoRay) {
+        let ax: number, ay: number, dx: number, dy: number;
+        if (pathHit instanceof GeoRay) {
+          ax = pathHit.startPoint.getX(); ay = pathHit.startPoint.getY();
+          dx = pathHit.secondPoint.getX() - ax; dy = pathHit.secondPoint.getY() - ay;
+        } else {
+          const l = pathHit as GeoLine;
+          if (Math.abs(l.b) > 1e-9) { ax = 0; ay = -l.c / l.b; } else { ax = -l.c / l.a; ay = 0; }
+          dx = -l.b; dy = l.a;
+        }
+        const len2 = dx * dx + dy * dy;
+        if (len2 > 1e-12) {
+          let t = ((mousePos.x - ax) * dx + (mousePos.y - ay) * dy) / len2;
+          if (pathHit instanceof GeoSegment) t = Math.max(0, Math.min(1, t));
+          if (pathHit instanceof GeoRay) t = Math.max(0, t);
+          gx = ax + t * dx; gy = ay + t * dy;
+        }
+      } else if (pathHit instanceof GeoConic && pathHit.isCircle()) {
+        const c = pathHit.getCenter();
+        const r = pathHit.getRadius();
+        const ddx = mousePos.x - c.x, ddy = mousePos.y - c.y;
+        const len = Math.hypot(ddx, ddy);
+        if (len > 1e-12) { gx = c.x + (r * ddx) / len; gy = c.y + (r * ddy) / len; }
+      }
+      if (gx !== null && gy !== null) {
+        renderer.beginPath();
+        renderer.arc(gx, gy, 4.5 / coord.xScale, 0, 2 * Math.PI);
+        renderer.strokeStyle = 'rgba(59, 130, 246, 0.9)';
+        renderer.lineWidth = 2 / coord.xScale;
+        renderer.setLineDash([]);
+        renderer.stroke();
+      }
+    }
   renderer.setLineDash([]);
   renderer.restore();
 }

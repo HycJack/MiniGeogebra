@@ -294,3 +294,57 @@ describe('球面依附点（AlgoPointOnSphere3D）', () => {
     expect(p.getZ()).toBeCloseTo(2, 6);
   });
 });
+
+describe('表达式内调用用户函数（f(2) / h(x) = f(x)+1）', () => {
+  it('v = f(2) + 1 创建活依赖数值并随 f 联动', () => {
+    const k = new Kernel();
+    addInput(k, 'f(x) = x²');
+    addInput(k, 'v = f(2) + 1');
+    const v = byLabel<GeoNumeric>(k, 'v');
+    expect(v.getValue()).toBeCloseTo(5, 9);
+    expect(v.isIndependent()).toBe(false);
+    // f 重定义 → v 跟随
+    addInput(k, 'f(x) = x + 1');
+    // 构造段重建会更换对象身份（同序列化重载语义），重新按标签解析
+    const v2 = byLabel<GeoNumeric>(k, 'v');
+    expect(v2.getValue()).toBeCloseTo(4, 9);
+    expect(v2.isIndependent()).toBe(false);
+  });
+
+  it('h(x) = f(x) + 1 复合用户函数', () => {
+    const k = new Kernel();
+    addInput(k, 'f(x) = x²');
+    addInput(k, 'h(x) = f(x) + 1');
+    const h = byLabel<GeoFunction>(k, 'h');
+    expect(h.evaluateAt(3)).toBeCloseTo(10, 9);
+    addInput(k, 'f(x) = 2x');
+    // 构造段重建更换对象身份：重新解析
+    const h2 = byLabel<GeoFunction>(k, 'h');
+    expect(h2.evaluateAt(3)).toBeCloseTo(7, 9);
+  });
+
+  it('未知函数名仍报 Unknown function', () => {
+    const k = new Kernel();
+    addInput(k, 'f(x) = x²');
+    expect(() => addInput(k, 'a = Sloope(2)')).toThrow(/Unknown function/);
+  });
+});
+
+describe('2D 函数拖拽（moveFunction 语义）', () => {
+  it('translateBy 替换 x−dx 后 +dy，逐帧复合精确', () => {
+    const k = new Kernel();
+    addInput(k, 'f(x) = x²');
+    const f = byLabel<GeoFunction>(k, 'f');
+    const algo = f.parentAlgo as unknown as { translateBy(dx: number, dy: number): void };
+    algo.translateBy(1, 0);
+    expect(f.evaluateAt(2)).toBeCloseTo(1, 9); // (2−1)²
+    algo.translateBy(0, 2);
+    expect(f.evaluateAt(2)).toBeCloseTo(3, 9); // (2−1)² + 2
+    // 与一次平移到 (1, 2) 的结果一致（替换复合精确）
+    const k2 = new Kernel();
+    addInput(k2, 'f(x) = x²');
+    const f2 = byLabel<GeoFunction>(k2, 'f');
+    (f2.parentAlgo as unknown as { translateBy(dx: number, dy: number): void }).translateBy(1, 2);
+    expect(f2.evaluateAt(2)).toBeCloseTo(f.evaluateAt(2), 9);
+  });
+});

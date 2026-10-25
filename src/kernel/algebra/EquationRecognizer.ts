@@ -102,7 +102,7 @@ import { GeoLocus } from '../geo/GeoLocus';
 import { AlgoDependentFunction } from '../algo/AlgoDependentFunction';
 import { AlgoDependentNumeric } from '../algo/AlgoDependentNumeric';
 import { AlgoDerivative } from '../algo/AlgoDerivative';
-import { parseExpression, withIdentifierHints } from './ExpressionParser';
+import { parseExpression, withIdentifierHints, BUILTIN_FUNCTIONS } from './ExpressionParser';
 import { evaluate } from './ExpressionEvaluator';
 import { collectVariables, ExpressionNode, Scope } from './ExpressionNode';
 import { differentiate, expressionToString } from './Differentiator';
@@ -448,6 +448,25 @@ let redefineSeq = 0;
     }).filter((dependency): dependency is GeoNumeric => dependency !== null);
   };
 
+  /** 表达式内调用的用户函数依赖（f(2)、h(x) = f(x)+1），未知名字报错。 */
+  const makeFunctionDeps = (ast: ExpressionNode, selfLabel?: string): GeoFunction[] => {
+    const out: GeoFunction[] = [];
+    const visit = (node: ExpressionNode) => {
+      if (node.kind === 'call') {
+        if (!BUILTIN_FUNCTIONS.has(node.name)) {
+          const fn = construction.getElements().find(
+            el => el instanceof GeoFunction && (el as GeoFunction).label === node.name) as GeoFunction | undefined;
+          if (!fn) throw new Error(`Unknown function "${node.name}"`);
+          if (fn.label !== selfLabel && !out.includes(fn)) out.push(fn);
+        }
+        node.args.forEach(visit);
+      } else if (node.kind === 'binary') { visit(node.left); visit(node.right); }
+      else if (node.kind === 'unary') { visit(node.operand); }
+    };
+    visit(ast);
+    return out;
+  };
+
   const findNumeric = (label: string): GeoNumeric | undefined =>
     construction.getElements().find(el => el instanceof GeoNumeric && (el as GeoNumeric).label === label) as GeoNumeric | undefined;
 
@@ -714,17 +733,24 @@ let redefineSeq = 0;
         if (!(existingFn instanceof GeoFunction)) throw new Error(`Label "${functionHeader.label}" already exists`);
         const expression = parseExpression(rightText);
         const dependencies = makeNumericDependencies(expression, [functionHeader.variableName]);
-        const algo = new AlgoDependentFunction(kernel, expression, functionHeader.variableName, rightText, dependencies);
+        const fnDeps = makeFunctionDeps(expression, functionHeader.label);
+        const algo = new AlgoDependentFunction(kernel, expression, functionHeader.variableName, rightText, dependencies, fnDeps);
+        // 与 redefineElement 同一条构造段重建路径（输入缓存于私有字段，仅换 input 数组不生效）
         const oldAlgo = existingFn.parentAlgo;
-        construction.replaceElement(existingFn, algo.getOutput(), algo);
-        if (oldAlgo && oldAlgo !== algo) construction.removeAlgoKeepOutputs(oldAlgo);
+        if (oldAlgo && oldAlgo.getGeoElements().length !== 1) {
+          throw new Error(`Cannot redefine "${functionHeader.label}": it is one output of a multi-output object`);
+        }
+        if (algo.getInput().includes(existingFn)) throw new Error(`Circular definition of "${functionHeader.label}"`);
+        construction.rebuildReplace(existingFn, algo.getOutput(), algo);
+        if (oldAlgo) construction.removeAlgoKeepOutputs(oldAlgo);
         algo.update();
         construction.updateDependentAlgorithms(algo.getOutput());
         return [];
       }
       const expression = parseExpression(rightText);
       const dependencies = makeNumericDependencies(expression, [functionHeader.variableName]);
-      const algo = new AlgoDependentFunction(kernel, expression, functionHeader.variableName, rightText, dependencies);
+      const fnDeps = makeFunctionDeps(expression, functionHeader.label);
+      const algo = new AlgoDependentFunction(kernel, expression, functionHeader.variableName, rightText, dependencies, fnDeps);
       algo.getOutput().label = functionHeader.label;
       return [algo, algo.getOutput()];
     }
@@ -827,8 +853,9 @@ let redefineSeq = 0;
         }
       }
       const dependencies = makeNumericDependencies(expression);
-      if (dependencies.length > 0) {
-        const algo = new AlgoDependentNumeric(kernel, expression, dependencies, rightText);
+      const fnDeps = makeFunctionDeps(expression);
+      if (dependencies.length > 0 || fnDeps.length > 0) {
+        const algo = new AlgoDependentNumeric(kernel, expression, dependencies, rightText, fnDeps);
         algo.getOutput().label = leftText;
         return [algo, algo.getOutput()];
       }
@@ -969,9 +996,10 @@ let redefineSeq = 0;
     algo.getOutput().label = construction.getNextFunctionLabel(existingLabels);
     return [algo, algo.getOutput()];
   }
-  if (variables.size === 0 || numericDependencies.length > 0) {
-    if (numericDependencies.length > 0) {
-      const algo = new AlgoDependentNumeric(kernel, expression, numericDependencies, raw);
+  const bareFnDeps = makeFunctionDeps(expression);
+  if (variables.size === 0 || numericDependencies.length > 0 || bareFnDeps.length > 0) {
+    if (numericDependencies.length > 0 || bareFnDeps.length > 0) {
+      const algo = new AlgoDependentNumeric(kernel, expression, numericDependencies, raw, bareFnDeps);
       algo.getOutput().label = construction.getNextNumericLabel(existingLabels);
       return [algo, algo.getOutput()];
     }

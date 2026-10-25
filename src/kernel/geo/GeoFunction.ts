@@ -42,6 +42,7 @@ const ASYMPTOTE_RATIO = 4;
 
 export class GeoFunction extends GeoElement {
   private scope: Scope = new Map();
+  private userFunctions: Map<string, { expression: ExpressionNode; variableName: string }> | null = null;
   private samples: FunctionSample[] = [];
   private sampledRange: { minX: number; maxX: number; pixelWidth: number; viewHeight: number } | null = null;
   private samplesDirty = true;
@@ -60,8 +61,21 @@ export class GeoFunction extends GeoElement {
   get defaultStrokeColor(): string { return '#dc2626'; }
   get defaultLineWidth(): number { return 2; }
 
+  /** 就地替换定义（函数拖拽 moveFunction 用）：表达式与文本一起更新并失效采样。 */
+  setExpressionDef(expression: ExpressionNode, text: string): void {
+    (this as { expression: ExpressionNode }).expression = expression;
+    (this as { expressionText: string }).expressionText = text;
+    this.samplesDirty = true;
+  }
+
   setScope(scope: Scope): void {
     this.scope = scope;
+    this.samplesDirty = true;
+  }
+
+  /** 表达式内可调用的用户函数表（h(x) = f(x) + 1 一类的活链接）。 */
+  setUserFunctions(fns: Map<string, { expression: ExpressionNode; variableName: string }>): void {
+    this.userFunctions = fns;
     this.samplesDirty = true;
   }
 
@@ -79,7 +93,7 @@ export class GeoFunction extends GeoElement {
   evaluateAt(x: number): number {
     const scope = new Map(this.scope);
     scope.set(this.variableName, x);
-    return evaluate(this.expression, scope);
+    return evaluate(this.expression, scope, this.userFunctions);
   }
 
   /**

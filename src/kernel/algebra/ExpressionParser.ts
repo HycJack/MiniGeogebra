@@ -347,7 +347,8 @@ class Parser {
     if (token.type === 'number') return { kind: 'number', value: token.value };
     if (token.type === 'identifier') {
       if (this.peek().type === 'leftParen') {
-        if (!BUILTIN_FUNCTIONS.has(token.value)) throw new Error(`Unknown function "${token.value}"`);
+        // 非内建函数名也建 call 节点：表达式内调用用户函数（f(2)）由此支撑，
+        // 未知名字的校验由识别器的依赖收集承担（报错语义保留，延后到解析后）
         this.advance();
         const args: ExpressionNode[] = [];
         if (this.peek().type !== 'rightParen') {

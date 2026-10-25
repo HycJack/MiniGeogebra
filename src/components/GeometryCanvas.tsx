@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useRenderLoop } from '../hooks/useRenderLoop';
 import { Kernel } from '../kernel/core/Kernel';
+import { parseAlgebraInput } from '../kernel/algebra/EquationRecognizer';
 import { GeoPoint } from '../kernel/geo/GeoPoint';
 import { GeoPoint3D } from '../kernel/geo/GeoPoint3D';
 import { GeoLine } from '../kernel/geo/GeoLine';
@@ -40,7 +41,7 @@ import { importOFF } from '../kernel/io/OffParser';
 import { toolHandlers, clearToolState } from './tools/handlers';
 import { drawGrid, drawPoint, drawLine, drawSegment, drawPolygon, drawConic, drawLocus, drawBooleanRegion, drawFunction, renderPreviews, drawVector, drawPolyLine, drawArc, drawConicPart, drawRay, drawHoverMarker, drawCurve, drawInequality, drawText } from './drawHelpers';
 import { useLanguage } from '../i18n/LanguageContext';
-import { Undo2, Redo2, Globe, ZoomIn, ZoomOut, Home, Maximize, ListOrdered, Trash2, Eye, EyeOff, Tag, MousePointerClick, Play, Pause, Lock, LockOpen, Waypoints, ChevronsUp, ChevronsDown, Copy } from 'lucide-react';
+import { Undo2, Redo2, Globe, ZoomIn, ZoomOut, Home, Maximize, ListOrdered, Trash2, Eye, EyeOff, Tag, MousePointerClick, Play, Pause, Lock, LockOpen, Waypoints, ChevronsUp, ChevronsDown, Copy, Pencil } from 'lucide-react';
 import { ToolMode } from './tools/types';
 
 // 切换到这些工具时保留选区（先选对象 → 再选变换工具的 GeoGebra 工作流）
@@ -688,7 +689,14 @@ export const GeometryCanvas: React.FC = () => {
       renderer.lineTo(mousePos.x, mousePos.y); renderer.stroke(); renderer.setLineDash([]);
     }
 
-    renderPreviews(mode, selectedElements, mousePos, hoveredPoint, coord, renderer, coord.visibleWorldBounds());
+    // 幽灵点：点类工具 hover 命中路径对象时传入（与 handlers 的命中过滤一致）
+    const ghostPath = (mode === 'point' || mode === 'point_on_object')
+      ? hitScreenObject(
+          kernel.getConstruction().getElements().filter(el => el.isEffectivelyVisible() && (navStep === null || el.constIndex <= navStep)),
+          mousePos.x, mousePos.y, coord.xScale,
+        )
+      : null;
+    renderPreviews(mode, selectedElements, mousePos, hoveredPoint, coord, renderer, coord.visibleWorldBounds(), ghostPath);
 
     // 函数 hover 吸附点（在预览之上，避免被 preview 线段遮挡）
     if (functionHover) {
@@ -921,6 +929,12 @@ export const GeometryCanvas: React.FC = () => {
           draggedElement.parentAlgo.getInput().forEach(el => { if (el instanceof GeoPoint && el.isIndependent()) el.setCoords(el.getX() + dx, el.getY() + dy); }); draggedElement.parentAlgo.update();
         } else if (draggedElement instanceof GeoVector) {
           (draggedElement as GeoVector).translate(new GeoVec3D(dx, dy, 0));
+        } else if (draggedElement instanceof GeoFunction && draggedElement.parentAlgo?.getClassName() === 'AlgoDependentFunction') {
+          // 官方 moveFunction：平移函数图像 = 表达式替换 x→(x−dx) 后 +dy
+          //（替换复合满足结合律，逐帧增量与一次到位精确一致）
+          (draggedElement.parentAlgo as unknown as { translateBy(dx: number, dy: number): void }).translateBy(dx, dy);
+          draggedElement.parentAlgo.update();
+          kernel.recomputeDependents(draggedElement);
         } else {
           // 独立直线（方程输入创建，无 parentAlgo）：平移方程
           (draggedElement as GeoLine).translate(new GeoVec3D(dx, dy, 0));
@@ -1023,6 +1037,28 @@ export const GeometryCanvas: React.FC = () => {
 
     const items = [] as import('./ContextMenu').ContextMenuItem[];
     items.push({ id: 'delete', label: t('ctxDelete'), icon: Trash2, onClick: () => deleteWithDependents([hit]) });
+    // 重定义（对标 GeoGebra ContextMenuGeoElement → Redefine）：画布内输入新定义式，
+    // 代数输入的同一条重定义路径（rebuildReplace）在此复用
+    items.push({
+      id: 'redefine',
+      label: t('ctxRedefine'),
+      icon: Pencil,
+      onClick: () => {
+        setContextMenuState(null);
+        const label = hit.label ?? '';
+        const hint = hit instanceof GeoFunction ? `${label}(x) = ` : `${label} = `;
+        requestTextValue(t('ctxRedefine'), hint, (raw) => {
+          if (!raw || !raw.trim()) return;
+          try {
+            const elements = parseAlgebraInput(kernel, raw.trim());
+            handleAlgebraElementsCreated(elements);
+            setRenderRev(r => r + 1);
+          } catch (err) {
+            alert(err instanceof Error ? err.message : String(err));
+          }
+        });
+      },
+    });
     items.push({ id: 'visibility', label: t('ctxToggleVisible'), icon: hit.visible === false ? EyeOff : Eye, onClick: () => recordStyleChange(hit, { visible: hit.visible === false }) });
     items.push({ id: 'label', label: t('ctxToggleLabel'), icon: Tag, onClick: () => recordStyleChange(hit, { labelVisible: !hit.labelVisible }) });
     // ── 元能力右键项（对标 GeoGebra ContextMenuGeoElement）──
