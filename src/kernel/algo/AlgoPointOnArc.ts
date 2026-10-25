@@ -43,23 +43,26 @@ export class AlgoPointOnArc extends AlgoElement {
     this.outputPoint.setDefined();
   }
 
-  /** 拖拽反解：目标点相对圆心的极角，夹到弧的起止角区间内。 */
+  /** 拖拽反解：目标点相对圆心的极角，夹到弧的实际扫窗内。 */
   updateParameter(x: number, y: number): void {
     const c = this.arc.getCenter();
     let theta = Math.atan2(y - c.y, x - c.x);
     const start = this.arc.getStartAngle();
-    let end = this.arc.getEndAngle();
+    const end = this.arc.getEndAngle();
     const ccw = this.arc.isCounterClockwise();
-    // 把 theta 归一到 [start, start+2π) 再夹取（考虑方向）
-    while (theta < start) theta += 2 * Math.PI;
-    while (theta >= start + 2 * Math.PI) theta -= 2 * Math.PI;
-    if (ccw) {
-      while (theta > end) end += 2 * Math.PI;
-      if (theta > end) theta = start;
-    } else {
-      while (theta < end) end -= 2 * Math.PI;
-      if (theta < end) theta = start;
+    // 与 GeoArc.isOnPath / 渲染同一约定：弧 = 从 start 沿扫向扫到 end 的窗口。
+    // 此前 ccw=false 分支没有上界夹取，拖拽可以把参数点甩到弧外。
+    const TWO_PI = 2 * Math.PI;
+    const sweep = ccw
+      ? ((start - end) % TWO_PI + TWO_PI) % TWO_PI
+      : ((end - start) % TWO_PI + TWO_PI) % TWO_PI;
+    let rel = ((theta - start) % TWO_PI + TWO_PI) % TWO_PI;
+    if (rel > sweep) {
+      // 超出扫窗：夹到较近的一端（起点或终点方向）
+      const toStart = Math.min(rel, TWO_PI - rel);
+      const toEnd = Math.abs(rel - sweep);
+      rel = toStart <= toEnd ? 0 : sweep;
     }
-    this.param.setValue(theta, false);
+    this.param.setValue(start + (ccw ? -rel : rel), false);
   }
 }

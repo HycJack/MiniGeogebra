@@ -80,7 +80,7 @@ describe('GeoGebra command input: two-point objects', () => {
     addInput(kernel, 'Segment(A, B)');
 
     const segment = ofType(kernel, GeoSegment)[0];
-    expect(segment.label).toBe('l1');
+    expect(segment.label).toBe('f');
     expect(segment.startPoint.label).toBe('A');
     expect(segment.endPoint.label).toBe('B');
     expect(segment.a).toBeCloseTo(-4, 10);
@@ -94,7 +94,7 @@ describe('GeoGebra command input: two-point objects', () => {
     addInput(kernel, 'Line(A, B)');
 
     const line = ofType(kernel, GeoLine)[0];
-    expect(line.label).toBe('l1');
+    expect(line.label).toBe('f');
     expect(line.a).toBeCloseTo(-4, 10);
     expect(line.b).toBeCloseTo(3, 10);
     expect(line.c).toBeCloseTo(1, 10);
@@ -106,7 +106,7 @@ describe('GeoGebra command input: two-point objects', () => {
     addInput(kernel, 'Ray(A, B)');
 
     const ray = ofType(kernel, GeoRay)[0];
-    expect(ray.label).toBe('l1');
+    expect(ray.label).toBe('f');
     expect(ray.getStartPoint().label).toBe('A');
     expect(ray.getSecondPoint().label).toBe('B');
     expect(ofType(kernel, AlgoRayTwoPoints)).toHaveLength(1);
@@ -117,7 +117,7 @@ describe('GeoGebra command input: two-point objects', () => {
     addInput(kernel, 'Vector(A, B)');
 
     const vector = ofType(kernel, GeoVector)[0];
-    expect(vector.label).toBe('l1');
+    expect(vector.label).toBe('u');
     expect(vector.startX).toBeCloseTo(1, 10);
     expect(vector.endX).toBeCloseTo(4, 10);
     expect(vector.endY).toBeCloseTo(5, 10);
@@ -129,7 +129,7 @@ describe('GeoGebra command input: two-point objects', () => {
     addInput(kernel, 'Circle(A, B)');
 
     const circle = ofType(kernel, GeoConic)[0];
-    expect(circle.label).toBe('c1');
+    expect(circle.label).toBe('c');
     const center = circle.getCenter();
     expect(center.x).toBeCloseTo(1, 8);
     expect(center.y).toBeCloseTo(1, 8);
@@ -169,7 +169,7 @@ describe('GeoGebra command input: two-point objects', () => {
     addInput(kernel, 'Segment(A, B)');
 
     const segment = ofType(kernel, GeoSegment)[0];
-    expect(segment.label).toBe('l1');
+    expect(segment.label).toBe('f');
     expect(Math.hypot(segment.endPoint.getX() - segment.startPoint.getX(), segment.endPoint.getY() - segment.startPoint.getY()))
       .toBeCloseTo(5, 10);
   });
@@ -227,8 +227,12 @@ describe('GeoGebra command input: label allocation', () => {
 
     expect(new Set(labels).size).toBe(labels.length);
     expect(ofType(kernel, GeoPoint).map(p => p.label)).toEqual(['A', 'B', 'C']);
-    expect(labels.filter(l => l.startsWith('l')).sort()).toEqual(['l1', 'l2', 'l3']);
-    expect(labels.filter(l => l.startsWith('c')).sort()).toEqual(['c1']);
+    // GeoGebra 字符表：按对象类型分别断言归属（评审 M5：字符类正则无法区分归属）
+    expect(ofType(kernel, GeoSegment).map(el => el.label)).toEqual(['f']);
+    // GeoSegment 是 GeoLine 的子类：直线断言排除线段
+    expect(ofType(kernel, GeoLine).filter(l => !(l instanceof GeoSegment)).map(el => el.label)).toEqual(['g']);
+    expect(ofType(kernel, GeoVector).map(el => el.label)).toEqual(['u']);
+    expect(ofType(kernel, GeoConic).map(el => el.label)).toEqual(['c']);
   });
 
   it('skips labels already taken by existing points', () => {

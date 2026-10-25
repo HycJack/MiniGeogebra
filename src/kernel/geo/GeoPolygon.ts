@@ -21,7 +21,7 @@ export class GeoPolygon extends GeoElement implements Region {
     const labels = this.vertices.map(v => v.label || '?').join(', ');
     const perim = this.getPerimeter();
     const area = this.getArea();
-    return `${this.label} = [${labels}]（周长 ${perim.toFixed(2)}，面积 ${area.toFixed(2)}）`;
+    return `${this.label} = [${labels}]（周长 ${this.fmt(perim)}，面积 ${this.fmt(area)}）`;
   }
 
   protected getPerimeter(): number {

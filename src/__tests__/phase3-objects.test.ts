@@ -83,8 +83,8 @@ describe('B4: parametric curves', () => {
     expect(tangent.a).toBeCloseTo(0, 6); // 法向 (dy, −dx) ≈ (0, 1) → 水平线 y = 1
     expect(tangent.c).toBeCloseTo(-1, 6);
 
-    addInput(kernel, 'f(x) = x^2');
-    const [tangentF] = outputsOf(kernel, 'Tangent(f, 2)', GeoLine);
+    addInput(kernel, 'h(x) = x^2');
+    const [tangentF] = outputsOf(kernel, 'Tangent(h, 2)', GeoLine);
     // f(2)=4, f'(2)=4 → y − 4 = 4(x−2) → 4x − y − 4 = 0
     expect(tangentF.a).toBeCloseTo(4, 9);
     expect(tangentF.c).toBeCloseTo(-4, 9);

@@ -50,12 +50,15 @@ export function applySnap(
   }
 
   if (snapToPoint && points.length > 0) {
+    // 取**最近**点：此前命中第一个优于当前 best 的点就 break，
+    // 吸附结果取决于构造顺序（A 距 3 先出现、B 距 1 后出现时会吸到 A）。
+    // 只吸**独立**点（对标官方 sticky points）：吸到路径点/交点等派生对象
+    // 会让拖拽产生用户没打算要的坐标耦合
     for (const p of points) {
-      if (!p.isDefined()) continue;
+      if (!p.isDefined() || !p.isIndependent()) continue;
       const d = Math.hypot(p.getX() - x, p.getY() - y);
       if (d < radius && d < (best?.dist ?? Infinity)) {
         best = { x: p.getX(), y: p.getY(), dist: d, type: 'point', point: p };
-        break;
       }
     }
   }

@@ -24,11 +24,52 @@ import { GeoRay } from '../../kernel/geo/GeoRay';
 import { GeoElement } from '../../kernel/geo/GeoElement';
 import { GeoFunction } from '../../kernel/geo/GeoFunction';
 import { GeoCurve } from '../../kernel/geo/GeoCurve';
+import { GeoText } from '../../kernel/geo/GeoText';
 import { WorldPoint } from './types';
+import { getLabelAnchor, labelDrawable, type LabelBounds } from '../labels';
 
-/** 点命中：返回最顶层（逆序第一个命中）的点。 */
+/**
+ * 命中遍历顺序（图层感知，对标 GeoGebra layer）：
+ *   layer 高的先命中；同层内后绘制（数组靠后）的先命中。
+ */
+function hitOrder(els: readonly ConstructionElement[]): number[] {
+  const idx = els.map((_, i) => i);
+  idx.sort((a, b) => {
+    const la = (els[a] as GeoElement).layer ?? 0;
+    const lb = (els[b] as GeoElement).layer ?? 0;
+    if (la !== lb) return lb - la;
+    return b - a;
+  });
+  return idx;
+}
+
+/**
+ * 标签命中：与绘制共用锚点（labels.ts，含同一线可视弦中点）。
+ * 热区 = **实际字形框**（14px 字号，从锚点向右上伸展；评审 U5）：
+ * 12px 圆会压在线段中点/多边形形心等几何体上，抢在对象命中之前。
+ * bounds 必须与绘制侧一致，否则直线标签"画在哪"和"点在哪"会分离。
+ */
+export function hitLabel(els: readonly ConstructionElement[], x: number, y: number, scale: number, bounds?: LabelBounds): GeoElement | undefined {
+  for (const i of hitOrder(els)) {
+    const el = els[i];
+    if (!(el instanceof GeoElement) || el.visible === false) continue;
+    if (!labelDrawable(el)) continue;
+    const anchor = getLabelAnchor(el, scale, bounds);
+    if (!anchor) continue;
+    const textW = (el.label.length * 9 + 4) / scale;   // 14px bold 平均字宽 ≈ 9px
+    const textH = 16 / scale;
+    const margin = 2 / scale;
+    if (x >= anchor.x - margin && x <= anchor.x + textW + margin &&
+        y >= anchor.y - margin && y <= anchor.y + textH + margin) {
+      return el;
+    }
+  }
+  return undefined;
+}
+
+/** 点命中：返回最顶层（图层优先，其次后绘制）的点。 */
 export function hitScreenPoint(els: readonly ConstructionElement[], x: number, y: number, eps: number): GeoPoint | undefined {
-  for (let i = els.length - 1; i >= 0; i--) {
+  for (const i of hitOrder(els)) {
     const el = els[i];
     if (el instanceof GeoPoint && Math.hypot(el.getX() - x, el.getY() - y) < eps) {
       return el as GeoPoint;
@@ -138,17 +179,17 @@ export function functionParameterAt(
   return bestDistance === Number.POSITIVE_INFINITY ? NaN : bestX;
 }
 
-/** 通用对象命中：点优先；其次线段、直线、圆、多边形。 */
+/** 通用对象命中：点优先；其次线段、直线、圆、多边形。两轮均按图层排序。 */
 export function hitScreenObject(els: readonly ConstructionElement[], x: number, y: number, scale: number): GeoElement | undefined {
   // 1. 优先命中点（吸附热区）
-  for (let i = els.length - 1; i >= 0; i--) {
+  for (const i of hitOrder(els)) {
     const el = els[i];
     if (el instanceof GeoPoint && Math.hypot(el.getX() - x, el.getY() - y) < 10 / scale) {
       return el;
     }
   }
   // 2. 命中其他几何对象
-  for (let i = els.length - 1; i >= 0; i--) {
+  for (const i of hitOrder(els)) {
     const el = els[i];
     if (el instanceof GeoConicPart || el instanceof GeoArc) {
       const r = (el as GeoConic).getRadius();
@@ -184,6 +225,13 @@ export function hitScreenObject(els: readonly ConstructionElement[], x: number, 
       if (isPointOnCurve(el, x, y, 5 / scale)) return el;
     } else if (el instanceof GeoPolygon) {
       if ((el as any).isInRegionXY(x, y)) return el;
+    } else if (el instanceof GeoText) {
+      // 文本此前无任何命中路径：画布上点不中、选不中、删不掉。
+      // 热区按 14px 字号估算的包围盒（上下各留余量，规避基线方向差异）。
+      const w = (el.text.length * 9 + 4) / scale;
+      const h = 16 / scale;
+      const m = 2 / scale;
+      if (x >= el.x - m && x <= el.x + w + m && y >= el.y - h - m && y <= el.y + h + m) return el;
     } else if (el instanceof GeoElement && (el as any).isInRegionXY && typeof (el as any).contours !== 'undefined') {
       // GeoBooleanRegion 等轮廓区域：点内命中
       if ((el as any).isInRegionXY(x, y)) return el;
@@ -239,27 +287,9 @@ export function hitPolygon(els: readonly ConstructionElement[], x: number, y: nu
   return undefined;
 }
 
-/** 直线在世界边界内的两个端点（用于预览线）。 */
-export function lineWorldEndpoints(a: number, b: number, c: number, bounds: { minX: number; maxX: number; minY: number; maxY: number }): { p0: WorldPoint; p1: WorldPoint } | null {
-  const { minX, maxX, minY, maxY } = bounds;
-  let p0: WorldPoint | null = null, p1: WorldPoint | null = null;
-  const tryP = (x: number, y: number) => {
-    if (x >= minX - 1e-9 && x <= maxX + 1e-9 && y >= minY - 1e-9 && y <= maxY + 1e-9) {
-      if (!p0) p0 = { x, y };
-      else if (!p1) { p1 = { x, y }; return true; }
-    }
-    return false;
-  };
-  if (Math.abs(b) > 1e-12) {
-    tryP(minX, (-c - a * minX) / b);
-    tryP(maxX, (-c - a * maxX) / b);
-  }
-  if (Math.abs(a) > 1e-12) {
-    tryP((-c - b * minY) / a, minY);
-    tryP((-c - b * maxY) / a, maxY);
-  }
-  return p0 && p1 ? { p0, p1 } : null;
-}
+// lineWorldEndpoints 迁至 labels.ts（labels 不可反向依赖 hitTests，见该文件注释）。
+export { lineWorldEndpoints } from '../labels';
+
 
 /** 以两点定直线 Ax+By+C=0：A=y1-y0, B=x0-x1, C=-Ax0-By0 */
 export function lineFromTwoPoints(p0: { x: number; y: number }, p1: { x: number; y: number }): { a: number; b: number; c: number } {

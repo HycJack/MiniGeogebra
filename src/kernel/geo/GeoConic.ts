@@ -21,18 +21,18 @@ export class GeoConic extends GeoElement implements Path {
     if (this.isCircle()) {
       const { x: h, y: k } = this.getCenter();
       const r = this.getRadius();
-      const hStr = Math.abs(h) < 1e-9 ? '' : h >= 0 ? `- ${h.toFixed(2)}` : `+ ${Math.abs(h).toFixed(2)}`;
-      const kStr = Math.abs(k) < 1e-9 ? '' : k >= 0 ? `- ${k.toFixed(2)}` : `+ ${Math.abs(k).toFixed(2)}`;
-      return `${this.label} : (x ${hStr})² + (y ${kStr})² = ${r.toFixed(2)}²`;
+      const hStr = Math.abs(h) < 1e-9 ? '' : h >= 0 ? `- ${this.fmt(h)}` : `+ ${this.fmt(Math.abs(h))}`;
+      const kStr = Math.abs(k) < 1e-9 ? '' : k >= 0 ? `- ${this.fmt(k)}` : `+ ${this.fmt(Math.abs(k))}`;
+      return `${this.label} : (x ${hStr})² + (y ${kStr})² = ${this.fmt(r)}²`;
     }
 
     const parts: string[] = [];
-    if (Math.abs(A) > 1e-9) parts.push(`${A.toFixed(2)}x²`);
-    if (Math.abs(B) > 1e-9) parts.push(`${B.toFixed(2)}xy`);
-    if (Math.abs(C) > 1e-9) parts.push(`${C.toFixed(2)}y²`);
-    if (Math.abs(D) > 1e-9) parts.push(`${D.toFixed(2)}x`);
-    if (Math.abs(E) > 1e-9) parts.push(`${E.toFixed(2)}y`);
-    if (Math.abs(F) > 1e-9) parts.push(`${F.toFixed(2)}`);
+    if (Math.abs(A) > 1e-9) parts.push(`${this.fmt(A)}x²`);
+    if (Math.abs(B) > 1e-9) parts.push(`${this.fmt(B)}xy`);
+    if (Math.abs(C) > 1e-9) parts.push(`${this.fmt(C)}y²`);
+    if (Math.abs(D) > 1e-9) parts.push(`${this.fmt(D)}x`);
+    if (Math.abs(E) > 1e-9) parts.push(`${this.fmt(E)}y`);
+    if (Math.abs(F) > 1e-9) parts.push(`${this.fmt(F)}`);
     let expr = parts.join(' + ').replace(/\+ -/g, '- ');
     if (expr === '') expr = '0';
     return `${this.label} : ${expr} = 0`;
@@ -101,6 +101,16 @@ export class GeoConic extends GeoElement implements Path {
         }
       });
       this.parentAlgo.update();
+    } else {
+      // 独立圆锥曲线（方程输入创建，无输入点可搬）：直接平移系数。
+      // 曲线平移 (dx,dy) = 旧方程代入 x_old = x−dx, y_old = y−dy 展开同次项
+      const [A, B, C, D, E, F] = this.coeffs;
+      this.coeffs = [
+        A, B, C,
+        D - 2 * A * dx - B * dy,
+        E - B * dx - 2 * C * dy,
+        F + A * dx * dx + B * dx * dy + C * dy * dy - D * dx - E * dy,
+      ];
     }
     this.update();
   }
@@ -141,13 +151,14 @@ export class GeoConic extends GeoElement implements Path {
 
   getConicType(): ConicType {
     const [A, B, C, D, E, F] = this.coeffs;
-    // 退化（空集/单点/一对直线）优先判定：det3=0。此前退化曲线会被
+    // 退化（空集/单点/一对直线）优先判定（平移稳健的相对判据）。此前退化曲线会被
     // 误按椭圆/双曲线/抛物线处理（切线/取点/采样全部走错分支）。
-    const mag = Math.max(Math.abs(A), Math.abs(B), Math.abs(C), Math.abs(D), Math.abs(E), Math.abs(F), 1);
-    if (isConicDegenerate(this.coeffs, mag)) return 'degenerate';
+    if (isConicDegenerate(this.coeffs)) return 'degenerate';
     if (this.isCircle()) return 'circle';
     const disc = B * B - 4 * A * C;
-    if (Math.abs(disc) < 1e-9) return 'parabola';
+    // 判别式相对阈值：绝对 1e-9 会把大系数（x²/1e10 − y² = 1）的双曲线误判成抛物线
+    const qmag = Math.max(A * A, C * C, 1e-30);
+    if (Math.abs(disc) < 1e-12 * qmag) return 'parabola';
     if (disc < 0) return 'ellipse';
     return 'hyperbola';
   }

@@ -13,6 +13,7 @@ import { AlgoCircleCenterPoint } from '../algo/AlgoCircleCenterPoint';
 import { AlgoCircleThreePoints } from '../algo/AlgoCircleThreePoints';
 import { AlgoCircleCenter } from '../algo/AlgoCircleCenter';
 import { AlgoIntersect } from '../algo/AlgoIntersect';
+import { AlgoIntersectFunctions, INTERSECT_FUNCTIONS_CAPACITY } from '../algo/AlgoIntersectFunctions';
 import { AlgoParallelLine } from '../algo/AlgoParallelLine';
 import { AlgoOrthogonalLine } from '../algo/AlgoOrthogonalLine';
 import { AlgoPerpendicularBisector } from '../algo/AlgoPerpendicularBisector';
@@ -21,11 +22,13 @@ import { AlgoPointOnLine } from '../algo/AlgoPointOnLine';
 import { AlgoPointOnSegment } from '../algo/AlgoPointOnSegment';
 import { AlgoPointOnConic } from '../algo/AlgoPointOnConic';
 import { AlgoPointOnPolyLine } from '../algo/AlgoPointOnPolyLine';
+import { AlgoPointOnRay } from '../algo/AlgoPointOnRay';
 import { AlgoPointOnLine3D, AlgoPointOnCircle3D, AlgoPointOnConic3D, AlgoPointOnPolyline3D, AlgoPointInPlane3D } from '../algo/AlgoPointOn3D';
 import { AlgoTranslate } from '../algo/AlgoTranslate';
 import { AlgoDistance } from '../algo/AlgoDistance';
 import { AlgoAngle } from '../algo/AlgoAngle';
 import { AlgoArea } from '../algo/AlgoArea';
+import { AlgoPerimeter } from '../algo/AlgoPerimeter';
 import { AlgoTangent } from '../algo/AlgoTangent';
 import { AlgoLocus } from '../algo/AlgoLocus';
 import { AlgoLocus3D } from '../algo/AlgoLocus3D';
@@ -46,6 +49,7 @@ import { AlgoText } from '../algo/AlgoText';
 import { AlgoAngleOriented } from '../algo/AlgoAngle';
 import { GeoText } from '../geo/GeoText';
 import { GeoList } from '../geo/GeoList';
+import { GeoBoolean } from '../geo/GeoBoolean';
 import { AlgoRootList, ROOT_LIST_CAPACITY } from '../algo/AlgoRootList';
 import { AlgoFunctionExtremumPoint } from '../algo/AlgoFunctionExtremumPoint';
 import { AlgoExtremumList, EXTREMUM_LIST_CAPACITY } from '../algo/AlgoExtremumList';
@@ -72,6 +76,8 @@ import { AlgoRegularPolygon } from '../algo/AlgoRegularPolygon';
 import { AlgoRegularPolygonEdge } from '../algo/AlgoRegularPolygonEdge';
 import { GeoPolygon } from '../geo/GeoPolygon';
 import { GeoConic } from '../geo/GeoConic';
+import { GeoArc } from '../geo/GeoArc';
+import { GeoConicPart, type ConicPartType } from '../geo/GeoConicPart';
 import { GeoLine } from '../geo/GeoLine';
 import { GeoVector } from '../geo/GeoVector';
 import { GeoPoint3D } from '../geo/GeoPoint3D';
@@ -143,6 +149,14 @@ interface SerializedElement {
   meshVertices?: [number, number, number][];
   meshFaces?: number[][];
   meshFaceColors?: string[];
+  /** 自由 GeoArc / GeoConicPart 的圆几何（v4 起，此前这两类被静默丢弃） */
+  arc?: {
+    cx: number; cy: number; r: number;
+    startAngle: number; endAngle: number; ccw: boolean; partType?: number;
+  };
+  /** GeoBoolean 的当前值与关联对象标签 */
+  booleanValue?: boolean;
+  linkedLabels?: string[];
   style?: Record<string, unknown>;
 }
 
@@ -174,12 +188,36 @@ export interface ConstructionJSON {
     width: number;
     height: number;
   };
+  /** v4 起：视图级选项（rounding / 角度单位 / 点捕捉），缺省用内核默认值。 */
+  options?: {
+    rounding: number;
+    angleUnit: string;
+    pointCapturing: string;
+  };
   independentElements: SerializedElement[];
   algorithms: SerializedAlgorithm[];
 }
 
 const GENERATOR = 'MiniGeogebra';
-const VERSION = 3;
+const VERSION = 4;
+
+/** 统一的样式快照（含标签偏移与元能力位），serialize 各分支与 restoreStyle 共用。 */
+function styleOf(el: GeoElement): Record<string, unknown> {
+  return {
+    strokeColor: el.strokeColor,
+    strokeWidth: el.strokeWidth,
+    strokeDash: el.strokeDash ? [...el.strokeDash] : [],
+    fillColor: el.fillColor,
+    labelVisible: el.labelVisible,
+    labelMode: el.labelMode,
+    visible: el.visible,
+    labelOffsetX: el.labelOffsetX,
+    labelOffsetY: el.labelOffsetY,
+    isFixed: el.isFixed,
+    trace: el.trace,
+    layer: el.layer,
+  };
+}
 
 /** Factory: rebuild algorithm instance by type (inputs already exist in map) */
 function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], scalars?: number[]): AlgoElement {
@@ -188,12 +226,15 @@ function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], scalars?
   const asLine = (n: number) => inputs[n] as import('../geo/GeoLine').GeoLine;
   const asSegment = (n: number) => inputs[n] as import('../geo/GeoSegment').GeoSegment;
   const asPolyLine = (n: number) => inputs[n] as import('../geo/GeoPolyLine').GeoPolyLine;
+  const asRay = (n: number) => inputs[n] as import('../geo/GeoRay').GeoRay;
 
   switch (type) {
     case 'AlgoLineTwoPoints':        return new AlgoLineTwoPoints(kernel, asPoint(0), asPoint(1));
     case 'AlgoSegmentTwoPoints':     return new AlgoSegmentTwoPoints(kernel, asPoint(0), asPoint(1));
     case 'AlgoMidpoint':             return new AlgoMidpoint(kernel, asPoint(0), asPoint(1));
-    case 'AlgoCirclePointRadius':    return new AlgoCirclePointRadius(kernel, asPoint(0), (inputs[1] as any)?.value ?? 50);
+    // 半径落盘；v4.2 起滑块半径作为 inputs[1]（GeoNumeric）活引用重建，
+    // 旧存档无 scalars 时回退（历史上恒为 50，属既有的静默损坏，v4.1 起修复）
+    case 'AlgoCirclePointRadius':    return new AlgoCirclePointRadius(kernel, asPoint(0), inputs[1] instanceof GeoNumeric ? inputs[1] : scalars?.[0] ?? (inputs[1] as any)?.value ?? 50);
     case 'AlgoCircleCenterPoint':    return new AlgoCircleCenterPoint(kernel, asPoint(0), asPoint(1));
     case 'AlgoCircleThreePoints':    return new AlgoCircleThreePoints(kernel, asPoint(0), asPoint(1), asPoint(2));
     case 'AlgoCircleCenter':         return new AlgoCircleCenter(kernel, asConic(0));
@@ -206,6 +247,7 @@ function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], scalars?
     case 'AlgoPointOnSegment':       return new AlgoPointOnSegment(kernel, asSegment(0), inputs[1] as GeoNumeric);
     case 'AlgoPointOnConic':         return new AlgoPointOnConic(kernel, asConic(0), inputs[1] as GeoNumeric);
     case 'AlgoPointOnPolyLine':      return new AlgoPointOnPolyLine(kernel, asPolyLine(0), inputs[1] as GeoNumeric);
+    case 'AlgoPointOnRay':           return new AlgoPointOnRay(kernel, asRay(0), inputs[1] as GeoNumeric);
     // ---- C10：3D path/region 依附点 ----
     case 'AlgoPointOnLine3D':        return new AlgoPointOnLine3D(kernel, inputs[0] as GeoLine3D, inputs[1] as GeoNumeric);
     case 'AlgoPointOnCircle3D':      return new AlgoPointOnCircle3D(kernel, inputs[0] as GeoCircle3D, inputs[1] as GeoNumeric);
@@ -223,6 +265,7 @@ function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], scalars?
     case 'AlgoAngle':                return new AlgoAngle(kernel, asPoint(0), asPoint(1), asPoint(2));
     case 'AlgoAngleOriented':        return new AlgoAngleOriented(kernel, asPoint(0), asPoint(1), asPoint(2));
     case 'AlgoArea':                 return new AlgoArea(kernel, inputs[0]);
+    case 'AlgoPerimeter':            return new AlgoPerimeter(kernel, inputs[0] as GeoPolygon);
     case 'AlgoTangent':              return new AlgoTangent(kernel, asConic(0), asPoint(1));
     case 'AlgoLocus':                return new AlgoLocus(kernel, inputs[1] as import('../geo/GeoPoint').GeoPoint, inputs[0] as import('../geo/GeoPoint').GeoPoint);
     case 'AlgoLocus3D':              return new AlgoLocus3D(kernel, inputs[1] as GeoPoint3D, inputs[0] as GeoPoint3D);
@@ -243,14 +286,36 @@ function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], scalars?
     case 'AlgoRegularPolygonEdge':  return new AlgoRegularPolygonEdge(kernel, asPoint(0), asPoint(1), Math.max(3, Math.round(scalars?.[0] ?? 6)));
     // 变换算法：inputs[1] 为活中心（GeoPoint）/活镜轴（GeoLine）时优先使用
     // （依赖联动），否则回退到 scalars 里的构造期坐标（兼容旧存档）。
-    case 'AlgoRotate':              return new AlgoRotate(kernel, inputs[0], inputs[1] instanceof GeoPoint ? inputs[1] : { x: scalars?.[1] ?? 0, y: scalars?.[2] ?? 0 }, scalars?.[0] ?? 0);
-    case 'AlgoDilate':              return new AlgoDilate(kernel, inputs[0], inputs[1] instanceof GeoPoint ? inputs[1] : { x: scalars?.[1] ?? 0, y: scalars?.[2] ?? 0 }, scalars?.[0] ?? 1);
+    // 活角度/活比例：v4.2 起数值输入挂在 inputs 末位（GeoNumeric），
+    // 重建时优先按活引用接回；静态角度/比例仍从 scalars 恢复
+    case 'AlgoRotate': {
+      const angleNum = inputs.length >= 2 && inputs[inputs.length - 1] instanceof GeoNumeric
+        ? inputs[inputs.length - 1] as GeoNumeric : null;
+      const centerSrc = angleNum ? inputs[inputs.length - 2] : inputs[1];
+      const center = centerSrc instanceof GeoPoint ? centerSrc : { x: scalars?.[1] ?? 0, y: scalars?.[2] ?? 0 };
+      const angle = angleNum ? angleNum.getValue() * Math.PI / 180 : scalars?.[0] ?? 0;
+      return new AlgoRotate(kernel, inputs[0], center, angle, angleNum);
+    }
+    case 'AlgoDilate': {
+      const ratioNum = inputs.length >= 2 && inputs[inputs.length - 1] instanceof GeoNumeric
+        ? inputs[inputs.length - 1] as GeoNumeric : null;
+      const centerSrc = ratioNum ? inputs[inputs.length - 2] : inputs[1];
+      const center = centerSrc instanceof GeoPoint ? centerSrc : { x: scalars?.[1] ?? 0, y: scalars?.[2] ?? 0 };
+      const ratio = ratioNum ? ratioNum.getValue() : scalars?.[0] ?? 1;
+      return new AlgoDilate(kernel, inputs[0], center, ratioNum ?? ratio);
+    }
     case 'AlgoFitPoly':             return new AlgoFitPoly(kernel, inputs as import('../geo/GeoPoint').GeoPoint[], scalars?.[0] ?? 1);
     case 'AlgoFunctionRootPoint':   {
       const algo = new AlgoFunctionRootPoint(kernel, inputs[0] as GeoFunction, scalars?.[0] ?? -10, scalars?.[1] ?? 10);
       const seed = scalars?.[2];
       algo.seedLastX(seed === null || seed === undefined || !Number.isFinite(seed) ? Number.NaN : seed);
       return algo;
+    }
+    case 'AlgoIntersectFunctions': {
+      // null 占位（禁用槽）→ NaN，再过滤成紧凑占用列表（构造函数按前 N 槽填充）
+      const slots = (scalars ?? []).slice(2).map(v => (v === null || v === undefined || !Number.isFinite(v) ? Number.NaN : v))
+        .filter((v: number) => Number.isFinite(v));
+      return new AlgoIntersectFunctions(kernel, inputs[0] as import('../geo/GeoFunction').GeoFunction, inputs[1] as import('../geo/GeoFunction').GeoFunction, scalars?.[0] ?? -20, scalars?.[1] ?? 20, INTERSECT_FUNCTIONS_CAPACITY, slots);
     }
     case 'AlgoRootList':            {
       // null 占位（禁用槽）也要保留位置语义：转回 NaN
@@ -418,15 +483,7 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
           constIndex: el.constIndex,
           label: el.label,
           coords3: [el.getX(), el.getY(), el.getZ()],
-          style: {
-            strokeColor: el.strokeColor,
-            strokeWidth: el.strokeWidth,
-            strokeDash: el.strokeDash ? [...el.strokeDash] : [],
-            fillColor: el.fillColor,
-            labelVisible: el.labelVisible,
-            labelMode: el.labelMode,
-            visible: el.visible,
-          },
+          style: styleOf(el),
         };
       }
       if (el instanceof GeoPoint) {
@@ -435,15 +492,7 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
           constIndex: el.constIndex,
           label: el.label,
           coords: [el.getX(), el.getY(), el.getZ()] as [number, number, number],
-          style: {
-            strokeColor: el.strokeColor,
-            strokeWidth: el.strokeWidth,
-            strokeDash: el.strokeDash ? [...el.strokeDash] : [],
-            fillColor: el.fillColor,
-            labelVisible: el.labelVisible,
-            labelMode: el.labelMode,
-            visible: el.visible,
-          },
+          style: styleOf(el),
         };
       }
       if (el instanceof GeoList) {
@@ -453,6 +502,36 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
           label: el.label,
           childIndices: el.getChildren().map(c => c.constIndex),
           style: { visible: el.visible },
+        };
+      }
+      if (el instanceof GeoBoolean) {
+        return {
+          type: 'GeoBoolean',
+          constIndex: el.constIndex,
+          label: el.label,
+          booleanValue: el.getValue(),
+          linkedLabels: [...el.linkedLabels],
+          style: styleOf(el),
+        };
+      }
+      if (el instanceof GeoConicPart || el.getClassName() === 'GeoArc') {
+        // 自由圆弧/圆锥片段（v4 修复：此前被静默跳过，保存后丢失）。
+        // 圆几何 = 圆心 + 半径 + 起止角 + 方向；GeoConicPart 另存 partType。
+        const arcEl = el as GeoArc | GeoConicPart;
+        return {
+          type: arcEl.getClassName(),
+          constIndex: arcEl.constIndex,
+          label: arcEl.label,
+          arc: {
+            cx: arcEl.getCenter().x,
+            cy: arcEl.getCenter().y,
+            r: arcEl.getRadius(),
+            startAngle: arcEl.getStartAngle(),
+            endAngle: arcEl.getEndAngle(),
+            ccw: arcEl.isCounterClockwise(),
+            partType: arcEl instanceof GeoConicPart ? arcEl.getPartType() : undefined,
+          },
+          style: styleOf(arcEl),
         };
       }
       if (el instanceof GeoText) {
@@ -479,15 +558,7 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
           animationSpeed: el.animationSpeed,
           animationIncrement: el.animationIncrement,
           animationType: el.animationType,
-          style: {
-            strokeColor: el.strokeColor,
-            strokeWidth: el.strokeWidth,
-            strokeDash: el.strokeDash ? [...el.strokeDash] : [],
-            fillColor: el.fillColor,
-            labelVisible: el.labelVisible,
-            labelMode: el.labelMode,
-            visible: el.visible,
-          },
+          style: styleOf(el),
         };
       }
       if (el instanceof GeoPolygon) {
@@ -497,15 +568,7 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
           constIndex: el.constIndex,
           label: el.label,
           vertices: el.vertices.map(v => v.constIndex),
-          style: {
-            strokeColor: el.strokeColor,
-            strokeWidth: el.strokeWidth,
-            strokeDash: el.strokeDash ? [...el.strokeDash] : [],
-            fillColor: el.fillColor,
-            labelVisible: el.labelVisible,
-            labelMode: el.labelMode,
-            visible: el.visible,
-          },
+          style: styleOf(el),
         };
       }
       if (el instanceof GeoConic && el.getClassName() === 'GeoConic') {
@@ -516,15 +579,7 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
           constIndex: el.constIndex,
           label: el.label,
           coeffs: [...el.coeffs],
-          style: {
-            strokeColor: el.strokeColor,
-            strokeWidth: el.strokeWidth,
-            strokeDash: el.strokeDash ? [...el.strokeDash] : [],
-            fillColor: el.fillColor,
-            labelVisible: el.labelVisible,
-            labelMode: el.labelMode,
-            visible: el.visible,
-          },
+          style: styleOf(el),
         };
       }
       if (el instanceof GeoLine && el.getClassName() === 'GeoLine') {
@@ -534,15 +589,7 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
           constIndex: el.constIndex,
           label: el.label,
           lineCoeffs: [el.a, el.b, el.c],
-          style: {
-            strokeColor: el.strokeColor,
-            strokeWidth: el.strokeWidth,
-            strokeDash: el.strokeDash ? [...el.strokeDash] : [],
-            fillColor: el.fillColor,
-            labelVisible: el.labelVisible,
-            labelMode: el.labelMode,
-            visible: el.visible,
-          },
+          style: styleOf(el),
         };
       }
       if (el instanceof GeoMesh3D) {
@@ -554,30 +601,14 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
           meshVertices: el.vertices.map(v => [v.getX(), v.getY(), v.getZ()] as [number, number, number]),
           meshFaces: el.faces.map(f => [...f]),
           meshFaceColors: el.faceColors ? [...el.faceColors] : undefined,
-          style: {
-            strokeColor: el.strokeColor,
-            strokeWidth: el.strokeWidth,
-            strokeDash: el.strokeDash ? [...el.strokeDash] : [],
-            fillColor: el.fillColor,
-            labelVisible: el.labelVisible,
-            labelMode: el.labelMode,
-            visible: el.visible,
-          },
+          style: styleOf(el),
         };
       }
       return {
         type: el.getClassName(),
         constIndex: el.constIndex,
         label: el.label,
-        style: {
-          strokeColor: el.strokeColor,
-          strokeWidth: el.strokeWidth,
-          strokeDash: el.strokeDash ? [...el.strokeDash] : [],
-            fillColor: el.fillColor,
-            labelVisible: el.labelVisible,
-            labelMode: el.labelMode,
-            visible: el.visible,
-        },
+        style: styleOf(el),
       };
     });
 
@@ -610,6 +641,9 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
         sa.type = 'AlgoDependentFunction';
         sa.expressionText = expressionToString(algo.getExpression());
         sa.variableName = algo.getVariableName();
+      } else if (algo instanceof AlgoCirclePointRadius) {
+        // P0-1：半径必须落盘，否则重载后恒回退 50，下游（面积/交点/切线/轨迹）全错
+        sa.scalars = [algo.getRadiusValue()];
       } else if (algo instanceof AlgoRotate) {
         sa.scalars = [algo.getAngle(), algo.getCenterCoords().x, algo.getCenterCoords().y];
       } else if (algo instanceof AlgoDilate) {
@@ -620,6 +654,11 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
         const [rlo, rhi] = algo.getSearchRange();
         // scalars[2] = 当前锁定根（NaN→null）：重建时恢复窗口位置
         sa.scalars = [rlo, rhi, algo.getLastSeedX()];
+      } else if (algo instanceof AlgoIntersectFunctions) {
+        const [rlo, rhi] = algo.getSearchRange();
+        // scalars[2..] = 各槽位当前交点 x（NaN→null 占位），重建时恢复槽位连续性
+        const slots = algo.getSlotXs().map(v => (Number.isFinite(v) ? v : null));
+        sa.scalars = [rlo, rhi, ...slots];
       } else if (algo instanceof AlgoRootList) {
         const [rlo, rhi] = algo.getSearchRange();
         // 额外保存每个槽位的当前根（NaN→null 占位，scalars[2..]），重建时恢复窗口播种
@@ -735,6 +774,14 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
       height: coord.height,
     };
   }
+
+  // v4 起：视图级选项一并落盘（对标 GeoGebra 把 Options 存进 .ggb）
+  const options = kernel.getOptions();
+  data.options = {
+    rounding: options.rounding,
+    angleUnit: options.angleUnit,
+    pointCapturing: options.pointCapturing,
+  };
 
   return JSON.stringify(data, null, 2);
 }
@@ -853,6 +900,17 @@ export function deserialize(kernel: Kernel, json: string): { coord?: CoordinateS
       num.setAnimationType((el.animationType ?? AnimationType.OSCILLATING) as AnimationType);
     } else if (el.type === 'GeoConic') {
       instance = new GeoConic(kernel, el.coeffs ? [...el.coeffs] : [1, 0, 1, 0, 0, -1]);
+    } else if (el.type === 'GeoArc' || el.type === 'GeoConicPart') {
+      // 自由圆弧/圆锥片段（v4）：由圆几何重建；旧存档无此类型（此前静默丢弃）
+      const a = el.arc;
+      if (!a) throw new Error(`missing arc geometry for ${el.type}`);
+      instance = el.type === 'GeoArc'
+        ? new GeoArc(kernel, { x: a.cx, y: a.cy }, a.r, a.startAngle, a.endAngle, a.ccw)
+        : new GeoConicPart(kernel, { x: a.cx, y: a.cy }, a.r, a.startAngle, a.endAngle, (a.partType ?? 0) as ConicPartType, a.ccw);
+    } else if (el.type === 'GeoBoolean') {
+      const bool = new GeoBoolean(kernel, el.booleanValue ?? false);
+      if (el.linkedLabels) bool.linkedLabels = [...el.linkedLabels];
+      instance = bool;
     } else if (el.type === 'GeoLine') {
       const [a = 0, b = 1, c = 0] = el.lineCoeffs ?? [0, 1, 0];
       instance = new GeoLine(kernel, a, b, c);
@@ -920,6 +978,18 @@ export function deserialize(kernel: Kernel, json: string): { coord?: CoordinateS
   // 3) Full recompute so all derived objects are in place
   construction.updateAllAlgorithms();
 
+  // 3.5) Restore view options（v4；统一走 set()，与 UI 修改同一路径）
+  if (data.options) {
+    const opts = kernel.getOptions();
+    const patch: Partial<{ rounding: number; angleUnit: 'degree' | 'radian'; pointCapturing: 'off' | 'automatic' | 'snap_grid' }> = {};
+    if (typeof data.options.rounding === 'number') patch.rounding = data.options.rounding;
+    if (data.options.angleUnit === 'degree' || data.options.angleUnit === 'radian') patch.angleUnit = data.options.angleUnit;
+    if (data.options.pointCapturing === 'off' || data.options.pointCapturing === 'automatic' || data.options.pointCapturing === 'snap_grid') {
+      patch.pointCapturing = data.options.pointCapturing;
+    }
+    opts.set(patch);
+  }
+
   // 4) Restore view
   let coord: CoordinateSystem | undefined;
   if (data.view) {
@@ -943,6 +1013,11 @@ function restoreStyle(instance: GeoElement, style: Record<string, unknown> | und
   if ('labelVisible' in style) instance.labelVisible = style.labelVisible as boolean;
   if ('labelMode' in style) instance.labelMode = style.labelMode as 'always' | 'mouse' | 'never';
   if ('visible' in style) instance.visible = style.visible as boolean;
+  if ('labelOffsetX' in style) instance.labelOffsetX = style.labelOffsetX as number;
+  if ('labelOffsetY' in style) instance.labelOffsetY = style.labelOffsetY as number;
+  if ('isFixed' in style) instance.isFixed = style.isFixed as boolean;
+  if ('trace' in style) instance.trace = style.trace as boolean;
+  if ('layer' in style) instance.layer = style.layer as number;
 }
 
 /** 重建单个算法并登记其输出（表达式类算法走 parseAlgebraInput 路径）。 */

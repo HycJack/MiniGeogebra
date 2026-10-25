@@ -6,6 +6,7 @@ import { GeoCircle3D } from '../kernel/geo/GeoCircle3D';
 import { GeoQuadric3D } from '../kernel/geo/GeoQuadric3D';
 import { GeoPolyhedron3D } from '../kernel/algo/AlgoPolyhedron3D';
 import { GeoPolyline3D } from '../kernel/geo/GeoPolyline3D';
+import { GeoConic3D } from '../kernel/geo/GeoConic3D';
 import { Coords4 } from '../kernel/core/Coords4';
 import { parseAlgebraInput } from '../kernel/algebra/EquationRecognizer';
 import { serialize, deserialize } from '../kernel/persistence/ConstructionSerializer';
@@ -118,13 +119,15 @@ describe('Plane × quadric sections', () => {
     addInput(kernel, 'T3 = (0, 1, 1)');
     addInput(kernel, 'cut = Plane3D(T1, T2, T3)');
     const sphere = ofType(kernel, GeoQuadric3D)[0];
-    const [ring] = outputsOf(kernel, `IntersectPath(cut, ${sphere.label})`, GeoPolyline3D);
-    expect(ring.points.length).toBe(65); // 64 采样 + 闭合点
+    // 解析截面（2026-10-25 审核轮）：输出 GeoConic3D 圆而非 64 点折线近似，
+    // 可继续取点/求圆心/参与下游构造
+    const [ring] = outputsOf(kernel, `IntersectPath(cut, ${sphere.label})`, GeoConic3D);
+    expect(ring.isDefined()).toBe(true);
     const radius = Math.sqrt(4 - 1);
     for (let i = 0; i < 8; i++) {
-      const p = ring.points[i * 8];
-      expect(Math.abs(Math.hypot(p.getX(), p.getY()) - radius)).toBeLessThan(1e-6);
-      expect(p.getZ()).toBeCloseTo(1, 6);
+      const p = ring.pointAt((i / 8) * 2 * Math.PI).toPoint();
+      expect(Math.abs(Math.hypot(p.x, p.y) - radius)).toBeLessThan(1e-6);
+      expect(p.z).toBeCloseTo(1, 6);
     }
   });
 
@@ -141,17 +144,15 @@ describe('Plane × quadric sections', () => {
     addInput(kernel, 'P3 = (0, 1, 2)');
     addInput(kernel, 'cut = Plane3D(P1, P2, P3)');
     const cyl = ofType(kernel, GeoQuadric3D)[0];
-    const [ring] = outputsOf(kernel, `IntersectPath(cut, ${cyl.label})`, GeoPolyline3D);
-    expect(ring.points.length).toBe(65);
-    // 环上每个点都在圆柱面上（距轴 1）且在平面上
-    const axis = cyl.getAxis();
+    // 斜截圆柱 = 椭圆（解析截面）。环上每个点都在圆柱面上（距轴 1）且在平面上
+    const [ring] = outputsOf(kernel, `IntersectPath(cut, ${cyl.label})`, GeoConic3D);
+    expect(ring.isDefined()).toBe(true);
+    void cyl;
     for (let i = 0; i < 8; i++) {
-      const p = ring.points[i * 8];
-      const along = p.getZ(); // 轴沿 z
-      const radial = Math.hypot(p.getX(), p.getY());
+      const p = ring.pointAt((i / 8) * 2 * Math.PI).toPoint();
+      const radial = Math.hypot(p.x, p.y);
       expect(Math.abs(radial - 1)).toBeLessThan(1e-6);
-      expect(Math.abs(p.getZ() - (p.getX() + 2))).toBeLessThan(1e-6);
-      void along;
+      expect(Math.abs(p.z - (p.x + 2))).toBeLessThan(1e-6);
     }
   });
 });

@@ -50,9 +50,11 @@ import { AlgoRayTwoPoints } from '../algo/AlgoRayTwoPoints';
 import { AlgoCircleCenterPoint } from '../algo/AlgoCircleCenterPoint';
 import { AlgoCirclePointRadius } from '../algo/AlgoCirclePointRadius';
 import { AlgoCircleThreePoints } from '../algo/AlgoCircleThreePoints';
+import { AlgoCircleCenter } from '../algo/AlgoCircleCenter';
 import { AlgoVector } from '../algo/AlgoVector';
 import { AlgoMidpoint } from '../algo/AlgoMidpoint';
 import { AlgoIntersect } from '../algo/AlgoIntersect';
+import { AlgoIntersectFunctions, INTERSECT_FUNCTIONS_CAPACITY } from '../algo/AlgoIntersectFunctions';
 import { AlgoPolygonBoolean } from '../algo/AlgoPolygonBoolean';
 import { GeoBooleanRegion } from '../geo/GeoBooleanRegion';
 import { AlgoDistance } from '../algo/AlgoDistance';
@@ -61,21 +63,46 @@ import { AlgoRotate, AlgoDilate, AlgoMirror } from '../algo/AlgoRotate';
 import { AlgoShearStretch } from '../algo/AlgoShearStretch';
 import { AlgoTranslate } from '../algo/AlgoTranslate';
 import { AlgoFitPoly } from '../algo/AlgoFitPoly';
+// ---- 命令面补齐（B 类：Algo 已有、此前仅工具栏可达）----
+import { AlgoParallelLine } from '../algo/AlgoParallelLine';
+import { AlgoOrthogonalLine } from '../algo/AlgoOrthogonalLine';
+import { AlgoPerpendicularBisector } from '../algo/AlgoPerpendicularBisector';
+import { AlgoAngleBisector } from '../algo/AlgoAngleBisector';
+import { AlgoEllipse } from '../algo/AlgoEllipse';
+import { AlgoHyperbola } from '../algo/AlgoHyperbola';
+import { AlgoParabola } from '../algo/AlgoParabola';
+import { AlgoConicFivePoints } from '../algo/AlgoConicFivePoints';
+import { AlgoSemicircle } from '../algo/AlgoSemicircle';
+import { AlgoArc } from '../algo/AlgoArc';
+import { AlgoCircularSector } from '../algo/AlgoCircularSector';
+import { AlgoCircumcircularArc } from '../algo/AlgoCircumcircularArc';
+import { AlgoCircumcircularSector } from '../algo/AlgoCircumcircularSector';
+import { AlgoCompass } from '../algo/AlgoCompass';
+import { AlgoRegularPolygonEdge } from '../algo/AlgoRegularPolygonEdge';
+import { AlgoInvert } from '../algo/AlgoShearStretch';
+import { AlgoArea } from '../algo/AlgoArea';
+import { AlgoPerimeter } from '../algo/AlgoPerimeter';
+import { GeoSegment } from '../geo/GeoSegment';
+import { GeoRay } from '../geo/GeoRay';
+import { GeoArc } from '../geo/GeoArc';
 import { AlgoFunctionRootPoint } from '../algo/AlgoFunctionRootPoint';
 import { AlgoRootList, ROOT_LIST_CAPACITY } from '../algo/AlgoRootList';
 import { AlgoFunctionExtremumPoint, makeDerivativeEvaluator } from '../algo/AlgoFunctionExtremumPoint';
 import { AlgoExtremumList, EXTREMUM_LIST_CAPACITY } from '../algo/AlgoExtremumList';
 import { GeoList } from '../geo/GeoList';
 import { AlgoText } from '../algo/AlgoText';
-import { AlgoAngle, AlgoAngleOriented } from '../algo/AlgoAngle';
+import { AlgoAngle, AlgoAngleOriented, AlgoAngleTwoLines } from '../algo/AlgoAngle';
 import { AlgoPointOnLine } from '../algo/AlgoPointOnLine';
+import { AlgoPointOnSegment } from '../algo/AlgoPointOnSegment';
+import { AlgoPointOnRay } from '../algo/AlgoPointOnRay';
+import { AlgoPointOnArc } from '../algo/AlgoPointOnArc';
 import { AlgoLocus } from '../algo/AlgoLocus';
 import { AlgoLocus3D } from '../algo/AlgoLocus3D';
 import { GeoLocus } from '../geo/GeoLocus';
 import { AlgoDependentFunction } from '../algo/AlgoDependentFunction';
 import { AlgoDependentNumeric } from '../algo/AlgoDependentNumeric';
 import { AlgoDerivative } from '../algo/AlgoDerivative';
-import { parseExpression } from './ExpressionParser';
+import { parseExpression, withIdentifierHints } from './ExpressionParser';
 import { evaluate } from './ExpressionEvaluator';
 import { collectVariables, ExpressionNode, Scope } from './ExpressionNode';
 import { differentiate, expressionToString } from './Differentiator';
@@ -202,7 +229,43 @@ const COMMAND_ARITY: Record<string, [number, number]> = {
   // ---- C11：多边形布尔 ----
   Union: [2, 2],
   Difference: [2, 2],
+  // ---- 命令面补齐（B 类：Algo 已有、此前仅工具栏可达）----
+  ParallelLine: [2, 2],
+  OrthogonalLine: [2, 2],
+  PerpendicularLine: [2, 2],       // OrthogonalLine 的官方英文别名
+  PerpendicularBisector: [2, 2],
+  LineBisector: [2, 2],            // PerpendicularBisector 的官方英文名
+  AngleBisector: [3, 3],
+  AngularBisector: [3, 3],         // AngleBisector 的官方英文名
+  Ellipse: [3, 3],
+  Hyperbola: [3, 3],
+  Parabola: [2, 2],
+  Conic: [5, 5],
+  Semicircle: [2, 2],
+  Arc: [3, 3],
+  CircularSector: [3, 3],
+  CircumcircularArc: [3, 3],
+  CircumcircularSector: [3, 3],
+  Compass: [2, 2],
+  RegularPolygon: [3, 3],
+  Invert: [2, 2],
+  Area: [1, 1],
+  Length: [1, 1],
+  Perimeter: [1, 1],
+  Reflect: [2, 2],                 // Mirror 的官方英文别名（点/线镜像双形态）
 };
+
+/** 全部命令名（字典序）：供输入栏自动补全使用。 */
+export const COMMAND_NAMES: string[] = Object.keys(COMMAND_ARITY).sort();
+
+/** 命令签名文本（补全提示用）：语言无关的参数个数标注，如 `Segment(2)` / `Circle(2–3)`。 */
+export function commandSignature(name: string): string {
+  const entry = COMMAND_ARITY[name];
+  if (!entry) return name;
+  const [min, max] = entry;
+  const arityText = min === max ? `${min}` : `${min}–${max}`;
+  return `${name}(${arityText})`;
+}
 
 /** 只在顶层逗号处切分参数，保留括号内的逗号（`(0, 0), (3, 4)` 切成 2 个而非 4 个）。 */
 const splitArgs = (argsText: string): string[] => {
@@ -303,7 +366,30 @@ export interface AlgebraViewBounds {
   maxY: number;
 }
 
+/** 当前构造的全部标签 —— 词法切分提示（xy → x·y 需要"哪些标识符是已知量"）。
+ *  x/y/z 是 GeoGebra 的标准自由变量（函数参数 f(x)、Curve 的 t 等经 allowedVariables
+ *  另行解析），常驻提示集：f(x) = xsin(x) 中的 x 不是构造标签，但切分需要它。 */
+const collectKnownIdentifierHints = (kernel: Kernel): Set<string> => {
+  const hints = new Set<string>(['x', 'y', 'z']);
+  for (const el of kernel.getConstruction().getElements()) {
+    const label = (el as { label?: string }).label;
+    if (label) hints.add(label);
+  }
+  return hints;
+};
+
 export function parseAlgebraInput(
+  kernel: Kernel,
+  input: string,
+  viewBounds?: AlgebraViewBounds,
+  depth = 0,
+): ConstructionElement[] {
+  // 词法期注入已知标识符：未知多字母名（xy、xsin(x)）按构造标签切成隐式乘积
+  return withIdentifierHints(collectKnownIdentifierHints(kernel), () =>
+    parseAlgebraInputImpl(kernel, input, viewBounds, depth));
+}
+
+function parseAlgebraInputImpl(
   kernel: Kernel,
   input: string,
   viewBounds?: AlgebraViewBounds,
@@ -328,17 +414,19 @@ export function parseAlgebraInput(
       throw new Error(`Command nesting is too deep (max ${MAX_COMMAND_NESTING})`);
     }
     const nestedElements = parseAlgebraInput(kernel, trimmed, viewBounds, depth + 1);
+    // 先校验输出个数再入构造：校验放在 addElement 之后时，失败路径会把
+    // 内联产物滞留在构造里且无 undo 记录（如 Midpoint(A, Intersection(l, c))）
+    const outputs = nestedElements.filter(el => !(el instanceof AlgoElement));
+    const outLabel = outputs.length === 1 ? (outputs[0] as unknown as { label?: string }).label : undefined;
+    if (outputs.length !== 1 || !outLabel) {
+      throw new Error(`Command ${m[1]} returns ${outputs.length} objects; nested use needs exactly one`);
+    }
     nestedElements.forEach(el => construction.addElement(el));
     construction.updateAllAlgorithms();
     nestedElements.forEach(el => {
       const label = (el as any).label;
       if (label) existingLabels.add(label);
     });
-    const outputs = nestedElements.filter(el => !(el instanceof AlgoElement));
-    const outLabel = outputs.length === 1 ? (outputs[0] as unknown as { label?: string }).label : undefined;
-    if (outputs.length !== 1 || !outLabel) {
-      throw new Error(`Command ${m[1]} returns ${outputs.length} objects; nested use needs exactly one`);
-    }
     return outLabel;
   };
 
@@ -449,10 +537,20 @@ export function parseAlgebraInput(
     existingLabels.add(element.label);
   };
 
+  /**
+   * 命令参数里内联新建的自由点追踪表。
+   * resolvePointArg 的 `(x, y)` 元组、Length(P) 的原点等都经 makeFreePoint 创建，
+   * 却不随命令输出返回——不登记则 constIndex 停在 -1，序列化 inputs 引用不存在的
+   * 元素，载入时 "missing inputs" 静默丢对象。分发结束后由 mergeCreatedElements
+   * 统一并入返回数组（已随输出返回的会被去重跳过）。
+   */
+  const createdElements: GeoElement[] = [];
+
   /** 生成一个带标签的自由点。 */
   const makeFreePoint = (x: number, y: number): GeoPoint => {
     const point = new GeoPoint(kernel, new GeoVec3D(x, y, 1));
     assignNextLabel(point, () => construction.getNextPointLabel(existingLabels));
+    createdElements.push(point);
     return point;
   };
 
@@ -797,12 +895,17 @@ export function parseAlgebraInput(
         existingLabels.add(implicit.label!);
         return implicit.label!;
       });
-      return dispatchCommand(name, args, {
+      const dispatched = dispatchCommand(name, args, {
         construction, kernel, existingLabels, viewBounds,
         evaluateNumber, resolveNumber, makeFreePoint, assignNextLabel,
         findPoint, findLine, findFunction, findNumeric, findConic, findPolygon, findCurve,
         findPoint3D, findLine3D, findPlane3D, findQuadric3D, findPolyhedron3D, findSurface, findCircle3D, findPolyline3D, findConic3D, findNet3D,
       });
+      // 合并命令参数里内联创建、但未随命令输出返回的辅助点（见 createdElements 注释）
+      for (const el of createdElements) {
+        if (!dispatched.includes(el) && !construction.getElements().includes(el)) dispatched.push(el);
+      }
+      return dispatched;
     }
   }
 
@@ -964,7 +1067,8 @@ const assignOutputLabels = (ctx: CommandContext, outputs: GeoElement[]): void =>
     } else if (out instanceof GeoLine) {
       ctx.assignNextLabel(out, () => ctx.construction.getNextLineLabel(used));
     } else if (out instanceof GeoVector) {
-      ctx.assignNextLabel(out, () => ctx.construction.getNextLineLabel(used));
+      // 向量从专属字符表取名（u,v,w…），不再挤占线/函数的 f,g,h…
+      ctx.assignNextLabel(out, () => ctx.construction.getNextVectorLabel(used));
     } else if (out instanceof GeoPolygon || out instanceof GeoBooleanRegion) {
       ctx.assignNextLabel(out, () => ctx.construction.getNextPolygonLabel(used));
     } else if (out instanceof GeoNumeric) {
@@ -1046,6 +1150,28 @@ const dispatchCommand = (
         assignOutputLabels(ctx, [algo.getOutput()]);
         return [algo, algo.getOutput()];
       }
+      // 函数 × 函数 → 交点列表（对标 CmdIntersect 函数分支，槽位跟随 f/g 联动）。
+      // 登记模式与 Root(f) 相同：探测交点 → 首轮播种 → 仅占用的兄弟算法+槽点入构造
+      const fnA = ctx.findFunction(args[0].trim());
+      const fnB = ctx.findFunction(args[1].trim());
+      if (fnA && fnB) {
+        const lo = viewBounds?.minX ?? -DEFAULT_SEARCH_RANGE;
+        const hi = viewBounds?.maxX ?? DEFAULT_SEARCH_RANGE;
+        const probeXs = findRoots((x: number) => fnA.evaluateAt(x) - fnB.evaluateAt(x), lo, hi);
+        const algo = new AlgoIntersectFunctions(kernel, fnA, fnB, lo, hi, INTERSECT_FUNCTIONS_CAPACITY, probeXs);
+        // 容器算法与列表在前：`I = Intersect(f, g)` 的 LHS 标签按"第一个非算法
+        // Geo 元素"分配，必须落在列表上；容器先于兄弟入构造也是安全的——
+        // 容器 compute 自行全局求根并播种兄弟，兄弟随后窗口跟随得到相同根
+        const elements: ConstructionElement[] = [algo, algo.getOutput()];
+        const brothers = algo.getBrothers();
+        const pts = algo.getPoints();
+        for (let i = 0; i < Math.min(probeXs.length, pts.length); i++) {
+          pts[i].label = construction.getNextPointLabel(existingLabels);
+          existingLabels.add(pts[i].label);
+          elements.push(brothers[i], pts[i]);
+        }
+        return elements;
+      }
       const algo = new AlgoIntersect(kernel, resolveObjectArg(ctx, args[0]), resolveObjectArg(ctx, args[1]));
       algo.compute();
       const points = algo.getOutputPoints().filter(point => point.isDefined());
@@ -1123,6 +1249,13 @@ const dispatchCommand = (
         assignNextLabel(algo.getOutput(), () => construction.getNextCircleLabel(existingLabels));
         return [algo, algo.getOutput()];
       }
+      // 数值半径：已有滑块时按活依赖传入（拖滑块联动），字面量才走静态快照
+      const radiusNumeric = ctx.findNumeric(args[1].trim());
+      if (radiusNumeric) {
+        const algo = new AlgoCirclePointRadius(kernel, center, radiusNumeric);
+        assignNextLabel(algo.getOutput(), () => construction.getNextCircleLabel(existingLabels));
+        return [algo, algo.getOutput()];
+      }
       let radius: number;
       try {
         radius = ctx.resolveNumber(args[1]);
@@ -1143,14 +1276,212 @@ const dispatchCommand = (
       const end = ctx.findPoint(args[1].trim());
       if (start && end) {
         const algo = new AlgoVector(kernel, start, end);
-        assignNextLabel(algo.getOutput(), () => construction.getNextLineLabel(existingLabels));
+        assignNextLabel(algo.getOutput(), () => construction.getNextVectorLabel(existingLabels));
         return [algo, algo.getOutput()];
       }
       const ux = ctx.evaluateNumber(args[0]);
       const vy = ctx.evaluateNumber(args[1]);
       const vector = new GeoVector(kernel, 0, 0, ux, vy);
-      assignNextLabel(vector, () => construction.getNextLineLabel(existingLabels));
+      assignNextLabel(vector, () => construction.getNextVectorLabel(existingLabels));
       return [vector];
+    }
+
+    // ---- 特殊线（命令面补齐：此前仅工具栏可达）----
+    case 'ParallelLine': {
+      const point = resolvePointArg(ctx, args[0]);
+      const line = ctx.findLine(args[1].trim());
+      if (!line) throw new Error(`Unknown line "${args[1].trim()}"`);
+      const algo = new AlgoParallelLine(kernel, point, line);
+      assignNextLabel(algo.getOutput(), () => construction.getNextLineLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+
+    case 'OrthogonalLine':
+    case 'PerpendicularLine': {
+      const point = resolvePointArg(ctx, args[0]);
+      const line = ctx.findLine(args[1].trim());
+      if (!line) throw new Error(`Unknown line "${args[1].trim()}"`);
+      const algo = new AlgoOrthogonalLine(kernel, point, line);
+      assignNextLabel(algo.getOutput(), () => construction.getNextLineLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+
+    case 'PerpendicularBisector':
+    case 'LineBisector': {
+      const algo = new AlgoPerpendicularBisector(kernel, resolvePointArg(ctx, args[0]), resolvePointArg(ctx, args[1]));
+      assignNextLabel(algo.getOutput(), () => construction.getNextLineLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+
+    case 'AngleBisector':
+    case 'AngularBisector': {
+      // 三点角平分线（顶点为第二点）；两直线版本官方另有，此处先接三点形态
+      const algo = new AlgoAngleBisector(
+        kernel, resolvePointArg(ctx, args[0]), resolvePointArg(ctx, args[1]), resolvePointArg(ctx, args[2]));
+      assignNextLabel(algo.getOutput(), () => construction.getNextLineLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+
+    // ---- 圆锥曲线（命令面补齐）----
+    case 'Ellipse':
+    case 'Hyperbola': {
+      const algo = name === 'Ellipse'
+        ? new AlgoEllipse(kernel, resolvePointArg(ctx, args[0]), resolvePointArg(ctx, args[1]), resolvePointArg(ctx, args[2]))
+        : new AlgoHyperbola(kernel, resolvePointArg(ctx, args[0]), resolvePointArg(ctx, args[1]), resolvePointArg(ctx, args[2]));
+      assignNextLabel(algo.getOutput(), () => construction.getNextCircleLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+
+    case 'Parabola': {
+      const focus = resolvePointArg(ctx, args[0]);
+      const directrix = ctx.findLine(args[1].trim());
+      if (!directrix) throw new Error(`Unknown line "${args[1].trim()}"`);
+      const algo = new AlgoParabola(kernel, focus, directrix);
+      assignNextLabel(algo.getOutput(), () => construction.getNextCircleLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+
+    case 'Conic': {
+      const points = args.map(a => resolvePointArg(ctx, a));
+      const algo = new AlgoConicFivePoints(kernel, points);
+      assignNextLabel(algo.getOutput(), () => construction.getNextCircleLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+
+    // ---- 圆 / 弧 / 扇形（命令面补齐）----
+    case 'Semicircle': {
+      const algo = new AlgoSemicircle(kernel, resolvePointArg(ctx, args[0]), resolvePointArg(ctx, args[1]));
+      assignNextLabel(algo.getOutput(), () => construction.getNextCircleLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+
+    case 'Arc': {
+      // Arc(C, A, B)：C 为圆（派生其圆心点，保持活依赖）或圆心点；A/B 为起止弧点
+      const circleArg = ctx.findConic(args[0].trim());
+      if (circleArg) {
+        const centerAlgo = new AlgoCircleCenter(kernel, circleArg);
+        assignNextLabel(centerAlgo.getOutput(), () => construction.getNextPointLabel(existingLabels));
+        const algo = new AlgoArc(kernel, centerAlgo.getOutput(), resolvePointArg(ctx, args[1]), resolvePointArg(ctx, args[2]));
+        assignNextLabel(algo.getOutput(), () => construction.getNextCircleLabel(existingLabels));
+        return [centerAlgo, centerAlgo.getOutput(), algo, algo.getOutput()];
+      }
+      const center = resolvePointArg(ctx, args[0]);
+      const algo = new AlgoArc(kernel, center, resolvePointArg(ctx, args[1]), resolvePointArg(ctx, args[2]));
+      assignNextLabel(algo.getOutput(), () => construction.getNextCircleLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+
+    case 'CircularSector': {
+      const algo = new AlgoCircularSector(
+        kernel, resolvePointArg(ctx, args[0]), resolvePointArg(ctx, args[1]), resolvePointArg(ctx, args[2]));
+      assignNextLabel(algo.getOutput(), () => construction.getNextCircleLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+
+    case 'CircumcircularArc': {
+      const algo = new AlgoCircumcircularArc(
+        kernel, resolvePointArg(ctx, args[0]), resolvePointArg(ctx, args[1]), resolvePointArg(ctx, args[2]));
+      assignNextLabel(algo.getOutput(), () => construction.getNextCircleLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+
+    case 'CircumcircularSector': {
+      const algo = new AlgoCircumcircularSector(
+        kernel, resolvePointArg(ctx, args[0]), resolvePointArg(ctx, args[1]), resolvePointArg(ctx, args[2]));
+      assignNextLabel(algo.getOutput(), () => construction.getNextCircleLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+
+    case 'Compass': {
+      // Compass(A, B)：圆心 A、半径 |AB|（官方语义）；Compass(A, seg)：半径取线段长
+      const center = resolvePointArg(ctx, args[0]);
+      const segment = ctx.construction.getElements().find(
+        el => el instanceof GeoSegment && (el as GeoSegment).label === args[1].trim()) as GeoSegment | undefined;
+      const radiusFrom = segment
+        ? [segment.startPoint, segment.endPoint]
+        : [center, resolvePointArg(ctx, args[1])];
+      const algo = new AlgoCompass(kernel, radiusFrom[0], radiusFrom[1], center);
+      assignNextLabel(algo.getOutput(), () => construction.getNextCircleLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+
+    case 'RegularPolygon': {
+      // RegularPolygon(A, B, n)：以 AB 为第一条边的正 n 边形。
+      // 新顶点是算法输出的一部分，必须全部随返回值登记进构造，
+      // 否则序列化的 vertices 引用不存在的元素，重载后整个多边形静默丢失
+      const nSides = Math.round(ctx.resolveNumber(args[2]));
+      if (nSides < 3) throw new Error('RegularPolygon needs at least 3 sides');
+      const algo = new AlgoRegularPolygonEdge(kernel, resolvePointArg(ctx, args[0]), resolvePointArg(ctx, args[1]), nSides);
+      const outputs = algo.getGeoElements();
+      outputs.forEach((out, i) => {
+        assignNextLabel(out, i === 0
+          ? () => construction.getNextPolygonLabel(existingLabels)
+          : () => construction.getNextPointLabel(existingLabels));
+      });
+      return [algo, ...outputs];
+    }
+
+    case 'Invert': {
+      const obj = resolveObjectArg(ctx, args[0]);
+      const circle = ctx.findConic(args[1].trim());
+      if (!circle) throw new Error(`Unknown circle "${args[1].trim()}"`);
+      const algo = new AlgoInvert(kernel, obj, circle);
+      assignOutputLabels(ctx, [algo.getOutput()]);
+      return [algo, algo.getOutput()];
+    }
+
+    // ---- 测量（命令面补齐）----
+    case 'Area': {
+      const target = resolveObjectArg(ctx, args[0]);
+      if (!(target instanceof GeoPolygon) && !(target instanceof GeoConic)) {
+        throw new Error('Area expects a polygon or circle');
+      }
+      const algo = new AlgoArea(kernel, target);
+      algo.getOutput().label = construction.getNextNumericLabel(existingLabels);
+      existingLabels.add(algo.getOutput().label);
+      return [algo, algo.getOutput()];
+    }
+
+    case 'Length': {
+      // Length(segment) 线段长；Length(polygon) 周长；Length(P) 点到原点距离
+      const label = args[0].trim();
+      const polygon = ctx.findPolygon(label);
+      if (polygon) {
+        const algo = new AlgoPerimeter(kernel, polygon);
+        algo.getOutput().label = construction.getNextNumericLabel(existingLabels);
+        existingLabels.add(algo.getOutput().label);
+        return [algo, algo.getOutput()];
+      }
+      const segment = ctx.construction.getElements().find(
+        el => el instanceof GeoSegment && (el as GeoSegment).label === label) as GeoSegment | undefined;
+      if (segment) {
+        const algo = new AlgoDistance(kernel, segment.startPoint, segment.endPoint);
+        algo.getOutput().label = construction.getNextNumericLabel(existingLabels);
+        existingLabels.add(algo.getOutput().label);
+        return [algo, algo.getOutput()];
+      }
+      const pointA = ctx.findPoint(label);
+      if (pointA) {
+        // Length(P)：点到原点距离（官方 Length(Point) 语义）。
+        // 原点是辅助点：随 createdElements 自动登记（可序列化），但不显示在画布上。
+        const origin = ctx.makeFreePoint(0, 0);
+        origin.label = '';
+        origin.visible = false;
+        const algo = new AlgoDistance(kernel, origin, pointA);
+        algo.getOutput().label = construction.getNextNumericLabel(existingLabels);
+        existingLabels.add(algo.getOutput().label);
+        return [algo, algo.getOutput()];
+      }
+      throw new Error(`Length expects a segment, polygon or point; "${label}" is none of them`);
+    }
+
+    case 'Perimeter': {
+      const polygon = ctx.findPolygon(args[0].trim());
+      if (!polygon) throw new Error(`Unknown polygon "${args[0].trim()}"`);
+      const algo = new AlgoPerimeter(kernel, polygon);
+      algo.getOutput().label = construction.getNextNumericLabel(existingLabels);
+      existingLabels.add(algo.getOutput().label);
+      return [algo, algo.getOutput()];
     }
 
     // ---- 测量 ----
@@ -1170,35 +1501,51 @@ const dispatchCommand = (
       return [algo, algo.getOutput()];
     }
 
-    // ---- 变换（活引用：中心/镜轴注册为输入，移动时联动重算）----
+    // ---- 变换（活引用：中心/镜轴/角度/比例注册为输入，移动时联动重算）----
     case 'Rotate': {
       const obj = resolveObjectArg(ctx, args[0]);
-      const angleDeg = ctx.resolveNumber(args[1]);
       const center = args.length >= 3 ? ctx.findPoint(args[2].trim()) : undefined;
       if (args.length >= 3 && !center) throw new Error(`Unknown point "${args[2].trim()}"`);
-      const algo = center
-        ? new AlgoRotate(kernel, obj, center, angleDeg * Math.PI / 180)
-        : new AlgoRotate(kernel, obj, { x: 0, y: 0 }, angleDeg * Math.PI / 180);
+      // 活角度：已有滑块按"度"实时驱动（与静态分支的度→弧度换算一致）
+      const angleNumeric = ctx.findNumeric(args[1].trim());
+      const angleRad = (angleNumeric ? angleNumeric.getValue() : ctx.resolveNumber(args[1])) * Math.PI / 180;
+      const algo = new AlgoRotate(kernel, obj, center ?? { x: 0, y: 0 }, angleRad, angleNumeric ?? undefined);
       assignOutputLabels(ctx, [algo.getOutput()]);
       return [algo, algo.getOutput()];
     }
 
     case 'Dilate': {
       const obj = resolveObjectArg(ctx, args[0]);
-      const ratio = ctx.resolveNumber(args[1]);
       const center = args.length >= 3 ? ctx.findPoint(args[2].trim()) : undefined;
       if (args.length >= 3 && !center) throw new Error(`Unknown point "${args[2].trim()}"`);
-      const algo = center
-        ? new AlgoDilate(kernel, obj, center, ratio)
-        : new AlgoDilate(kernel, obj, { x: 0, y: 0 }, ratio);
+      const ratioNumeric = ctx.findNumeric(args[1].trim());
+      const ratio = ratioNumeric ? ratioNumeric.getValue() : ctx.resolveNumber(args[1]);
+      const algo = new AlgoDilate(kernel, obj, center ?? { x: 0, y: 0 }, ratioNumeric ?? ratio);
       assignOutputLabels(ctx, [algo.getOutput()]);
       return [algo, algo.getOutput()];
     }
 
-    case 'Mirror': {
+    case 'Mirror':
+    case 'Reflect': {
+      // 官方 Mirror 支持三种镜像对象：镜线、镜点（点对称 = Dilate(obj, P, -1)）、
+      // 反演圆（Mirror(obj, circle) = AlgoInvert）。此前 Mirror 只收镜线，
+      // 点/圆必须绕道 Reflect 别名
       const obj = resolveObjectArg(ctx, args[0]);
-      const axis = ctx.findLine(args[1].trim());
-      if (!axis) throw new Error(`Unknown line "${args[1].trim()}"`);
+      const mirrorLabel = args[1].trim();
+      const mirrorPoint = ctx.findPoint(mirrorLabel);
+      if (mirrorPoint) {
+        const algo = new AlgoDilate(kernel, obj, mirrorPoint, -1);
+        assignOutputLabels(ctx, [algo.getOutput()]);
+        return [algo, algo.getOutput()];
+      }
+      const mirrorCircle = ctx.findConic(mirrorLabel);
+      if (mirrorCircle && mirrorCircle.isCircle()) {
+        const algo = new AlgoInvert(kernel, obj, mirrorCircle);
+        assignOutputLabels(ctx, [algo.getOutput()]);
+        return [algo, algo.getOutput()];
+      }
+      const axis = ctx.findLine(mirrorLabel);
+      if (!axis) throw new Error(`Unknown mirror object "${mirrorLabel}"`);
       const algo = new AlgoMirror(kernel, obj, axis.a, axis.b, axis.c, axis);
       assignOutputLabels(ctx, [algo.getOutput()]);
       return [algo, algo.getOutput()];
@@ -1262,12 +1609,22 @@ const dispatchCommand = (
     }
 
     case 'Angle': {
+      // Angle(l1, l2) 两线角（官方 AlgoAngleLines）：两参数都能解析成直线时优先
+      if (args.length === 2) {
+        const la = ctx.findLine(args[0].trim());
+        const lb = ctx.findLine(args[1].trim());
+        if (la && lb) {
+          const algo = new AlgoAngleTwoLines(kernel, la, lb);
+          assignNextLabel(algo.getOutput(), () => construction.getNextAngleLabel(existingLabels));
+          return [algo, algo.getOutput()];
+        }
+      }
       const p1 = ctx.findPoint(args[0].trim());
       const apex = ctx.findPoint(args[1].trim());
       const p3 = ctx.findPoint(args[2].trim());
-      if (!p1 || !apex || !p3) throw new Error('Angle expects three points (apex second)');
+      if (!p1 || !apex || !p3) throw new Error('Angle expects three points or two lines');
       const algo = new AlgoAngle(kernel, p1, apex, p3);
-      assignNextLabel(algo.getOutput(), () => construction.getNextNumericLabel(existingLabels));
+      assignNextLabel(algo.getOutput(), () => construction.getNextAngleLabel(existingLabels));
       return [algo, algo.getOutput()];
     }
 
@@ -1315,7 +1672,7 @@ const dispatchCommand = (
       const p3 = ctx.findPoint(args[2].trim());
       if (!p1 || !apex || !p3) throw new Error('DirectedAngle expects three points (apex second)');
       const algo = new AlgoAngleOriented(kernel, p1, apex, p3);
-      assignNextLabel(algo.getOutput(), () => construction.getNextNumericLabel(existingLabels));
+      assignNextLabel(algo.getOutput(), () => construction.getNextAngleLabel(existingLabels));
       return [algo, algo.getOutput()];
     }
 
@@ -1509,8 +1866,11 @@ const dispatchCommand = (
         Parameter: AlgoConicParameter,
         Radius: AlgoConicRadius,
       }[name] as typeof AlgoConicFocus)(kernel, conic);
-      assignOutputLabels(ctx, algo.getGeoElements());
-      return [algo, ...algo.getGeoElements()];
+      // 圆/抛物线只填部分输出（如圆的第二个焦点保持 undefined），
+      // 未定义的输出不进构造、不分配标签
+      const definedOutputs = algo.getGeoElements().filter(el => el.isDefined());
+      assignOutputLabels(ctx, definedOutputs);
+      return [algo, ...definedOutputs];
     }
 
     case 'Polar': {
@@ -1693,17 +2053,19 @@ const dispatchCommand = (
     }
 
     case 'PointOn': {
-      // PointOn(path)：在线/线段/圆锥/函数/曲线上放置约束点（含 3D path，C10）
+      // PointOn(path)：在线/线段/射线/弧/圆锥/函数/曲线上放置约束点（含 3D path，C10）
       const label = args[0].trim();
       const line = ctx.findLine(label);
       const conic = ctx.findConic(label);
       const fn = ctx.findFunction(label);
       const curve = ctx.findCurve(label);
+      const ray = construction.getElements().find(el => el instanceof GeoRay && (el as GeoRay).label === label) as GeoRay | undefined;
+      const arc = construction.getElements().find(el => el instanceof GeoArc && (el as GeoArc).label === label) as GeoArc | undefined;
       const line3 = ctx.findLine3D(label);
       const circle3 = ctx.findCircle3D(label);
       const conic3 = ctx.findConic3D(label);
       const poly3 = ctx.findPolyline3D(label);
-      if (!line && !conic && !fn && !curve && !line3 && !circle3 && !conic3 && !poly3) {
+      if (!line && !conic && !fn && !curve && !ray && !arc && !line3 && !circle3 && !conic3 && !poly3) {
         throw new Error(`Unknown path "${label}"`);
       }
       const param = new GeoNumeric(kernel, 0);
@@ -1731,12 +2093,24 @@ const dispatchCommand = (
       } else if (poly3) {
         param.setValue(0);
         algo = new AlgoPointOnPolyline3D(kernel, poly3, param);
+      } else if (ray) {
+        param.setValue(1);
+        algo = new AlgoPointOnRay(kernel, ray, param);
+      } else if (arc) {
+        param.setValue((arc.getStartAngle() + arc.getEndAngle()) / 2);
+        algo = new AlgoPointOnArc(kernel, arc, param);
+      } else if (line instanceof GeoSegment) {
+        // findLine 按 GeoLine 匹配，线段会落进这里——必须用段参数 [0,1] 的专用算法
+        param.setValue(0.5);
+        algo = new AlgoPointOnSegment(kernel, line, param);
       } else {
         param.setValue(0);
         algo = new AlgoPointOnLine(kernel, line!, param);
       }
       assignNextLabel(algo.getGeoElements()[0], () => construction.getNextPointLabel(existingLabels));
-      return [param, algo, ...algo.getGeoElements()];
+      // 点在前、param 在后：`P = PointOn(s)` 的 LHS 标签按"第一个非算法 Geo 元素"
+      // 分配，param 在前会把标签抢走（点反而拿自动标签）
+      return [...algo.getGeoElements(), param, algo];
     }
 
     case 'Locus': {
@@ -2129,12 +2503,22 @@ const dispatchCommand = (
       if (!plane) throw new Error(`IntersectPath expects a 3D plane`);
       const polyhedron = ctx.findPolyhedron3D(args[1].trim());
       const quadric = ctx.findQuadric3D(args[1].trim());
-      const algo = polyhedron
-        ? new AlgoIntersectPathPlanePolyhedron(kernel, plane, polyhedron)
-        : quadric
-          ? new AlgoIntersectPlaneQuadric(kernel, plane, quadric)
-          : null;
-      if (!algo) throw new Error(`IntersectPath expects a 3D polyhedron or quadric`);
+      // 平面 × 二次曲面走**解析截面**（输出 GeoConic3D，可继续取点/求圆心/算长度），
+      // 与官方 AlgoIntersectPlaneQuadric 语义一致；此前输出 64 点折线近似，
+      // 截面圆上无法做任何下游构造。解析解不了的退化情形（平面∥柱轴等）回退折线近似。
+      if (quadric) {
+        const analytic = new AlgoIntersectConicPlaneQuadric(kernel, plane, quadric);
+        analytic.update();
+        if (analytic.getOutput().isDefined()) {
+          assignNextLabel(analytic.getOutput(), () => construction.getNextLineLabel(existingLabels));
+          return [analytic, analytic.getOutput()];
+        }
+        const fallback = new AlgoIntersectPlaneQuadric(kernel, plane, quadric);
+        assignNextLabel(fallback.getGeoElements()[0], () => construction.getNextLineLabel(existingLabels));
+        return [fallback, ...fallback.getGeoElements()];
+      }
+      if (!polyhedron) throw new Error(`IntersectPath expects a 3D polyhedron or quadric`);
+      const algo = new AlgoIntersectPathPlanePolyhedron(kernel, plane, polyhedron);
       assignNextLabel(algo.getGeoElements()[0], () => construction.getNextLineLabel(existingLabels));
       return [algo, ...algo.getGeoElements()];
     }

@@ -16,6 +16,9 @@ export class Construction {
 
   // P1-1: 显式正向依赖图 element -> 直接依赖它的算法集合
   private forwardDeps = new Map<ConstructionElement, Set<AlgoElement>>();
+  // 反向索引：algo -> 它登记过的输入集合。退订按索引只清自己的边，
+  // 否则 unregisterForwardDeps 全 Map 扫描，删除级联退化为 O(N²)
+  private algoInputs = new Map<AlgoElement, Set<ConstructionElement>>();
 
   constructor(public kernel: IKernel) {}
 
@@ -40,7 +43,10 @@ export class Construction {
    * P1-1: 为构造器登记正向依赖边 —— input GeoElement -> 该算法。
    */
   registerForwardDeps(algo: AlgoElement): void {
+    this.unregisterAlgoEdges(algo); // 防重复登记留下旧边
+    const inputs = new Set<ConstructionElement>();
     for (const input of algo.getInput()) {
+      inputs.add(input);
       let set = this.forwardDeps.get(input);
       if (!set) {
         set = new Set();
@@ -48,16 +54,27 @@ export class Construction {
       }
       set.add(algo);
     }
+    this.algoInputs.set(algo, inputs);
+  }
+
+  /** 清掉某算法登记的全部正向边（按反向索引，O(输入数)）。 */
+  private unregisterAlgoEdges(algo: AlgoElement): void {
+    const inputs = this.algoInputs.get(algo);
+    if (!inputs) return;
+    for (const input of inputs) {
+      const set = this.forwardDeps.get(input);
+      if (set) {
+        set.delete(algo);
+        if (set.size === 0) this.forwardDeps.delete(input);
+      }
+    }
+    this.algoInputs.delete(algo);
   }
 
   /** P1-1: 清理被删除元素在正向依赖图中的所有记录 */
   unregisterForwardDeps(element: ConstructionElement): void {
     this.forwardDeps.delete(element);
-    for (const [input, set] of this.forwardDeps) {
-      set.delete(element as AlgoElement);
-      // 之前误删 element 自身的 key（恒为 no-op），导致空 Set 在 Map 里累积泄漏。
-      if (set.size === 0) this.forwardDeps.delete(input);
-    }
+    if (element instanceof AlgoElement) this.unregisterAlgoEdges(element);
   }
 
   removeElement(element: ConstructionElement) {
@@ -233,50 +250,52 @@ export class Construction {
     this.algoElements = [];
     this.stepCounter = 0;
     this.forwardDeps.clear();
+    this.algoInputs.clear();
+  }
+
+  // ------------------------------------------------------------------
+  // 自动标签（对标 GeoGebra LabelType 字符表 + LabelManager 下标循环）
+  // 序列：每类对象一张字符表，用尽后加 "_n" 后缀（A → … → Z → A_1 → B_1 → …）。
+  // 点表跳过 X/Y（官方保留这两个字母给坐标轴变量）。
+  // ------------------------------------------------------------------
+  private static POINT_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWZ'.split('');
+  private static LINE_LETTERS = ['f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'p', 'q', 'r', 's', 't', 'a', 'b', 'c', 'd', 'e'];
+  private static CONIC_LETTERS = ['c', 'd', 'e', 'f', 'g', 'h', 'k', 'p', 'q', 'r', 's', 't'];
+  private static NUMERIC_LETTERS = 'abcdefghijklmnopqrstuvw'.split('');
+  private static VECTOR_LETTERS = ['u', 'v', 'w', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+  // 希腊小写（无 π）：角度默认标签
+  private static ANGLE_LETTERS = ['α', 'β', 'γ', 'δ', 'ε', 'ζ', 'η', 'θ', 'ι', 'κ', 'λ', 'μ', 'ν', 'ξ', 'ο', 'ρ', 'σ', 'τ', 'υ', 'φ', 'χ', 'ψ', 'ω'];
+
+  private collectLabels(additionalLabels?: Set<string>): Set<string> {
+    const existingLabels = new Set(this.elements.map(e => (e as any).label).filter((l: string) => l));
+    if (additionalLabels) additionalLabels.forEach(l => existingLabels.add(l));
+    return existingLabels;
+  }
+
+  /** 从字符表取第一个可用标签；一轮用尽后加 "_n" 后缀继续。 */
+  private nextLabelFrom(letters: string[], existing: Set<string>): string {
+    for (let index = 0; ; index++) {
+      const suffix = Math.floor(index / letters.length);
+      const base = letters[index % letters.length];
+      const label = suffix === 0 ? base : `${base}_${suffix}`;
+      if (!existing.has(label)) return label;
+    }
   }
 
   getNextPointLabel(additionalLabels?: Set<string>): string {
-    const existingLabels = new Set(this.elements.map(e => (e as any).label).filter(l => l));
-    if (additionalLabels) {
-      additionalLabels.forEach(l => existingLabels.add(l));
-    }
-    let index = 0;
-    while (true) {
-      let label = '';
-      const num = Math.floor(index / 26);
-      const charCode = 65 + (index % 26);
-      label = String.fromCharCode(charCode);
-      if (num > 0) label += num;
-      if (!existingLabels.has(label)) return label;
-      index++;
-    }
+    return this.nextLabelFrom(Construction.POINT_LETTERS, this.collectLabels(additionalLabels));
   }
 
   getNextLineLabel(additionalLabels?: Set<string>): string {
-    const existingLabels = new Set(this.elements.map(e => (e as any).label).filter(l => l));
-    if (additionalLabels) additionalLabels.forEach(l => existingLabels.add(l));
-    let index = 1;
-    while (true) {
-      const label = `l${index}`;
-      if (!existingLabels.has(label)) return label;
-      index++;
-    }
+    return this.nextLabelFrom(Construction.LINE_LETTERS, this.collectLabels(additionalLabels));
   }
 
   getNextCircleLabel(additionalLabels?: Set<string>): string {
-    const existingLabels = new Set(this.elements.map(e => (e as any).label).filter(l => l));
-    if (additionalLabels) additionalLabels.forEach(l => existingLabels.add(l));
-    let index = 1;
-    while (true) {
-      const label = `c${index}`;
-      if (!existingLabels.has(label)) return label;
-      index++;
-    }
+    return this.nextLabelFrom(Construction.CONIC_LETTERS, this.collectLabels(additionalLabels));
   }
 
   getNextPolygonLabel(additionalLabels?: Set<string>): string {
-    const existingLabels = new Set(this.elements.map(e => (e as any).label).filter(l => l));
-    if (additionalLabels) additionalLabels.forEach(l => existingLabels.add(l));
+    const existingLabels = this.collectLabels(additionalLabels);
     let index = 1;
     while (true) {
       const label = `poly${index}`;
@@ -286,19 +305,19 @@ export class Construction {
   }
 
   getNextNumericLabel(additionalLabels?: Set<string>): string {
-    const existingLabels = new Set(this.elements.map(e => (e as any).label).filter(l => l));
-    if (additionalLabels) additionalLabels.forEach(l => existingLabels.add(l));
-    let index = 1;
-    while (true) {
-      const label = `t${index}`;
-      if (!existingLabels.has(label)) return label;
-      index++;
-    }
+    return this.nextLabelFrom(Construction.NUMERIC_LETTERS, this.collectLabels(additionalLabels));
+  }
+
+  getNextVectorLabel(additionalLabels?: Set<string>): string {
+    return this.nextLabelFrom(Construction.VECTOR_LETTERS, this.collectLabels(additionalLabels));
+  }
+
+  getNextAngleLabel(additionalLabels?: Set<string>): string {
+    return this.nextLabelFrom(Construction.ANGLE_LETTERS, this.collectLabels(additionalLabels));
   }
 
   getNextFunctionLabel(additionalLabels?: Set<string>): string {
-    const existingLabels = new Set(this.elements.map(e => (e as any).label).filter(l => l));
-    if (additionalLabels) additionalLabels.forEach(l => existingLabels.add(l));
+    const existingLabels = this.collectLabels(additionalLabels);
     const labels = ['f', 'g', 'h', 'p', 'q', 'r', 's', 't'];
     let index = 0;
     while (true) {

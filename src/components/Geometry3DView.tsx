@@ -19,6 +19,7 @@ import { GeoSegment } from '../kernel/geo/GeoSegment';
 import { GeoPolygon } from '../kernel/geo/GeoPolygon';
 import { GeoConic } from '../kernel/geo/GeoConic';
 import { GeoArc } from '../kernel/geo/GeoArc';
+import { GeoFunction } from '../kernel/geo/GeoFunction';
 import { GeoLocus } from '../kernel/geo/GeoLocus';
 import { GeoLocus3D } from '../kernel/geo/GeoLocus3D';
 import { GeoPoint3D } from '../kernel/geo/GeoPoint3D';
@@ -34,6 +35,7 @@ import { GeoNet3D, AlgoPolyhedronNet } from '../kernel/algo/AlgoPolyhedronNet';
 import { GeoMesh3D } from '../kernel/geo/GeoMesh3D';
 import { Coords4 } from '../kernel/core/Coords4';
 import { rayPlaneIntersect, clipLineToBox, pointSegmentDistance, Ray3 } from '../kernel/view/RayPicker';
+import { calculateGridStep } from '../kernel/core/Snap';
 import {
   computeClippingBox, isPointInBox,
   REDUCTION_MEDIUM, ClippingReduction,
@@ -68,6 +70,10 @@ interface Props {
   renderRev: number;
   selectedElements: GeoElement[];
   setSelectedElements?: (els: GeoElement[]) => void;
+  /** 3D 构造/拖拽入 undo 栈（与 2D 共用 Command 体系） */
+  addCommand?: (cmd: any) => void;
+  /** move 命令的状态快照（与 GeometryCanvas.captureState 同构） */
+  captureState?: (kernel: Kernel) => unknown;
   showGrid: boolean;
   showAxes: boolean;
   setShowGrid: (v: boolean | ((p: boolean) => boolean)) => void;
@@ -90,6 +96,16 @@ interface LineStyle {
 /** 世界坐标 → 3D 坐标（构造面 z=0，世界 y 向下对应三维 −Y）。 */
 // 世界 y 向上为正后与 3D 的 Y 轴方向一致，2D 平面元素直接映射 z=0
 const to3 = (x: number, y: number, z = 0): V3 => ({ x, y, z });
+
+/** Z 模式拖拽：鼠标射线与竖直线 (x0,y0,*) 的最近点高度（射线近乎竖直时保持原高）。 */
+function zFromVerticalLine(ray: Ray3, x0: number, y0: number, fallback: number): number {
+  const dx = ray.dir.x, dy = ray.dir.y;
+  const den = dx * dx + dy * dy;
+  if (den < 1e-12) return fallback;
+  const t = ((x0 - ray.origin.x) * dx + (y0 - ray.origin.y) * dy) / den;
+  const z = ray.origin.z + t * ray.dir.z;
+  return Number.isFinite(z) ? z : fallback;
+}
 
 /** 坐标轴刻度数字格式化（避免浮点尾差）。 */
 function fmtNum(v: number): string {
@@ -241,6 +257,7 @@ function buildScene(
   showClipBox: boolean,
   clipReduction: ClippingReduction,
   renderer: WebGL3DRenderer,
+  dragHint?: { x: number; y: number; z: number } | null,
 ): Scene3D {
   const elements = kernel.getConstruction().getElements();
   const bounds = computeBounds(elements);
@@ -268,12 +285,31 @@ function buildScene(
       const pts = circlePolyline(renderer, el.getCenter().x, el.getCenter().y, el.getRadius(), a0, a1);
       pushPolyline(lines, pts, st, pxPerUnit);
     } else if (el instanceof GeoConic) {
-      const c = el.getCenter();
-      const r = el.getRadius();
-      if (r <= 0) continue;
       const st = styleOf(el, selSet.has(el));
-      const pts = circlePolyline(renderer, c.x, c.y, r, 0, 2 * Math.PI);
-      pushPolyline(lines, pts, st, pxPerUnit);
+      // 圆用正圆折线；**非圆必须按参数采样**——此前 getRadius() 对椭圆/双曲线
+      // 返回近似半轴，2D 椭圆在 3D 视图里被画成正圆（错误图形）
+      if (el.isCircle()) {
+        const c = el.getCenter();
+        const r = el.getRadius();
+        if (r <= 0) continue;
+        const pts = circlePolyline(renderer, c.x, c.y, r, 0, 2 * Math.PI);
+        pushPolyline(lines, pts, st, pxPerUnit);
+      } else {
+        const pts = el.samplePoints(180).filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
+        if (pts.length >= 2) {
+          const v3 = pts.map(p => to3(p.x, p.y));
+          pushPolyline(lines, v3, st, pxPerUnit);
+        }
+      }
+    } else if (el instanceof GeoFunction) {
+      // 2D 函数图像在 3D 视图按 xOy 面内曲线绘制（此前完全不显示）
+      const st = styleOf(el, selSet.has(el));
+      const pts = el.updateSamples(viewBounds.minX, viewBounds.maxX, 400);
+      const v3: V3[] = [];
+      for (const p of pts) {
+        if (Number.isFinite(p.y)) v3.push(to3(p.x, p.y, 0));
+      }
+      if (v3.length >= 2) pushPolyline(lines, v3, st, pxPerUnit);
     }
   }
 
@@ -780,6 +816,18 @@ function buildScene(
   planes.push({ axis: 'xz', grid: showGrid && plateXZ, plate: plateXZ });
   planes.push({ axis: 'yz', grid: showGrid && plateYZ, plate: plateYZ });
 
+  // 拖拽装饰：被拖 3D 点到 xOy 投影的高度虚线（官方 DrawPointDecorations.altitude segment）
+  if (dragHint) {
+    const st = { color: 'rgba(100, 116, 139, 0.9)', width: 1.5, dash: [4, 4] };
+    const px = Math.max(1e-6, pxPerUnit);
+    lines.push({
+      a: to3(dragHint.x, dragHint.y, 0),
+      b: to3(dragHint.x, dragHint.y, dragHint.z),
+      color: st.color,
+      widthPx: st.width,
+      dash: [...st.dash],
+    });
+  }
   return {
     gridBounds: viewBounds,
     contentBounds: bounds,
@@ -889,7 +937,7 @@ function drawLabels(scene: Scene3D, renderer: WebGL3DRenderer, canvas: HTMLCanva
   }
 }
 
-export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedElements, setSelectedElements, showGrid, showAxes, setShowGrid, setShowAxes }) => {
+export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedElements, setSelectedElements, addCommand, captureState, showGrid, showAxes, setShowGrid, setShowAxes }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const labelRef = useRef<HTMLCanvasElement>(null);
@@ -897,7 +945,18 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
   const dprRef = useRef(1);
   const fittedRef = useRef(false);
   const lastPointsRef = useRef<V3[]>([]);
-  const dragRef = useRef<{ mode: 'none' | 'orbit' | 'pan'; lastX: number; lastY: number; moved: boolean }>({ mode: 'none', lastX: 0, lastY: 0, moved: false });
+  const dragRef = useRef<{
+    mode: 'none' | 'orbit' | 'pan' | 'point3d';
+    lastX: number;
+    lastY: number;
+    moved: boolean;
+    /** point3d 拖拽：被拖点 / XY 模式的移动平面高度 / move 快照 */
+    dragPoint: GeoPoint3D | null;
+    zPlane: number;
+    startState: { coords: Map<string, { x: number; y: number; z: number }>; numerics: Map<string, number> } | null;
+  }>({ mode: 'none', lastX: 0, lastY: 0, moved: false, dragPoint: null, zPlane: 0, startState: null });
+  // 单击不拖 = 切换该点的移动模式（官方 switchPointMoveMode），按点记忆
+  const pointMoveModeRef = useRef<Map<string, 'xy' | 'z'>>(new Map());
   const { t } = useLanguage();
 
   const [projectionMode, setProjectionMode] = useState<ProjectionMode>('perspective');
@@ -935,7 +994,10 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
     const labels = labelRef.current;
     if (!renderer || !canvas || !labels) return;
     const { showGrid: sg, showAxes: sa, selectedElements: sel, axesPlaneMode: apm, planeXY: pxy, planeXZ: pxz, planeYZ: pyz, showClipBox: scb, clipReduction: cr } = propsRef.current;
-    const scene = buildScene(kernel, sel, sg, sa, apm, pxy, pxz, pyz, scb, cr, renderer);
+    const dragging = dragRef.current.mode === 'point3d' && dragRef.current.dragPoint
+      ? { x: dragRef.current.dragPoint.getX(), y: dragRef.current.dragPoint.getY(), z: dragRef.current.dragPoint.getZ() }
+      : null;
+    const scene = buildScene(kernel, sel, sg, sa, apm, pxy, pxz, pyz, scb, cr, renderer, dragging);
     if (!fittedRef.current) {
       renderer.fitScene(scene);
       fittedRef.current = true;
@@ -1084,9 +1146,20 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
       }
     }
     if (best) return best;
-    // 回退：构造平面 z=0
+    // 回退：构造平面 z=0（落点做网格吸附，对标官方 checkPointCapturingXYThenZ；
+    // 用户自定义平面不吸，避免吸附到任意斜面上的怪异坐标）
     const z0 = rayPlaneIntersect(ray, { x: 0, y: 0, z: 1 }, 0);
-    if (z0) return Coords4.fromPoint(z0.point.x, z0.point.y, z0.point.z);
+    if (z0) {
+      if (showGrid) {
+        const step = calculateGridStep(estimatePxPerUnit(renderer));
+        if (step > 0) {
+          const sx = parseFloat((Math.round(z0.point.x / step) * step).toFixed(8));
+          const sy = parseFloat((Math.round(z0.point.y / step) * step).toFixed(8));
+          return Coords4.fromPoint(sx, sy, 0);
+        }
+      }
+      return Coords4.fromPoint(z0.point.x, z0.point.y, z0.point.z);
+    }
     return null;
   };
 
@@ -1134,11 +1207,14 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
         c.addElement(out);
         kernel.notifyUpdate(out);
       });
+      // undo 入栈：本次新建的点 + 算法 + 输出（吸附复用的已有点不进命令）
+      addCommand?.({ type: 'add', elements: [...picksCreatedRef.current, algo, ...algo.getGeoElements()] });
       draw();
     };
     switch (tool) {
       case 'point':
         kernel.notifyUpdate(pts[0]);
+        addCommand?.({ type: 'add', elements: [...picksCreatedRef.current] });
         draw();
         return;
       case 'segment':
@@ -1238,10 +1314,27 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = e.currentTarget;
     canvas.style.cursor = 'grabbing';
-    dragRef.current = { mode: 'none', lastX: e.clientX, lastY: e.clientY, moved: false };
+    dragRef.current = { mode: 'none', lastX: e.clientX, lastY: e.clientY, moved: false, dragPoint: null, zPlane: 0, startState: null };
     if (e.button === 1 || e.shiftKey) {
       dragRef.current.mode = 'pan';
     } else if (e.button === 0) {
+      // select 工具命中 3D 点 → 点拖拽（官方 movePoint3D）：自由点默认在过点
+      // 平行 xOy 的平面内移动；约束点（PointOnXxx3D）经 updateParameter 委派
+      if (tool3d === 'select') {
+        const hit = pickPoint3D(e.clientX, e.clientY);
+        const draggable = hit && (hit.isIndependent() || (hit.parentAlgo as any)?.updateParameter);
+        if (hit && draggable) {
+          dragRef.current = {
+            mode: 'point3d',
+            lastX: e.clientX, lastY: e.clientY, moved: false,
+            dragPoint: hit,
+            zPlane: hit.getZ(),
+            startState: (captureState?.(kernel) as any) ?? null,
+          };
+          canvas.setPointerCapture(e.pointerId);
+          return;
+        }
+      }
       dragRef.current.mode = 'orbit';
     }
     canvas.setPointerCapture(e.pointerId);
@@ -1257,6 +1350,34 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
     drag.lastY = e.clientY;
     const renderer = rendererRef.current;
     if (!renderer) return;
+    if (drag.mode === 'point3d' && drag.dragPoint) {
+      const p = drag.dragPoint;
+      const rect = canvasRef.current!.getBoundingClientRect();
+      const sx = (e.clientX - rect.left) * dprRef.current;
+      const sy = (e.clientY - rect.top) * dprRef.current;
+      const ray = renderer.screenRay(sx, sy);
+      const algo = p.parentAlgo as any;
+      if (algo?.updateParameter) {
+        // 约束点：目标 = 鼠标射线与过点平行 xOy 平面的交点，updateParameter 内部向载体投影
+        const hit = rayPlaneIntersect(ray, { x: 0, y: 0, z: 1 }, drag.zPlane);
+        if (hit) {
+          algo.updateParameter(hit.point.x, hit.point.y, hit.point.z);
+          algo.update();
+          kernel.recomputeDependents(p);
+        }
+      } else if ((pointMoveModeRef.current.get(p.id) ?? 'xy') === 'xy') {
+        // XY 模式：在过点平行 xOy 的平面内移动（z 保持）
+        const hit = rayPlaneIntersect(ray, { x: 0, y: 0, z: 1 }, drag.zPlane);
+        if (hit) p.setCoords(hit.point.x, hit.point.y, drag.zPlane);
+      } else {
+        // Z 模式：x/y 不变，取鼠标射线与竖直线 (x0,y0,*) 的最近点高度
+        const z = zFromVerticalLine(ray, p.getX(), p.getY(), drag.zPlane);
+        p.setCoords(p.getX(), p.getY(), z);
+      }
+      kernel.flushNow();
+      draw();
+      return;
+    }
     if (drag.mode === 'orbit') renderer.orbit(dx, dy);
     else renderer.pan(dx, dy);
     draw();
@@ -1264,10 +1385,22 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const drag = dragRef.current;
-    const wasClick = !drag.moved && drag.mode === 'orbit';
-    dragRef.current.mode = 'none';
+    const wasClick = !drag.moved && (drag.mode === 'orbit' || drag.mode === 'point3d');
+    if (drag.mode === 'point3d' && drag.dragPoint) {
+      if (!drag.moved) {
+        // 单击不拖 = 切换移动模式（官方 switchPointMoveMode：XY 平面 ⇄ 竖直 Z 轴），按点记忆
+        const p = drag.dragPoint;
+        const next = (pointMoveModeRef.current.get(p.id) ?? 'xy') === 'xy' ? 'z' : 'xy';
+        pointMoveModeRef.current.set(p.id, next);
+      } else if (drag.startState) {
+        // 拖拽位移 → move 命令入 undo（快照含 3D 自由点，见 GeometryCanvas.captureState）
+        const newState = captureState?.(kernel) as any;
+        if (newState) addCommand?.({ type: 'move', oldState: drag.startState, newState });
+      }
+    }
+    dragRef.current = { mode: 'none', lastX: e.clientX, lastY: e.clientY, moved: false, dragPoint: null, zPlane: 0, startState: null };
     e.currentTarget.style.cursor = 'grab';
-    if (wasClick) handleClick(e.clientX, e.clientY);
+    if (wasClick && drag.mode === 'orbit') handleClick(e.clientX, e.clientY);
   };
 
   const handleDoubleClick = () => {

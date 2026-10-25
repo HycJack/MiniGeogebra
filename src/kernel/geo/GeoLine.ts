@@ -22,14 +22,14 @@ export class GeoLine extends GeoElement implements Path, LimitedPath {
     if (Math.abs(b) < 1e-9) {
       // 竖直线：a x + c = 0  ->  x = -c/a
       if (Math.abs(a) < 1e-9) return `${this.label} = （退化直线）`;
-      return `${this.label} : x = ${(-c / a).toFixed(2)}`;
+      return `${this.label} : x = ${this.fmt(-c / a)}`;
     }
     // a x + b y + c = 0  ->  y = (-a/b) x + (-c/b)
     const m = -a / b;
     const n = -c / b;
-    const mStr = Math.abs(m + 1) < 1e-9 ? '-' : Math.abs(m - 1) < 1e-9 ? '' : m.toFixed(2);
+    const mStr = Math.abs(m + 1) < 1e-9 ? '-' : Math.abs(m - 1) < 1e-9 ? '' : this.fmt(m);
     const sign = n >= 0 ? '+' : '-';
-    const nStr = Math.abs(n).toFixed(2);
+    const nStr = this.fmt(Math.abs(n));
     return `${this.label} : y = ${mStr}x ${sign} ${nStr}`;
   }
 

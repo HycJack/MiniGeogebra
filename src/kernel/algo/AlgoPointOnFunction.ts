@@ -40,6 +40,19 @@ export class AlgoPointOnFunction extends AlgoElement {
   }
 
   updateParameter(x: number): void {
-    this.param.setValue(x);
+    const lo = this.param.intervalMin, hi = this.param.intervalMax;
+    let target = Number.isFinite(lo) && Number.isFinite(hi) ? Math.max(lo, Math.min(hi, x)) : x;
+    // 出界处 f 为 NaN（If 条件域等）：从目标点向当前参数位置回搜最近的定义点，
+    // 对标官方 GeoFunction.pointChanged 的"不可拖入无定义区"
+    if (!Number.isFinite(this.fn.evaluateAt(target))) {
+      const cur = this.param.getValue();
+      let found = cur;
+      for (let i = 1; i <= 64; i++) {
+        const cand = target + (cur - target) * (i / 64);
+        if (Number.isFinite(this.fn.evaluateAt(cand))) { found = cand; break; }
+      }
+      target = found;
+    }
+    this.param.setValue(target);
   }
 }

@@ -25,6 +25,15 @@
 > 含二次曲面/截面/有限柱锥/斜棱柱/3D 轨迹/旋转面/裁剪盒/展开/线曲面分类/3D 依附/OFF 导入与
 > 多边形布尔（`polygonBoolean` + `GeoBooleanRegion` + `AlgoPolygonBoolean`）。全套 37 文件 /
 > 575 用例全绿（`c11-off-boolean.test.ts` 20 用例收尾）。
+>
+> **2026-10-02 交互层快照追加**：数学内核判定表（下文一~五节）仍为 2026-09-17 快照；
+> 交互惯例与元能力层已按 [`UX差距清单.md`](./UX差距清单.md) 完成两轮对齐（10/10 优先级项）——
+> 标签系统对齐官方 `LabelType` 字符表（点跳过 X/Y、线/向量/圆锥/数值/角度各表 + 下标循环）、
+> Options 三件套（rounding/角度单位/点捕捉）、Ctrl+Z/Y、Move 空白拖拽 = 平移视图（Alt 框选）、
+> fixed/trace/layer 元能力、右键菜单扩容、构造导航条、zoom-to-fit、画布内数值输入（去 prompt）、
+> 输入栏补全/历史 + `√` `π` `°` `|x|` `sin²` 语法糖、24 条文本命令补注册、自由 GeoArc/GeoConicPart
+> 序列化修复（v3 前保存即丢）、GeoBoolean 入内核。剩余交互差距由 [`UX差距清单.md`](./UX差距清单.md)
+> 的 E 类 backlog 跟踪。全套 41 文件 / 640 用例全绿。
 
 ---
 
@@ -141,3 +150,24 @@
 2. **正确性优先修复**（见未实现清单 A 类 Top）：A1-1 交点标签防抖、A2-1 发散积分、A1-2 变换参数冻结、A2-6 旋转抛物线顶点、A3-1 双曲/抛物截面。这五项是用户最可能实际撞上的。
 3. **结构性差距**（短期不修、长期立项）：多面体拓扑（A3-4）与二次曲面类型系统（C1）是 3D 一系列限制的共同根因；"依赖图 + 增量更新"模型与 GeoGebra 一致，但派生对象直接 setCoords 的补偿约定（`recomputeDependents` 由 AnimationManager/Locus 自觉调用）需要在代码规范中固化，避免未来改动绕过。
 4. 本报告为快照（2026-09-17 代码状态）；后续每完成未实现清单中一项，应同步更新两份文档。
+
+## 七、交互层与元能力快照（2026-10-02 追加）
+
+本节不属于上文的内核数学判定，单独记录与 GeoGebra 的"操作惯例"对齐状态（细节见
+[`UX差距清单.md`](./UX差距清单.md)，判定图例同前）：
+
+| 项目 | Mini 实现 | GeoGebra 参照 | 判定 | 说明 |
+|---|---|---|---|---|
+| 自动标签命名 | 官方 LabelType 字符表移植（点跳过 X/Y、_N 下标循环、角度希腊字母） | `LabelType.java` + `LabelManager` | ✅ | 命名空间全局查重与官方一致 |
+| 标签交互 | labelOffset 拖动 + 全类型默认标签渲染 + Ctrl+Shift+G/H | `MoveMode.LABEL` + `labelOffsetX/Y` | ✅ | 锚点由 labels.ts 统一（绘制/命中共用） |
+| 视图选项 | rounding / 角度单位 / 点捕捉三态 | Options→Rounding / Angle unit / Point capturing | 🟡 | 缺"有效数字"模式、度分秒 |
+| Move 拖拽语义 | 空白拖拽 = 平移、Alt = 框选、单击清选区 | `EuclidianController` shallMoveView / allowSelectionRectangle | ✅ | 触摸端尚未支持（E1-9） |
+| 快捷键 | Ctrl+Z/Y、Ctrl+G/H、Ctrl+Shift+G/H、Alt+S、+/-/0、方向键平移 | `GlobalKeyDispatcher` | 🟡 | 缺方向键微移对象、F2–F5、空格暂停动画 |
+| 右键菜单 | 10 项（删除/显隐/标签/固定/轨迹/图层±1/复制/重命名/函数建点/动画） | `ContextMenuGeoElement`（约 15+ 项） | 🟡 | 缺方程形式切换、剪切/复制/粘贴、属性对话框入口 |
+| 属性修改入口 | SidePanel 单页（颜色/线宽/线型/填充/标签）+ 右键 | StyleBar + 9-tab PropertiesDialog | ⚠️ | 缺点大小/点样式/透明度/装饰/caption/显示条件/动态颜色（E2 类） |
+| 数值输入 | 画布内输入浮层（8 处） | 就地输入框/对话框 | ✅ | 3D 视图尚有 3 处 prompt（E1-10） |
+| 代数输入栏 | 补全 + 历史 + 语法糖（√ π ° \|x\| sin² ² ³） | AutoComplete + HistoryPopup + Parser 语法糖 | 🟡 | 缺命令参数占位 Tab 跳转、帮助面板 |
+| 构造导航 | 渲染层过滤导航条（首/上下步/末/播放） | NavigationBar + ConstructionProtocol 视图 | 🟡 | 缺协议表格视图（E3-2） |
+| 动画 | 滑块五型 + 全局/面板/右键播放入口 | AnimationManager + 视图左下播放按钮 | 🟡 | 缺视图左下浮钮形态 |
+| 元能力位 | fixed / trace / layer（内核字段 + undo + 序列化） | GeoElement 同名能力 | 🟡 | 缺 conditionToShow / 动态颜色 / auxiliary / caption（E2 类） |
+| 序列化 | JSON v4（含元能力位/Options/Boolean/自由弧） | XML/.ggb | ⚠️ | 不能读写 .ggb（E4-5，导入优先） |

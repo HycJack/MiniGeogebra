@@ -45,9 +45,11 @@ const makeCtx = (
   mode: ToolMode,
   selected: GeoElement[] = [],
   extra: Partial<ToolContext> = {},
-): { ctx: ToolContext; selected: () => GeoElement[]; ts: Record<string, any> } => {
+): { ctx: ToolContext; selected: () => GeoElement[]; ts: Record<string, any>; answer: (raw: string | null) => void; pending: { title: string; defaultValue: string; onSubmit: (raw: string | null) => void }[] } => {
   let sel = selected;
   const ts: Record<string, any> = {};
+  // 画布内数值输入桩（去 prompt 化后 handlers 通过 ctx.requestValue 请求）
+  const pending: { title: string; defaultValue: string; onSubmit: (raw: string | null) => void }[] = [];
   const setSel: Dispatch<SetStateAction<GeoElement[]>> = (v) => {
     sel = typeof v === 'function' ? v(sel) : v;
   };
@@ -74,6 +76,9 @@ const makeCtx = (
     setDraggedElement: noop,
     toolState: { current: ts },
     t: (k: string) => k,
+    requestValue: (title: string, defaultValue: string, onSubmit: (raw: string | null) => void) => {
+      pending.push({ title, defaultValue, onSubmit });
+    },
     ...extra,
   };
   // selectedElements 被解构成常量；桩需要每次读最新 → 用 getter 覆盖
@@ -81,7 +86,12 @@ const makeCtx = (
     get: () => sel,
     configurable: true,
   });
-  return { ctx, selected: () => sel, ts };
+  const answer = (raw: string | null) => {
+    const req = pending.shift();
+    if (!req) throw new Error('no pending value request');
+    req.onSubmit(raw);
+  };
+  return { ctx, selected: () => sel, ts, answer, pending };
 };
 
 const click = (
@@ -92,27 +102,14 @@ const click = (
   handlePointerDown(ctx, { x, y } as WorldPoint, { x, y } as ScreenPoint);
 };
 
-afterEach(() => {
-  // 清掉 shear 工具 prompt polyfill
-  if ((globalThis as any).window?.prompt && !(globalThis as any).window?.document) {
-    delete (globalThis as any).window;
-  }
-});
-
 describe('B10 addAlgoAndNotify（输出注册回归）', () => {
   it('circle 工具：点圆心 → 输入半径 → algo 与输出圆入 construction', () => {
     const kernel = makeKernel();
     const o = makePoint(kernel, 0, 0, 'O');
-    const { ctx } = makeCtx(kernel, 'circle', [], { radius: 40 });
-    // 新交互：点击圆心后弹窗输入半径（stub window.prompt）
-    const g = globalThis as any;
-    const origPrompt = g.prompt;
-    g.prompt = () => '40';
-    try {
-      click(ctx, 0, 0);
-    } finally {
-      g.prompt = origPrompt;
-    }
+    const { ctx, answer } = makeCtx(kernel, 'circle');
+    // 新交互：点击圆心 → 画布内输入半径
+    click(ctx, 0, 0);
+    answer('40');
 
     const algos = c(kernel).getElements().filter(el => (el as any).getClassName?.() === 'AlgoCirclePointRadius');
     expect(algos).toHaveLength(1);
@@ -128,18 +125,12 @@ describe('B10 addAlgoAndNotify（输出注册回归）', () => {
     const kernel = makeKernel();
     const a = makePoint(kernel, 2, 0, 'A');
     const b = makePoint(kernel, 0, 0, 'B');
-    const { ctx } = makeCtx(kernel, 'rotate');
-    // 新交互：click1 选源 A；click2 中心 B + 弹窗输入角度（stub window.prompt）
-    const g = globalThis as any;
-    const origPrompt = g.prompt;
-    g.prompt = () => '90';
+    const { ctx, answer } = makeCtx(kernel, 'rotate');
+    // 新交互：click1 选源 A；click2 中心 B + 画布内输入角度
+    click(ctx, 2, 0);
+    click(ctx, 0, 0);
+    answer('90');
     let rotates: AlgoRotate[];
-    try {
-      click(ctx, 2, 0);
-      click(ctx, 0, 0);
-    } finally {
-      g.prompt = origPrompt;
-    }
     rotates = c(kernel).getElements().filter(
       el => (el as any).getClassName?.() === 'AlgoRotate',
     ) as AlgoRotate[];
@@ -278,15 +269,15 @@ describe('B10 AlgoShearStretch', () => {
     expect(after.x !== before.x || after.y !== before.y).toBe(true);
   });
 
-  it('shear 工具路径（globalThis.prompt polyfill）', () => {
-    (globalThis as any).prompt = () => '2';
+  it('shear 工具路径（画布内输入系数）', () => {
     const kernel = makeKernel();
     const p = makePoint(kernel, 1, 2, 'A');
-    const { ctx } = makeCtx(kernel, 'shear', [p]);
-    // click1：selectedElements → inputs；click2：两点轴起点；click3：轴终点 + prompt
+    const { ctx, answer } = makeCtx(kernel, 'shear', [p]);
+    // click1：selectedElements → inputs；click2：两点轴起点；click3：轴终点 + 画布内输入系数
     click(ctx, 1, 2);
     click(ctx, 0, 0);
     click(ctx, 1, 0);
+    answer('2');
 
     const algos = c(kernel).getElements().filter(
       el => (el as any).getClassName?.() === 'AlgoShearStretch',

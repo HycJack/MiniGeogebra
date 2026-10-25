@@ -83,33 +83,44 @@ export class AnimationManager {
         // dt 巨大导致单帧跳变过大。
         const currentFrameRate = Math.max(AnimationManager.MIN_ANIMATION_FRAME_RATE, 1000 / (dt || 16));
 
-        let changed = false;
-        const changedElements: GeoElement[] = [];
+        // 防御性剔除：删除路径漏调 removeAnimatedGeo 时，被删对象会滞留列表
+        // （每帧推进死对象、阻塞 GC 并持续触发重渲染）；以"仍在构造中"为准绳就地清理。
+        const cons = this.kernel.getConstruction();
+        if (this.animatedGeos.some(geo => !cons.getElements().includes(geo))) {
+            for (const geo of [...this.animatedGeos]) {
+                if (!cons.getElements().includes(geo)) this.removeAnimatedGeo(geo);
+            }
+        }
 
-        for (const geo of this.animatedGeos) {
-            if ((geo as any).doAnimationStep) {
-                if ((geo as any as Animatable).doAnimationStep(currentFrameRate)) {
-                    changed = true;
-                    changedElements.push(geo);
+        // 迭代副本：INCREASING_ONCE 走完会在 doAnimationStep 里 setAnimating(false)
+        // → removeAnimatedGeo → splice 正在遍历的数组，同帧会跳过下一个动画对象。
+        const snapshot = [...this.animatedGeos];
+
+        // 批处理推进：setValue 的 notifyUpdate 进入 pendingUpdates 但不排微任务/回调，
+        // 批末统一 flush —— 整条依赖链每帧只重算一遍（否则微任务 flush 会再算一遍）。
+        try {
+            this.kernel.withBatchedUpdates(() => {
+                for (const geo of snapshot) {
+                    if ((geo as any).doAnimationStep) {
+                        (geo as any as Animatable).doAnimationStep(currentFrameRate);
+                    }
+                }
+            });
+            // 非独立元素（依赖数值被动画时）不进 pendingUpdates，批末 flush 覆盖不到，
+            // 需显式沿正向图重算下游
+            for (const geo of snapshot) {
+                if (!geo.isIndependent()) {
+                    this.kernel.getConstruction().updateDependentAlgorithms(geo);
                 }
             }
-        }
-
-        if (changed) {
-            // 增量重算依赖链；视图刷新只通知一次，不把滑块塞回 pendingUpdates
-            // （否则微任务 flush 会把同一条依赖链再算一遍）。
-            for (const element of changedElements) {
-                this.kernel.getConstruction().updateDependentAlgorithms(element);
+        } finally {
+            // Play-once 动画可能移除最后一个对象；此时不要继续空转。
+            // 异常防护：无论本帧是否抛错都要排程下一帧，否则动画静默死亡且 isRunning 恒真。
+            if (this.animatedGeos.length === 0) {
+                this.timerId = null;
+                return;
             }
-            this.kernel.notifyViewChanged();
+            this.timerId = requestAnimationFrame(this.loop);
         }
-
-        // Play-once 动画可能移除最后一个对象；此时不要继续空转。
-        if (this.animatedGeos.length === 0) {
-            this.timerId = null;
-            return;
-        }
-
-        this.timerId = requestAnimationFrame(this.loop);
     }
 }

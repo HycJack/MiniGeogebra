@@ -9,7 +9,7 @@ import { CoordinateSystem } from '../kernel/core/CoordinateSystem';
 import { ConstructionElement } from '../kernel/core/ConstructionElement';
 import { SliderControl } from './SliderControl';
 import AlgebraInputBar from './AlgebraInputBar';
-import { Menu, Sliders, Square, Trash2 } from 'lucide-react';
+import { Menu, Sliders, Square, Trash2, Eye, EyeOff } from 'lucide-react';
 import type { TFunction } from '../i18n/LanguageContext';
 
 interface SidePanelProps {
@@ -92,7 +92,18 @@ const SidePanel: React.FC<SidePanelWithHandlersProps> = ({
                 <div key={el.id} className="group flex flex-col p-2 rounded-lg hover:bg-gray-50 border border-transparent hover:border-gray-100 transition-colors">
                   <div className="flex items-center gap-2">
                     <div className="w-3 h-3 rounded-full bg-blue-500 shadow-sm"></div>
-                    <span className="font-semibold text-gray-800">{el.getNameDescription()}</span>
+                    <span className={`font-semibold ${el instanceof GeoElement && el.visible === false ? 'text-gray-400 line-through' : 'text-gray-800'}`}>{el.getNameDescription()}</span>
+                    {/* 显隐切换（GeoGebra 代数视图习惯）：隐藏对象在此找回 */}
+                    {el instanceof GeoElement && (
+                      <button
+                        type="button"
+                        onClick={() => recordStyleChange(el, { visible: el.visible === false })}
+                        className={`p-1 rounded transition-all hover:bg-blue-50 ${el.visible === false ? 'text-gray-300 hover:text-blue-600 opacity-100' : 'text-gray-400 hover:text-blue-600 opacity-0 group-hover:opacity-100'}`}
+                        title={t('ctxToggleVisible')}
+                      >
+                        {el.visible === false ? <EyeOff size={12} /> : <Eye size={12} />}
+                      </button>
+                    )}
                     {onDeleteElement && (
                       <button
                         type="button"

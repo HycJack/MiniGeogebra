@@ -3,8 +3,9 @@ import { createPortal } from 'react-dom';
 import {
   Play, Pause, ChevronDown, ChevronRight, FileJson, FilePlus2,
   ImageDown, VectorSquare, Magnet, Axis3D, Grid3X3, Box,
-  Undo2, Redo2, Globe,
+  Undo2, Redo2, Globe, Settings, ListOrdered,
 } from 'lucide-react';
+import type { ViewOptions, AngleUnit, PointCapturingMode } from '../kernel/core/Options';
 import ToolButton from './ToolButton';
 import { ToolMode } from './tools/types';
 import type { Language, TFunction, TranslationKey } from '../i18n/LanguageContext';
@@ -78,8 +79,8 @@ interface ToolbarProps {
   handleLabelChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   handleLabelSubmit: () => void;
   selectedElementsLength: number;
-  radius: number;
-  setRadius: (v: number) => void;
+  options: ViewOptions;
+  updateOptions: (patch: Partial<{ rounding: number; angleUnit: AngleUnit; pointCapturing: PointCapturingMode }>) => void;
   handleExport: () => void;
   handleExportPNG: () => void;
   handleExportSVG: () => void;
@@ -89,6 +90,8 @@ interface ToolbarProps {
   setSnapEnabled: (v: boolean | ((p: boolean) => boolean)) => void;
   toggleAnimation: () => void;
   isAnimating: boolean;
+  navBarVisible: boolean;
+  toggleNavBar: () => void;
   view: '2d' | '3d';
   setView: (v: '2d' | '3d') => void;
   t: TFunction;
@@ -115,15 +118,154 @@ const svgIcon = (src: string, size = 18) => (
   <img src={src} alt="" className="shrink-0 object-contain" style={{ width: size, height: size }} />
 );
 
+/**
+ * 工具分组表（模块级常量，评审 U17）：组件体里每次渲染重建约 90 个 icon 元素，
+ * 且 GeometryCanvas 每次 mousemove 都会重渲染 Toolbar。
+ */
+const TOOL_GROUPS: ToolGroup[] = [
+  {
+    id: 'move', title: 'basicTools', icon: svgIcon(modeSelect, 20), activeModes: ['select', 'move'],
+    subgroups: [{ label: 'basicTools', items: [
+      { mode: 'select', label: 'select', icon: svgIcon(modeSelect) },
+      { mode: 'move', label: 'move', icon: svgIcon(modeMove) },
+    ] }],
+  },
+  {
+    id: 'points', title: 'pointTools', icon: svgIcon(modePoint, 20), activeModes: ['point', 'point_on_object', 'midpoint', 'intersect'],
+    subgroups: [{ label: 'pointTools', items: [
+      { mode: 'point', label: 'point', icon: svgIcon(modePoint) },
+      { mode: 'point_on_object', label: 'pointOnObject', icon: svgIcon(modePointOnObject) },
+      { mode: 'midpoint', label: 'midpoint', icon: svgIcon(modeMidpoint) },
+      { mode: 'intersect', label: 'intersect', icon: svgIcon(modeIntersect) },
+    ] }],
+  },
+  {
+    id: 'lines', title: 'lineTools', icon: svgIcon(modeJoin, 20), activeModes: ['segment', 'segment_fixed', 'line', 'ray', 'vector', 'vector_from_point', 'polyline'],
+    subgroups: [
+      { label: 'straightObjects', items: [
+        { mode: 'segment', label: 'segment', icon: svgIcon(modeSegment) },
+        { mode: 'segment_fixed', label: 'segmentFixed', icon: svgIcon(modeSegmentFixed) },
+        { mode: 'line', label: 'line', icon: svgIcon(modeJoin) },
+        { mode: 'ray', label: 'ray', icon: svgIcon(modeRay) },
+      ] },
+      { label: 'vectorTools', items: [
+        { mode: 'vector', label: 'vector', icon: svgIcon(modeVector) },
+        { mode: 'vector_from_point', label: 'vectorFromPoint', icon: svgIcon(modeVectorFromPoint) },
+        { mode: 'polyline', label: 'polyline', icon: svgIcon(modePolyline) },
+      ] },
+    ],
+  },
+  {
+    id: 'special-lines', title: 'specialLineTools', icon: svgIcon(modeOrthogonal, 20), activeModes: ['parallel', 'orthogonal', 'perpendicular_bisector', 'angle_bisector', 'tangent', 'locus'],
+    subgroups: [
+      { label: 'specialLineTools', items: [
+        { mode: 'parallel', label: 'parallel', icon: svgIcon(modeParallel) },
+        { mode: 'orthogonal', label: 'orthogonal', icon: svgIcon(modeOrthogonal) },
+        { mode: 'perpendicular_bisector', label: 'perpendicularBisector', icon: svgIcon(modeLineBisector) },
+        { mode: 'angle_bisector', label: 'angleBisector', icon: svgIcon(modeAngularBisector) },
+        { mode: 'tangent', label: 'tangent', icon: svgIcon(modeTangents) },
+      ] },
+      { label: 'curvesAndLoci', items: [{ mode: 'locus', label: 'locus', icon: svgIcon(modeLocus) }] },
+    ],
+  },
+  {
+    id: 'polygons', title: 'polygonTools', icon: svgIcon(modePolygon, 20), activeModes: ['polygon', 'regular_polygon'],
+    subgroups: [{ label: 'polygonTools', items: [
+      { mode: 'polygon', label: 'polygon', icon: svgIcon(modePolygon) },
+      { mode: 'regular_polygon', label: 'regularPolygon', icon: svgIcon(modeRegularPolygon) },
+    ] }],
+  },
+  {
+    id: 'circles', title: 'circleTools', icon: svgIcon(modeCircle2, 20), activeModes: ['circle', 'circle_center_point', 'circle3', 'compass', 'arc', 'semicircle', 'sector', 'circumcircular_arc'],
+    subgroups: [
+      { label: 'circleTools', items: [
+        { mode: 'circle_center_point', label: 'circleCenterPoint', icon: svgIcon(modeCircle2) },
+        { mode: 'circle', label: 'circleRadius', icon: svgIcon(modeCirclePointRadius) },
+        { mode: 'compass', label: 'compass', icon: svgIcon(modeCompass) },
+        { mode: 'circle3', label: 'circle3Points', icon: svgIcon(modeCircle3) },
+      ] },
+      { label: 'arcTools', items: [
+        { mode: 'arc', label: 'arc', icon: svgIcon(modeCircularArc) },
+        { mode: 'semicircle', label: 'semicircle', icon: svgIcon(modeSemicircle) },
+        { mode: 'sector', label: 'sector', icon: svgIcon(modeCircularSector) },
+        { mode: 'circumcircular_arc', label: 'circumcircularArc', icon: svgIcon(modeCircumcircularArc) },
+        { mode: 'circumcircular_sector', label: 'circumcircularSector', icon: svgIcon(modeCircumcircularSector) },
+      ] },
+    ],
+  },
+  {
+    id: 'conics', title: 'conicTools', icon: svgIcon(modeEllipse, 20), activeModes: ['ellipse', 'hyperbola', 'parabola', 'conic5'],
+    subgroups: [{ label: 'advancedConics', items: [
+      { mode: 'ellipse', label: 'ellipse', icon: svgIcon(modeEllipse) },
+      { mode: 'hyperbola', label: 'hyperbola', icon: svgIcon(modeHyperbola) },
+      { mode: 'parabola', label: 'parabola', icon: svgIcon(modeParabola) },
+      { mode: 'conic5', label: 'conic5Points', icon: svgIcon(modeConic5) },
+    ] }],
+  },
+  {
+    id: 'measure', title: 'measureTools', icon: svgIcon(modeAngle, 20), activeModes: ['angle', 'angle_fixed', 'distance', 'area', 'slope'],
+    subgroups: [{ label: 'measurement', items: [
+      { mode: 'angle', label: 'angle', icon: svgIcon(modeAngle) },
+      { mode: 'angle_fixed', label: 'angleFixed', icon: svgIcon(modeAngleFixed) },
+      { mode: 'distance', label: 'distance', icon: svgIcon(modeDistance) },
+      { mode: 'area', label: 'area', icon: svgIcon(modeArea) },
+      { mode: 'slope', label: 'slope', icon: svgIcon(modeSlope) },
+    ] }],
+  },
+  {
+    id: 'transforms', title: 'transformTools', icon: svgIcon(modeReflectAboutLine, 20), activeModes: ['mirror_line', 'mirror_point', 'mirror_circle', 'rotate', 'translate_vector', 'dilate', 'shear', 'stretch'],
+    subgroups: [
+      { label: 'reflectionTools', items: [
+        { mode: 'mirror_line', label: 'mirrorLine', icon: svgIcon(modeReflectAboutLine) },
+        { mode: 'mirror_point', label: 'mirrorPoint', icon: svgIcon(modeReflectAboutPoint) },
+        { mode: 'mirror_circle', label: 'mirrorCircle', icon: svgIcon(modeReflectAboutCircle) },
+      ] },
+      { label: 'rigidTransforms', items: [
+        { mode: 'rotate', label: 'rotate', icon: svgIcon(modeRotateAroundPoint) },
+        { mode: 'translate_vector', label: 'translateByVector', icon: svgIcon(modeTranslateByVector) },
+        { mode: 'dilate', label: 'dilate', icon: svgIcon(modeDilateFromPoint) },
+      ] },
+      { label: 'affineTransforms', items: [
+        { mode: 'shear', label: 'shear', icon: svgIcon(modeShear) },
+        { mode: 'stretch', label: 'stretch', icon: svgIcon(modeStretch) },
+      ] },
+    ],
+  },
+  {
+    id: 'insert', title: 'insertTools', icon: svgIcon(modeText, 20), activeModes: ['text', 'slider', 'button', 'checkbox'],
+    subgroups: [{ label: 'insertTools', items: [
+      { mode: 'text', label: 'insertText', icon: svgIcon(modeText) },
+      { mode: 'slider', label: 'insertSlider', icon: svgIcon(modeSlider) },
+      { mode: 'button', label: 'insertButton', icon: svgIcon(modeButton) },
+      { mode: 'checkbox', label: 'insertCheckbox', icon: svgIcon(modeCheckbox) },
+    ] }],
+  },
+  {
+    id: 'properties', title: 'objectProperties', icon: svgIcon(modeShowHideObject, 20), activeModes: ['show_hide', 'show_hide_label', 'delete'],
+    subgroups: [{ label: 'propertiesTools', items: [
+      { mode: 'show_hide', label: 'showHideObject', icon: svgIcon(modeShowHideObject) },
+      { mode: 'show_hide_label', label: 'showHideLabel', icon: svgIcon(modeShowHideLabel) },
+      { mode: 'delete', label: 'deleteObject', icon: svgIcon(modeDelete) },
+    ] }],
+  },
+];
+
+
 const Toolbar: React.FC<ToolbarProps> = ({
   mode, setMode, showAxes, setShowAxes, showGrid, setShowGrid,
   editingLabel, handleLabelChange, handleLabelSubmit, selectedElementsLength,
-  radius, setRadius,
+  options, updateOptions,
   handleExport, handleExportPNG, handleExportSVG, fileInputRef, handleImportPick,
   snapEnabled, setSnapEnabled, toggleAnimation, isAnimating,
+  navBarVisible, toggleNavBar,
   view, setView, t, language, setLanguage, undo, redo, undoCount, redoCount,
 }) => {
   const [openGroup, setOpenGroup] = useState<string | null>(null);
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  // Options 弹层锚点（视口坐标）：工具栏 overflow-x:auto 会把 absolute 弹层裁进
+  // 48px 高的盒子（评审 U1），必须像 ToolGroupButton 一样走 createPortal + fixed。
+  const optionsRef = useRef<HTMLDivElement>(null);
+  const [optionsPos, setOptionsPos] = useState({ left: 0, top: 0, upward: false });
   const toolbarRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -131,6 +273,7 @@ const Toolbar: React.FC<ToolbarProps> = ({
       const target = event.target as HTMLElement | null;
       const insideMenu = Boolean(target?.closest('[data-toolbar-menu]'));
       if (!toolbarRef.current?.contains(event.target as Node) && !insideMenu) setOpenGroup(null);
+      if (optionsRef.current && !optionsRef.current.contains(event.target as Node)) setOptionsOpen(false);
     };
     document.addEventListener('mousedown', close);
     return () => document.removeEventListener('mousedown', close);
@@ -141,133 +284,25 @@ const Toolbar: React.FC<ToolbarProps> = ({
     setOpenGroup(null);
   };
 
-  const groups: ToolGroup[] = [
-    {
-      id: 'move', title: 'basicTools', icon: svgIcon(modeSelect, 20), activeModes: ['select', 'move'],
-      subgroups: [{ label: 'basicTools', items: [
-        { mode: 'select', label: 'select', icon: svgIcon(modeSelect) },
-        { mode: 'move', label: 'move', icon: svgIcon(modeMove) },
-      ] }],
-    },
-    {
-      id: 'points', title: 'pointTools', icon: svgIcon(modePoint, 20), activeModes: ['point', 'point_on_object', 'midpoint', 'intersect'],
-      subgroups: [{ label: 'pointTools', items: [
-        { mode: 'point', label: 'point', icon: svgIcon(modePoint) },
-        { mode: 'point_on_object', label: 'pointOnObject', icon: svgIcon(modePointOnObject) },
-        { mode: 'midpoint', label: 'midpoint', icon: svgIcon(modeMidpoint) },
-        { mode: 'intersect', label: 'intersect', icon: svgIcon(modeIntersect) },
-      ] }],
-    },
-    {
-      id: 'lines', title: 'lineTools', icon: svgIcon(modeJoin, 20), activeModes: ['segment', 'segment_fixed', 'line', 'ray', 'vector', 'vector_from_point', 'polyline'],
-      subgroups: [
-        { label: 'straightObjects', items: [
-          { mode: 'segment', label: 'segment', icon: svgIcon(modeSegment) },
-          { mode: 'segment_fixed', label: 'segmentFixed', icon: svgIcon(modeSegmentFixed) },
-          { mode: 'line', label: 'line', icon: svgIcon(modeJoin) },
-          { mode: 'ray', label: 'ray', icon: svgIcon(modeRay) },
-        ] },
-        { label: 'vectorTools', items: [
-          { mode: 'vector', label: 'vector', icon: svgIcon(modeVector) },
-          { mode: 'vector_from_point', label: 'vectorFromPoint', icon: svgIcon(modeVectorFromPoint) },
-          { mode: 'polyline', label: 'polyline', icon: svgIcon(modePolyline) },
-        ] },
-      ],
-    },
-    {
-      id: 'special-lines', title: 'specialLineTools', icon: svgIcon(modeOrthogonal, 20), activeModes: ['parallel', 'orthogonal', 'perpendicular_bisector', 'angle_bisector', 'tangent', 'locus'],
-      subgroups: [
-        { label: 'specialLineTools', items: [
-          { mode: 'parallel', label: 'parallel', icon: svgIcon(modeParallel) },
-          { mode: 'orthogonal', label: 'orthogonal', icon: svgIcon(modeOrthogonal) },
-          { mode: 'perpendicular_bisector', label: 'perpendicularBisector', icon: svgIcon(modeLineBisector) },
-          { mode: 'angle_bisector', label: 'angleBisector', icon: svgIcon(modeAngularBisector) },
-          { mode: 'tangent', label: 'tangent', icon: svgIcon(modeTangents) },
-        ] },
-        { label: 'curvesAndLoci', items: [{ mode: 'locus', label: 'locus', icon: svgIcon(modeLocus) }] },
-      ],
-    },
-    {
-      id: 'polygons', title: 'polygonTools', icon: svgIcon(modePolygon, 20), activeModes: ['polygon', 'regular_polygon'],
-      subgroups: [{ label: 'polygonTools', items: [
-        { mode: 'polygon', label: 'polygon', icon: svgIcon(modePolygon) },
-        { mode: 'regular_polygon', label: 'regularPolygon', icon: svgIcon(modeRegularPolygon) },
-      ] }],
-    },
-    {
-      id: 'circles', title: 'circleTools', icon: svgIcon(modeCircle2, 20), activeModes: ['circle', 'circle_center_point', 'circle3', 'compass', 'arc', 'semicircle', 'sector', 'circumcircular_arc'],
-      subgroups: [
-        { label: 'circleTools', items: [
-          { mode: 'circle_center_point', label: 'circleCenterPoint', icon: svgIcon(modeCircle2) },
-          { mode: 'circle', label: 'circleRadius', icon: svgIcon(modeCirclePointRadius) },
-          { mode: 'compass', label: 'compass', icon: svgIcon(modeCompass) },
-          { mode: 'circle3', label: 'circle3Points', icon: svgIcon(modeCircle3) },
-        ] },
-        { label: 'arcTools', items: [
-          { mode: 'arc', label: 'arc', icon: svgIcon(modeCircularArc) },
-          { mode: 'semicircle', label: 'semicircle', icon: svgIcon(modeSemicircle) },
-          { mode: 'sector', label: 'sector', icon: svgIcon(modeCircularSector) },
-          { mode: 'circumcircular_arc', label: 'circumcircularArc', icon: svgIcon(modeCircumcircularArc) },
-          { mode: 'circumcircular_sector', label: 'circumcircularSector', icon: svgIcon(modeCircumcircularSector) },
-        ] },
-      ],
-    },
-    {
-      id: 'conics', title: 'conicTools', icon: svgIcon(modeEllipse, 20), activeModes: ['ellipse', 'hyperbola', 'parabola', 'conic5'],
-      subgroups: [{ label: 'advancedConics', items: [
-        { mode: 'ellipse', label: 'ellipse', icon: svgIcon(modeEllipse) },
-        { mode: 'hyperbola', label: 'hyperbola', icon: svgIcon(modeHyperbola) },
-        { mode: 'parabola', label: 'parabola', icon: svgIcon(modeParabola) },
-        { mode: 'conic5', label: 'conic5Points', icon: svgIcon(modeConic5) },
-      ] }],
-    },
-    {
-      id: 'measure', title: 'measureTools', icon: svgIcon(modeAngle, 20), activeModes: ['angle', 'angle_fixed', 'distance', 'area', 'slope'],
-      subgroups: [{ label: 'measurement', items: [
-        { mode: 'angle', label: 'angle', icon: svgIcon(modeAngle) },
-        { mode: 'angle_fixed', label: 'angleFixed', icon: svgIcon(modeAngleFixed) },
-        { mode: 'distance', label: 'distance', icon: svgIcon(modeDistance) },
-        { mode: 'area', label: 'area', icon: svgIcon(modeArea) },
-        { mode: 'slope', label: 'slope', icon: svgIcon(modeSlope) },
-      ] }],
-    },
-    {
-      id: 'transforms', title: 'transformTools', icon: svgIcon(modeReflectAboutLine, 20), activeModes: ['mirror_line', 'mirror_point', 'mirror_circle', 'rotate', 'translate_vector', 'dilate', 'shear', 'stretch'],
-      subgroups: [
-        { label: 'reflectionTools', items: [
-          { mode: 'mirror_line', label: 'mirrorLine', icon: svgIcon(modeReflectAboutLine) },
-          { mode: 'mirror_point', label: 'mirrorPoint', icon: svgIcon(modeReflectAboutPoint) },
-          { mode: 'mirror_circle', label: 'mirrorCircle', icon: svgIcon(modeReflectAboutCircle) },
-        ] },
-        { label: 'rigidTransforms', items: [
-          { mode: 'rotate', label: 'rotate', icon: svgIcon(modeRotateAroundPoint) },
-          { mode: 'translate_vector', label: 'translateByVector', icon: svgIcon(modeTranslateByVector) },
-          { mode: 'dilate', label: 'dilate', icon: svgIcon(modeDilateFromPoint) },
-        ] },
-        { label: 'affineTransforms', items: [
-          { mode: 'shear', label: 'shear', icon: svgIcon(modeShear) },
-          { mode: 'stretch', label: 'stretch', icon: svgIcon(modeStretch) },
-        ] },
-      ],
-    },
-    {
-      id: 'insert', title: 'insertTools', icon: svgIcon(modeText, 20), activeModes: ['text', 'slider', 'button', 'checkbox'],
-      subgroups: [{ label: 'insertTools', items: [
-        { mode: 'text', label: 'insertText', icon: svgIcon(modeText) },
-        { mode: 'slider', label: 'insertSlider', icon: svgIcon(modeSlider) },
-        { mode: 'button', label: 'insertButton', icon: svgIcon(modeButton) },
-        { mode: 'checkbox', label: 'insertCheckbox', icon: svgIcon(modeCheckbox) },
-      ] }],
-    },
-    {
-      id: 'properties', title: 'objectProperties', icon: svgIcon(modeShowHideObject, 20), activeModes: ['show_hide', 'show_hide_label', 'delete'],
-      subgroups: [{ label: 'propertiesTools', items: [
-        { mode: 'show_hide', label: 'showHideObject', icon: svgIcon(modeShowHideObject) },
-        { mode: 'show_hide_label', label: 'showHideLabel', icon: svgIcon(modeShowHideLabel) },
-        { mode: 'delete', label: 'deleteObject', icon: svgIcon(modeDelete) },
-      ] }],
-    },
-  ];
+  const toggleOptions = () => {
+    setOptionsOpen(v => {
+      const next = !v;
+      if (next && optionsRef.current) {
+        const rect = optionsRef.current.getBoundingClientRect();
+        const width = 224;   // w-56
+        const height = 240;  // 三个 select 的估算高度
+        const upward = rect.bottom + height > window.innerHeight;
+        setOptionsPos({
+          left: Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8)),
+          top: upward ? rect.top - height - 4 : rect.bottom + 4,
+          upward,
+        });
+      }
+      return next;
+    });
+  };
+
+  const groups = TOOL_GROUPS;
 
   return (
     <div ref={toolbarRef} className="h-12 bg-white border-b border-gray-200 px-2 flex items-center gap-1 overflow-x-auto shrink-0 z-30 shadow-sm">
@@ -286,6 +321,51 @@ const Toolbar: React.FC<ToolbarProps> = ({
       <ToolbarIcon title={t('zoomIn')} active={mode === 'zoom_in'} onClick={() => setMode('zoom_in')}>{svgIcon(modeZoomIn, 18)}</ToolbarIcon>
       <ToolbarIcon title={t('zoomOut')} active={mode === 'zoom_out'} onClick={() => setMode('zoom_out')}>{svgIcon(modeZoomOut, 18)}</ToolbarIcon>
       <ToolbarIcon title={t('snap')} active={snapEnabled} onClick={() => setSnapEnabled(!snapEnabled)}><Magnet size={18} /></ToolbarIcon>
+      <div ref={optionsRef} className="relative shrink-0">
+        <ToolbarIcon title={t('optionsTitle')} active={optionsOpen} onClick={toggleOptions}><Settings size={18} /></ToolbarIcon>
+        {optionsOpen && createPortal(
+          <div data-toolbar-menu className="fixed z-[1000] w-56 bg-white border border-gray-200 rounded-lg shadow-lg py-2 px-3 space-y-3"
+            style={{ left: optionsPos.left, top: optionsPos.top }}>
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">{t('optionsTitle')}</div>
+            <label className="block">
+              <span className="block text-xs font-medium text-gray-600 mb-1">{t('optionRounding')}</span>
+              <select
+                value={options.rounding}
+                onChange={e => updateOptions({ rounding: Number(e.target.value) })}
+                className="w-full text-sm border border-gray-300 rounded px-2 py-1 focus:outline-none focus:border-blue-500"
+              >
+                {[0, 1, 2, 3, 4, 5, 10].map(n => (
+                  <option key={n} value={n}>{n}</option>
+                ))}
+              </select>
+            </label>
+            <label className="block">
+              <span className="block text-xs font-medium text-gray-600 mb-1">{t('optionAngleUnit')}</span>
+              <select
+                value={options.angleUnit}
+                onChange={e => updateOptions({ angleUnit: e.target.value as AngleUnit })}
+                className="w-full text-sm border border-gray-300 rounded px-2 py-1 focus:outline-none focus:border-blue-500"
+              >
+                <option value="degree">{t('optionAngleDegree')}</option>
+                <option value="radian">{t('optionAngleRadian')}</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="block text-xs font-medium text-gray-600 mb-1">{t('optionPointCapturing')}</span>
+              <select
+                value={options.pointCapturing}
+                onChange={e => updateOptions({ pointCapturing: e.target.value as PointCapturingMode })}
+                className="w-full text-sm border border-gray-300 rounded px-2 py-1 focus:outline-none focus:border-blue-500"
+              >
+                <option value="automatic">{t('capturingAutomatic')}</option>
+                <option value="snap_grid">{t('capturingGrid')}</option>
+                <option value="off">{t('capturingOff')}</option>
+              </select>
+            </label>
+          </div>,
+          document.body,
+        )}
+      </div>
 
       <ToolbarDivider />
       <ToolbarIcon title={t('undo')} onClick={undo} disabled={undoCount === 0}><Undo2 size={18} /></ToolbarIcon>
@@ -312,15 +392,9 @@ const Toolbar: React.FC<ToolbarProps> = ({
         onClick={toggleAnimation} title={isAnimating ? t('pause') : t('play')}>
         {isAnimating ? <Pause size={18} /> : <Play size={18} />}
       </button>
+      <ToolbarIcon title={t('constructionNav')} active={navBarVisible} onClick={toggleNavBar}><ListOrdered size={18} /></ToolbarIcon>
 
       <div className="flex-1" />
-      {mode === 'circle' && (
-        <div className="flex items-center gap-1 px-2 border border-gray-200 rounded-md bg-gray-50 h-8 shrink-0">
-          <span className="text-xs font-medium text-gray-500">R=</span>
-          <input type="number" value={radius} onChange={e => setRadius(Number(e.target.value))}
-            className="w-14 px-1 py-0.5 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500" min="1" />
-        </div>
-      )}
       {selectedElementsLength === 1 && (
         <div className="flex items-center gap-1 px-2 border border-gray-200 rounded-md bg-gray-50 h-8 shrink-0">
           <span className="text-xs font-medium text-gray-500">{t('label')}:</span>

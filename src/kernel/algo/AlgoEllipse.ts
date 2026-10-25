@@ -9,7 +9,8 @@ export class AlgoEllipse extends AlgoElement {
   constructor(kernel: IKernel, private f1: GeoPoint, private f2: GeoPoint, private p: GeoPoint) {
     super(kernel);
     this.outputConic = new GeoConic(kernel, [1, 0, 1, 0, 0, -1]);
-    this.outputConic.label = kernel.getConstruction().getNextLineLabel();
+    // 标签由调用方统一分配（工具 assignOutputLabel / 识别器 assignNextLabel）——
+    // 构造器错用线表会给椭圆拿到 'f'（评审 I4）
     this.setInputOutput();
   }
 

@@ -55,8 +55,8 @@ describe('extended commands: measurements and midpoints', () => {
 
     const numeric = elements[elements.length - 1] as GeoNumeric;
     expect(numeric.getValue()).toBeCloseTo(5, 10);
-    // AlgoNumeric 序列用 t 开头（t1, t2…），不能复用在直线序列上
-    expect(numeric.label).toBe('t1');
+    // 数值走 GeoGebra 小写字母表（a, b, c…），与直线/函数表查重共享
+    expect(numeric.label).toBe('a');
   });
 
   it('Slope(l) returns the slope of a line and works for segments', () => {
@@ -98,12 +98,12 @@ describe('extended commands: measurements and midpoints', () => {
 });
 
 describe('extended commands: intersections and circles', () => {
-  it('Intersection(l1, l2) returns the crossing points of two lines', () => {
+  it('Intersection(f, g) returns the crossing points of two lines', () => {
     const kernel = makeKernel();
-    addInput(kernel, 'Line((0, 0), (4, 4))');   // l1: y = x
-    addInput(kernel, 'Line((0, 4), (4, 0))');   // l2: y = -x + 4
+    addInput(kernel, 'Line((0, 0), (4, 4))');   // f: y = x
+    addInput(kernel, 'Line((0, 4), (4, 0))');   // g: y = -x + 4
 
-    const elements = addInput(kernel, 'Intersection(l1, l2)');
+    const elements = addInput(kernel, 'Intersection(f, g)');
     const points = elements.filter(el => el instanceof GeoPoint);
 
     expect(points).toHaveLength(1);
@@ -118,7 +118,7 @@ describe('extended commands: intersections and circles', () => {
     addInput(kernel, 'Line((0, 0), (4, 0))');
     addInput(kernel, 'Line((0, 1), (4, 1))');
 
-    expect(() => addInput(kernel, 'Intersection(l1, l2)')).toThrow(/do not intersect/);
+    expect(() => addInput(kernel, 'Intersection(f, g)')).toThrow(/do not intersect/);
   });
 
   it('Circle(A, r) builds a circle from a centre and a numeric radius', () => {
@@ -158,9 +158,13 @@ describe('extended commands: intersections and circles', () => {
 
   it('PointOnLine(A, l) drops a constrained point onto the line', () => {
     const kernel = makeKernel();
-    addInput(kernel, 'Line((0, 0), (4, 0))');   // x 轴
+    // 端点用具名点：内联元组点自 P0-2 修复后也会登记并占用标签（与 GeoGebra 一致），
+    // 匿名写法会抢走 'A'，令 A = (2, 5) 变成对线段端点的原位重定义
+    addInput(kernel, 'P0 = (0, 0)');
+    addInput(kernel, 'P1 = (4, 0)');
+    addInput(kernel, 'f = Line(P0, P1)');   // x 轴
     addInput(kernel, 'A = (2, 5)');
-    const elements = addInput(kernel, 'PointOnLine(A, l1)');
+    const elements = addInput(kernel, 'PointOnLine(A, f)');
 
     const point = elements.filter(el => el instanceof GeoPoint)[0];
     // A 投影到 x 轴上

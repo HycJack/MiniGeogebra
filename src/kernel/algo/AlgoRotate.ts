@@ -95,20 +95,29 @@ export class AlgoRotate extends AlgoElement {
   private result: GeoElement;
   private source: GeoElement;
   private center: { x: number; y: number };
+  private angle: number;
   // 活中心：GeoPoint 时注册为输入，移动中心会联动重算（对标 AlgoRotatePoint 的活引用）
   private centerPoint: GeoPoint | null;
+  // 活角度：GeoNumeric 时注册为输入，数值按"度"解释（与 Rotate 命令静态分支一致），
+  // 拖滑块联动重算
+  private angleNumeric: GeoNumeric | null;
 
-  constructor(kernel: IKernel, source: GeoElement, center: { x: number; y: number } | GeoPoint, private angle: number) {
+  constructor(kernel: IKernel, source: GeoElement, center: { x: number; y: number } | GeoPoint, angle: number, angleNumeric: GeoNumeric | null = null) {
     super(kernel);
     this.source = source;
     this.centerPoint = center instanceof GeoPoint ? center : null;
     this.center = toCenter(center);
-    this.result = buildTransformed(kernel, source, 'rotate', { center: this.center, angle });
+    this.angleNumeric = angleNumeric;
+    this.angle = angleNumeric ? angleNumeric.getValue() * Math.PI / 180 : angle;
+    this.result = buildTransformed(kernel, source, 'rotate', { center: this.center, angle: this.angle });
     this.setInputOutput();
   }
 
   setInputOutput(): void {
-    this.input = this.centerPoint ? [this.source, this.centerPoint] : [this.source];
+    const inputs: GeoElement[] = [this.source];
+    if (this.centerPoint) inputs.push(this.centerPoint);
+    if (this.angleNumeric) inputs.push(this.angleNumeric);
+    this.input = inputs;
     this.setOutput([this.result]);
   }
 
@@ -122,8 +131,9 @@ export class AlgoRotate extends AlgoElement {
     if (this.centerPoint) {
       this.center = { x: this.centerPoint.getX(), y: this.centerPoint.getY() };
     }
-    // 源对象/中心移动后原地重算，保持输出对象身份。
-    applyTransformed(this.result, this.source, 'rotate', { center: this.center, angle: this.angle });
+    const t = this.angleNumeric ? this.angleNumeric.getValue() * Math.PI / 180 : this.angle;
+    // 源对象/中心/角度变化后原地重算，保持输出对象身份。
+    applyTransformed(this.result, this.source, 'rotate', { center: this.center, angle: t });
     this.result.setDefined();
   }
 }
@@ -132,19 +142,27 @@ export class AlgoDilate extends AlgoElement {
   private result: GeoElement;
   private source: GeoElement;
   private center: { x: number; y: number };
+  private ratio: number;
   private centerPoint: GeoPoint | null;
+  // 活比例：GeoNumeric（滑块）时注册为输入，拖滑块联动重算
+  private ratioNumeric: GeoNumeric | null;
 
-  constructor(kernel: IKernel, source: GeoElement, center: { x: number; y: number } | GeoPoint, private ratio: number) {
+  constructor(kernel: IKernel, source: GeoElement, center: { x: number; y: number } | GeoPoint, ratio: number | GeoNumeric) {
     super(kernel);
     this.source = source;
     this.centerPoint = center instanceof GeoPoint ? center : null;
     this.center = toCenter(center);
-    this.result = buildTransformed(kernel, source, 'dilate', { center: this.center, ratio });
+    this.ratioNumeric = ratio instanceof GeoNumeric ? ratio : null;
+    this.ratio = ratio instanceof GeoNumeric ? ratio.getValue() : ratio;
+    this.result = buildTransformed(kernel, source, 'dilate', { center: this.center, ratio: this.ratio });
     this.setInputOutput();
   }
 
   setInputOutput(): void {
-    this.input = this.centerPoint ? [this.source, this.centerPoint] : [this.source];
+    const inputs: GeoElement[] = [this.source];
+    if (this.centerPoint) inputs.push(this.centerPoint);
+    if (this.ratioNumeric) inputs.push(this.ratioNumeric);
+    this.input = inputs;
     this.setOutput([this.result]);
   }
 
@@ -157,7 +175,8 @@ export class AlgoDilate extends AlgoElement {
     if (this.centerPoint) {
       this.center = { x: this.centerPoint.getX(), y: this.centerPoint.getY() };
     }
-    applyTransformed(this.result, this.source, 'dilate', { center: this.center, ratio: this.ratio });
+    const r = this.ratioNumeric ? this.ratioNumeric.getValue() : this.ratio;
+    applyTransformed(this.result, this.source, 'dilate', { center: this.center, ratio: r });
     this.result.setDefined();
   }
 }
@@ -399,7 +418,8 @@ export function buildTransformed(kernel: IKernel, input: GeoElement, op: TransOp
   if (input instanceof GeoPoint) return transformPoint(input, op, arg);
   if (input instanceof GeoNumeric) {
     const copy = new GeoNumeric(kernel, input.getValue());
-    copy.label = input.label;
+    // 标签交给调用方统一分配（assignOutputLabel / assignNextLabel）——
+    // 拷贝源标签会产出重复标签（评审 U7：Rotate(a, 30, O) → a, O, a）。
     return copy;
   }
   if (input instanceof GeoSegment) {
@@ -509,8 +529,9 @@ export function buildTransformed(kernel: IKernel, input: GeoElement, op: TransOp
 
 /**
  * GeoGebra AlgoShearOrStretch 的矩阵形式。
- * 对直线 ax+by+c=0，方向单位向量为 (-a, b)/|n|，
- * shear 沿法向偏移，stretch 沿直线方向缩放。
+ * 对直线 ax+by+c=0，轴线方向单位向量为 (b, −a)/|n|，
+ * shear 沿轴线方向位移 ∝ 到轴的法向距离，stretch 沿法向缩放距离。
+ * （实现即如此、与 GeoGebra 一致；此前注释把两者写反，勿按旧注释"修"代码。）
  */
 export function shearStretchMatrix(a: number, b: number, c: number, factor: number, op: ShearStretchOp) {
   const n = Math.hypot(a, b);

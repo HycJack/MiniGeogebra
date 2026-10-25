@@ -20,7 +20,9 @@ const dirAt = (angle: number) => ({ x: Math.cos(angle), y: Math.sin(angle) });
 
 /**
  * 公共基类：单输入圆锥曲线，输出若干对象。
- * apply() 返回 false 表示本类型不适用该属性（输出保持 undefined）。
+ * apply() 返回实际赋值的前 n 个输出个数；0 表示本类型不适用该属性（输出保持 undefined）。
+ * 不能对全部输出整体 setDefined——圆的第二个焦点、抛物线的第二输出
+ * 从未被赋值，整体置 defined 会把构造初值 (0,0) 洗成幻影对象。
  */
 abstract class AlgoConicPropertyBase extends AlgoElement {
   protected conic: GeoConic;
@@ -42,12 +44,11 @@ abstract class AlgoConicPropertyBase extends AlgoElement {
     this.output.forEach(o => o.setUndefined());
     const canonical = analyzeConic(this.conic.coeffs);
     if (!canonical) return;
-    if (this.apply(canonical)) {
-      this.output.forEach(o => o.setDefined());
-    }
+    const n = this.apply(canonical);
+    for (let i = 0; i < n; i++) this.output[i].setDefined();
   }
 
-  protected abstract apply(c: CanonicalConic): boolean;
+  protected abstract apply(c: CanonicalConic): number;
 }
 
 /** 焦点：椭圆/双曲线 2 个，抛物线 1 个（第二个保持 undefined），圆 = 圆心。 */
@@ -60,22 +61,22 @@ export class AlgoConicFocus extends AlgoConicPropertyBase {
     return [new GeoPoint(this.kernel, new GeoVec3D(0, 0, 1)), new GeoPoint(this.kernel, new GeoVec3D(0, 0, 1))];
   }
 
-  protected apply(c: CanonicalConic): boolean {
+  protected apply(c: CanonicalConic): number {
     const [f1, f2] = this.output as GeoPoint[];
     if (c.type === 'circle') {
       f1.setCoords(c.center!.x, c.center!.y, 1);
-      return true;
+      return 1;
     }
     if (c.type === 'parabola') {
       const axis = dirAt(c.axisAngle!);
       f1.setCoords(c.vertex!.x + c.focalParameter! * axis.x, c.vertex!.y + c.focalParameter! * axis.y, 1);
-      return true;
+      return 1;
     }
     const dir = dirAt(c.majorAngle!);
     const c0 = Math.sqrt(Math.abs(c.a! * c.a! - c.b! * c.b!));
     f1.setCoords(c.center!.x + c0 * dir.x, c.center!.y + c0 * dir.y, 1);
     f2.setCoords(c.center!.x - c0 * dir.x, c.center!.y - c0 * dir.y, 1);
-    return true;
+    return 2;
   }
 }
 
@@ -89,16 +90,16 @@ export class AlgoConicVertex extends AlgoConicPropertyBase {
     return [new GeoPoint(this.kernel, new GeoVec3D(0, 0, 1)), new GeoPoint(this.kernel, new GeoVec3D(0, 0, 1))];
   }
 
-  protected apply(c: CanonicalConic): boolean {
+  protected apply(c: CanonicalConic): number {
     const [v1, v2] = this.output as GeoPoint[];
     if (c.type === 'parabola') {
       v1.setCoords(c.vertex!.x, c.vertex!.y, 1);
-      return true;
+      return 1;
     }
     const dir = dirAt(c.majorAngle!);
     v1.setCoords(c.center!.x + c.a! * dir.x, c.center!.y + c.a! * dir.y, 1);
     v2.setCoords(c.center!.x - c.a! * dir.x, c.center!.y - c.a! * dir.y, 1);
-    return true;
+    return 2;
   }
 }
 
@@ -112,8 +113,8 @@ export class AlgoConicAsymptote extends AlgoConicPropertyBase {
     return [new GeoLine(this.kernel, 1, 0, 0), new GeoLine(this.kernel, 1, 0, 0)];
   }
 
-  protected apply(c: CanonicalConic): boolean {
-    if (c.type !== 'hyperbola') return false;
+  protected apply(c: CanonicalConic): number {
+    if (c.type !== 'hyperbola') return 0;
     const t = dirAt(c.majorAngle!);           // 实轴方向
     const s = dirAt(c.majorAngle! + Math.PI / 2); // 共轭轴方向
     const [l1, l2] = this.output as GeoLine[];
@@ -128,7 +129,7 @@ export class AlgoConicAsymptote extends AlgoConicPropertyBase {
     };
     setLine(l1, +1);
     setLine(l2, -1);
-    return true;
+    return 2;
   }
 }
 
@@ -142,7 +143,7 @@ export class AlgoConicDirectrix extends AlgoConicPropertyBase {
     return [new GeoLine(this.kernel, 1, 0, 0), new GeoLine(this.kernel, 1, 0, 0)];
   }
 
-  protected apply(c: CanonicalConic): boolean {
+  protected apply(c: CanonicalConic): number {
     const [d1, d2] = this.output as GeoLine[];
     if (c.type === 'parabola') {
       const axis = dirAt(c.axisAngle!);
@@ -150,9 +151,9 @@ export class AlgoConicDirectrix extends AlgoConicPropertyBase {
       d1.a = axis.x;
       d1.b = axis.y;
       d1.c = -(axis.x * foot.x + axis.y * foot.y);
-      return true;
+      return 1;
     }
-    if (c.type === 'circle') return false;
+    if (c.type === 'circle') return 0;
     const dir = dirAt(c.majorAngle!);
     const c0 = Math.sqrt(Math.abs(c.a! * c.a! - c.b! * c.b!));
     const offset = c.a! * c.a! / c0; // a/e = a²/c0
@@ -162,7 +163,7 @@ export class AlgoConicDirectrix extends AlgoConicPropertyBase {
     d2.a = dir.x;
     d2.b = dir.y;
     d2.c = -(dir.x * c.center!.x + dir.y * c.center!.y - offset);
-    return true;
+    return 2;
   }
 }
 
@@ -176,14 +177,14 @@ export class AlgoConicAxis extends AlgoConicPropertyBase {
     return [new GeoLine(this.kernel, 1, 0, 0), new GeoLine(this.kernel, 1, 0, 0)];
   }
 
-  protected apply(c: CanonicalConic): boolean {
+  protected apply(c: CanonicalConic): number {
     const [a1, a2] = this.output as GeoLine[];
     if (c.type === 'parabola') {
       const axis = dirAt(c.axisAngle!);
       a1.a = axis.y;
       a1.b = -axis.x;
       a1.c = -(axis.y * c.vertex!.x - axis.x * c.vertex!.y);
-      return true;
+      return 1;
     }
     const setThrough = (line: GeoLine, angle: number) => {
       const dir = dirAt(angle);
@@ -193,7 +194,7 @@ export class AlgoConicAxis extends AlgoConicPropertyBase {
     };
     setThrough(a1, c.theta);
     setThrough(a2, c.theta + Math.PI / 2);
-    return true;
+    return 2;
   }
 }
 
@@ -207,13 +208,13 @@ export class AlgoConicEccentricity extends AlgoConicPropertyBase {
     return [new GeoNumeric(this.kernel, 0)];
   }
 
-  protected apply(c: CanonicalConic): boolean {
+  protected apply(c: CanonicalConic): number {
     const num = this.output[0] as GeoNumeric;
-    if (c.type === 'circle') { num.setValue(0); return true; }
-    if (c.type === 'parabola') { num.setValue(1); return true; }
+    if (c.type === 'circle') { num.setValue(0); return 1; }
+    if (c.type === 'parabola') { num.setValue(1); return 1; }
     const c0 = Math.sqrt(Math.abs(c.a! * c.a! - c.b! * c.b!));
     num.setValue(c0 / c.a!);
-    return true;
+    return 1;
   }
 }
 
@@ -227,11 +228,11 @@ export class AlgoConicParameter extends AlgoConicPropertyBase {
     return [new GeoNumeric(this.kernel, 0)];
   }
 
-  protected apply(c: CanonicalConic): boolean {
+  protected apply(c: CanonicalConic): number {
     const num = this.output[0] as GeoNumeric;
     // 抛物线的 parameter = |2f|（y²=2px 中的 p）；中心型 = b²/a
     num.setValue(c.type === 'parabola' ? Math.abs(2 * c.focalParameter!) : c.b! * c.b! / c.a!);
-    return true;
+    return 1;
   }
 }
 
@@ -245,10 +246,10 @@ export class AlgoConicRadius extends AlgoConicPropertyBase {
     return [new GeoNumeric(this.kernel, 0)];
   }
 
-  protected apply(c: CanonicalConic): boolean {
-    if (c.type !== 'circle') return false;
+  protected apply(c: CanonicalConic): number {
+    if (c.type !== 'circle') return 0;
     (this.output[0] as GeoNumeric).setValue(Math.sqrt(-c.fPrime / c.lambda1));
-    return true;
+    return 1;
   }
 }
 

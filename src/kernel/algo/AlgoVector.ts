@@ -9,7 +9,8 @@ export class AlgoVector extends AlgoElement {
   constructor(kernel: IKernel, private p1: GeoPoint, private p2: GeoPoint) {
     super(kernel);
     this.outputVec = new GeoVector(kernel, p1.getX(), p1.getY(), p2.getX(), p2.getY());
-    this.outputVec.label = kernel.getConstruction().getNextLineLabel();
+    // 向量走官方 u,v,w… 字符表（与线表查重共享命名空间）
+    this.outputVec.label = kernel.getConstruction().getNextVectorLabel();
     this.setInputOutput();
   }
 

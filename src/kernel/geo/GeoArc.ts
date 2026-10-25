@@ -73,12 +73,15 @@ export class GeoArc extends GeoConic {
     const d = Math.hypot(PI.getX() - center.x, PI.getY() - center.y);
     if (Math.abs(d - r) > eps) return false;
     const a = Math.atan2(PI.getY() - center.y, PI.getX() - center.x);
-    let start = this._startAngle, end = this._endAngle;
-    if (end < start) { [start, end] = [end, start]; }
-    const normA = normalizeAngle(a, start);
-    const nS = normalizeAngle(start, start);
-    const nE = normalizeAngle(end, start);
-    return normA >= nS - eps && normA <= nE + eps;
+    // 弧 = 从 start 沿扫向到 end 的窗口（与 Canvas ctx.arc、WebGL arcLines、
+    // GeoGebra"恒逆时针从起点扫到终点"同一约定）。此前 min/max 交换把
+    // ea<sa 的弧解释成另一端的小窗，命中判断与渲染不一致。
+    const TWO_PI = 2 * Math.PI;
+    const rel = ((a - this._startAngle) % TWO_PI + TWO_PI) % TWO_PI;
+    const sweep = this._ccw
+      ? ((this._startAngle - this._endAngle) % TWO_PI + TWO_PI) % TWO_PI
+      : ((this._endAngle - this._startAngle) % TWO_PI + TWO_PI) % TWO_PI;
+    return rel <= sweep + eps;
   }
 
   getMinParameter(): number { return this._startAngle; }
@@ -89,11 +92,4 @@ export class GeoArc extends GeoConic {
 
 function circleCoeffs(h: number, k: number, r: number): number[] {
   return [1, 0, 1, -2 * h, -2 * k, h * h + k * k - r * r];
-}
-
-function normalizeAngle(a: number, base: number): number {
-  let t = a - base;
-  while (t < 0) t += 2 * Math.PI;
-  while (t >= 2 * Math.PI) t -= 2 * Math.PI;
-  return t;
 }

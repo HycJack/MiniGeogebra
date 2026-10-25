@@ -142,7 +142,7 @@ export class GeoConic3D extends GeoElement {
 
   /** 退化判定（空集/单点/两直线）：3×3 行列式为零（量纲相对容差）。 */
   isDegenerate(): boolean {
-    return isConicDegenerate(this.getCoeffs(), Math.max(this.a, this.b, 1));
+    return isConicDegenerate(this.getCoeffs());
   }
 
   /**

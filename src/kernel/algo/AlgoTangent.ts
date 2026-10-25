@@ -70,7 +70,7 @@ export class AlgoTangent extends AlgoElement {
     const mag = Math.max(
       1, Math.abs(A), Math.abs(B), Math.abs(C), Math.abs(D), Math.abs(E), Math.abs(F),
     );
-    if (isConicDegenerate(coeffs, mag)) return;
+    if (isConicDegenerate(coeffs)) return;
 
     const px = this.pointP.getX();
     const py = this.pointP.getY();

@@ -3,6 +3,7 @@ import { GeoElement } from './GeoElement';
 import { GeoVec3D } from '../core/GeoVec3D';
 import { Animatable } from '../core/Animatable';
 import { AnimationManager } from '../core/AnimationManager';
+import { formatAngle } from '../core/Options';
 
 /** 对标 GeoGebra 的动画类型。 */
 export enum AnimationType {
@@ -22,6 +23,11 @@ export class GeoNumeric extends GeoElement implements Animatable {
     public animationType: AnimationType = AnimationType.OSCILLATING;
     private animationDirection: 1 | -1 = 1;
     private animationValue: number = NaN;
+    // 随机动画的步长累积器（达到一个 increment 才重掷一次，对标官方节奏）
+    private randomAccum: number = 0;
+
+    /** 角度量输出（AlgoAngle/AlgoAngleOriented 标记）：代数描述按 angleUnit 显示。 */
+    public isAngle = false;
 
     constructor(kernel: IKernel, value: number) {
         super(kernel, new GeoVec3D(0, 0, 0));
@@ -38,7 +44,12 @@ export class GeoNumeric extends GeoElement implements Animatable {
         this.update();
     }
 
-    isAnimatable(): boolean { return true; }
+    isAnimatable(): boolean {
+        // 对标 GeoNumeric.isAnimatable：只有独立数值（滑块）可动画。
+        // 此前恒 true——派生数值（a = 2b、距离/角度度量）右键也能"播放"，
+        // doAnimationStep 改值与 parentAlgo 重算互相覆写打架
+        return this.isIndependent() && Number.isFinite(this.intervalMin) && Number.isFinite(this.intervalMax);
+    }
 
     setAnimationType(type: AnimationType) {
         this.animationType = type;
@@ -76,8 +87,14 @@ export class GeoNumeric extends GeoElement implements Animatable {
                 }
                 break;
             case AnimationType.RANDOM:
-                // 对标 GeoGebra 的随机动画：每步在区间内随机跳一个值（增量量化仍生效）
-                this.animationValue = this.intervalMin + Math.random() * intervalWidth;
+                // 对标 GeoGebra 的随机动画：重掷频率 = speed·宽度/(10·增量)——
+                // 累积步长达到一个增量才重掷一次，而非每帧重掷（30Hz 闪烁，
+                // 骰子/抽签类演示不可用）
+                this.randomAccum += Math.abs(step);
+                if (this.animationIncrement <= 0 || this.randomAccum >= this.animationIncrement) {
+                    this.randomAccum = 0;
+                    this.animationValue = this.intervalMin + Math.random() * intervalWidth;
+                }
                 break;
             case AnimationType.INCREASING:
             default:
@@ -88,13 +105,19 @@ export class GeoNumeric extends GeoElement implements Animatable {
 
         let param = this.animationValue - this.intervalMin;
         if (this.animationIncrement > 0) param = Math.round(param / this.animationIncrement) * this.animationIncrement;
-        this.setValue(this.intervalMin + param, false);
-        return this.value !== oldValue;
+        const next = this.intervalMin + param;
+        // 值未变化（如振荡动画钉在边界）不入队：否则静止滑块也让整条依赖链逐帧空转重算
+        if (next === this.value) return false;
+        this.setValue(next, false);
+        return true;
     }
 
-    /** 代数描述：数值（4 位有效小数） */
+    /** 代数描述：数值按 rounding 显示；角度量按 angleUnit 显示。 */
     getAlgebraDescription(): string {
         if (!this.isDefined()) return `${this.label}（未定义）`;
-        return `${this.label} = ${this.value.toFixed(4)}`;
+        const value = this.isAngle
+            ? formatAngle(this.value, this.kernel.getOptions())
+            : this.fmt(this.value);
+        return `${this.label} = ${value}`;
     }
 }

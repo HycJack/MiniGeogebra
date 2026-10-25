@@ -1,6 +1,7 @@
 import { IKernel } from '../core/Interfaces';
 import { AlgoElement } from './AlgoElement';
 import { GeoPoint } from '../geo/GeoPoint';
+import { GeoLine } from '../geo/GeoLine';
 import { GeoNumeric } from '../geo/GeoNumeric';
 import { GeoVec3D } from '../core/GeoVec3D';
 
@@ -20,6 +21,8 @@ export class AlgoAngle extends AlgoElement {
     super(kernel);
     // 标签由调用方统一分配（识别器 assignNextLabel / 工具层），不再硬编码 'α'
     this.outputValue = new GeoNumeric(kernel, 0);
+    // 角度量标记：代数视图按 angleUnit 显示（Options 三件套）
+    this.outputValue.isAngle = true;
     this.setInputOutput();
   }
 
@@ -79,6 +82,7 @@ export class AlgoAngleOriented extends AlgoElement {
   ) {
     super(kernel);
     this.outputValue = new GeoNumeric(kernel, 0);
+    this.outputValue.isAngle = true;
     this.setInputOutput();
   }
 
@@ -113,4 +117,44 @@ export class AlgoAngleOriented extends AlgoElement {
   getOutput(): GeoNumeric {
     return this.outputValue;
   }
+}
+
+
+/**
+ * 两线角（对标 AlgoAngleLines）：angle = atan2(det(n1,n2), n1·n2)，
+ * n 为直线系数 ax+by+c 的法向量；atan2 对向量长度缩放不变，无需归一化。
+ * 结果为有向角，归一化到 [0, 2π)。线段/射线（GeoLine 子类）同样适用。
+ */
+export class AlgoAngleTwoLines extends AlgoElement {
+  private outputValue: GeoNumeric;
+
+  constructor(kernel: IKernel, private l1: GeoLine, private l2: GeoLine) {
+    super(kernel);
+    this.outputValue = new GeoNumeric(kernel, 0);
+    this.outputValue.isAngle = true;
+    this.setInputOutput();
+  }
+
+  setInputOutput(): void {
+    this.input = [this.l1, this.l2];
+    this.setOutput([this.outputValue]);
+  }
+
+  compute(): void {
+    const len1 = Math.hypot(this.l1.a, this.l1.b);
+    const len2 = Math.hypot(this.l2.a, this.l2.b);
+    if (len1 < 1e-12 || len2 < 1e-12) {
+      this.outputValue.setUndefined();
+      return;
+    }
+    // |v||w|·sinθ = det(v,w)，|v||w|·cosθ = v·w（v/w 为法向量）
+    const det = this.l1.a * this.l2.b - this.l1.b * this.l2.a;
+    const prod = this.l1.a * this.l2.a + this.l1.b * this.l2.b;
+    let value = Math.atan2(det, prod);
+    if (value < 0) value += 2 * Math.PI;
+    this.outputValue.setValue(value);
+    this.outputValue.setDefined();
+  }
+
+  getOutput(): GeoNumeric { return this.outputValue; }
 }

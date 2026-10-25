@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useRenderLoop } from '../hooks/useRenderLoop';
 import { Kernel } from '../kernel/core/Kernel';
 import { GeoPoint } from '../kernel/geo/GeoPoint';
+import { GeoPoint3D } from '../kernel/geo/GeoPoint3D';
 import { GeoLine } from '../kernel/geo/GeoLine';
 import { GeoSegment } from '../kernel/geo/GeoSegment';
 import { GeoPolygon } from '../kernel/geo/GeoPolygon';
@@ -26,6 +27,7 @@ import { GeoFunction } from '../kernel/geo/GeoFunction';
 import { GeoCurve } from '../kernel/geo/GeoCurve';
 import { GeoInequality } from '../kernel/geo/GeoInequality';
 import { GeoText } from '../kernel/geo/GeoText';
+import { GeoBoolean } from '../kernel/geo/GeoBoolean';
 import { AlgoPointOnConic } from '../kernel/algo/AlgoPointOnConic';
 import { AlgoPointOnLine } from '../kernel/algo/AlgoPointOnLine';
 import { AlgoPointOnSegment } from '../kernel/algo/AlgoPointOnSegment';
@@ -38,7 +40,7 @@ import { importOFF } from '../kernel/io/OffParser';
 import { toolHandlers, clearToolState } from './tools/handlers';
 import { drawGrid, drawPoint, drawLine, drawSegment, drawPolygon, drawConic, drawLocus, drawBooleanRegion, drawFunction, renderPreviews, drawVector, drawPolyLine, drawArc, drawConicPart, drawRay, drawHoverMarker, drawCurve, drawInequality, drawText } from './drawHelpers';
 import { useLanguage } from '../i18n/LanguageContext';
-import { Undo2, Redo2, Globe, ZoomIn, ZoomOut, Home, Trash2, Eye, EyeOff, Tag, MousePointerClick, Play, Pause } from 'lucide-react';
+import { Undo2, Redo2, Globe, ZoomIn, ZoomOut, Home, Maximize, ListOrdered, Trash2, Eye, EyeOff, Tag, MousePointerClick, Play, Pause, Lock, LockOpen, Waypoints, ChevronsUp, ChevronsDown, Copy } from 'lucide-react';
 import { ToolMode } from './tools/types';
 
 // 切换到这些工具时保留选区（先选对象 → 再选变换工具的 GeoGebra 工作流）
@@ -46,7 +48,11 @@ const TRANSFORM_MODES = new Set<ToolMode>([
   'rotate', 'dilate', 'mirror', 'shear', 'stretch',
   'mirror_line', 'mirror_point', 'mirror_circle', 'translate_vector',
 ]);
-import { hitScreenObject, isPointOnFunction, functionParameterAt } from './tools/hitTests';
+import { hitScreenObject, hitScreenPoint, hitLabel, isPointOnFunction, functionParameterAt } from './tools/hitTests';
+import { getElementBounds } from '../kernel/view/BoundingBoxHelper';
+import { TraceRecorder, drawTraceStamps } from './TraceLayer';
+import ConstructionNavBar from './ConstructionNavBar';
+import CanvasValueInput, { type ValueRequest } from './CanvasValueInput';
 import { resolveViewKey, formatHover } from './view/keyboardShortcuts';
 import { HoverTooltip } from './HoverTooltip';
 import { ContextMenu, type ContextMenuState } from './ContextMenu';
@@ -63,7 +69,8 @@ const captureState = (kernel: Kernel) => {
   const coords = new Map<string, { x: number; y: number; z: number }>();
   const numerics = new Map<string, number>();
   kernel.getConstruction().getElements().forEach(el => {
-    if (el instanceof GeoPoint && el.isIndependent()) {
+    if ((el instanceof GeoPoint || el instanceof GeoPoint3D) && el.isIndependent()) {
+      // 含 3D 自由点：3D 视图的拖拽复用同一 move 快照体系
       coords.set(el.id, { x: el.getX(), y: el.getY(), z: el.getZ() });
     } else if (el instanceof GeoNumeric) {
       numerics.set(el.id, el.getValue());
@@ -83,6 +90,7 @@ type Command =
   | { type: 'move'; oldState: StateSnapshot; newState: StateSnapshot }
   | { type: 'style'; element: GeoElement; before: Record<string, unknown>; after: Record<string, unknown> }
   | { type: 'numeric'; element: GeoNumeric; oldValue: number; newValue: number }
+  | { type: 'boolean'; element: GeoBoolean; oldValue: boolean; newValue: boolean }
   | { type: 'rename'; element: ConstructionElement; oldLabel: string; newLabel: string };
 
 /** GeoGebra 默认视图常用的单位比例，初始图形坐标保持在 ±10 以内。 */
@@ -101,7 +109,8 @@ export const GeometryCanvas: React.FC = () => {
   const [kernel] = useState(() => new Kernel());
   const [mode, setMode] = useState<ToolMode>('move');
   const [polygonPoints, setPolygonPoints] = useState<GeoPoint[]>([]);
-  const [radius, setRadius] = useState<number>(50);
+  // polygon 工具本次会话新建的顶点（区别于命中的用户既有点），退出工具时回收
+  const polygonCreatedPointsRef = useRef<GeoPoint[]>([]);
   const [selectedElements, setSelectedElements] = useState<GeoElement[]>([]);
   const [editingLabel, setEditingLabel] = useState('');
 
@@ -119,9 +128,11 @@ export const GeometryCanvas: React.FC = () => {
 
   useEffect(() => {
     clearToolState(toolState.current);
-    const pointsToDelete = [...polygonPoints];
-    if (pointsToDelete.length > 0) {
-      pointsToDelete.forEach(point => kernel.getConstruction().removeElement(point));
+    // 只回收 polygon 工具本会话新建的点；用户既有的点（命中后作为顶点的）不能删
+    const createdPoints = polygonCreatedPointsRef.current;
+    if (createdPoints.length > 0) {
+      createdPoints.forEach(point => kernel.getConstruction().removeElement(point));
+      createdPoints.length = 0;
       kernel.getConstruction().updateAllAlgorithms();
       setRenderRev(r => r + 1);
     }
@@ -149,17 +160,28 @@ export const GeometryCanvas: React.FC = () => {
   const [coord, setCoord] = useState<CoordinateSystem>(() => CoordinateSystem.centered(800, 600, DEFAULT_SCALE));
   const [isPanning, setIsPanning] = useState(false);
   const [lastPanPos, setLastPanPos] = useState({ x: 0, y: 0 });
+  const panStartRef = useRef<{ x: number; y: number } | null>(null);
+  const panFromEmptyClick = useRef(false);
   const [showAxes, setShowAxes] = useState(true);
   const [showGrid, setShowGrid] = useState(true);
   const [view, setView] = useState<'2d' | '3d'>('2d');
   const [uiElements, setUIElements] = useState<UIElement[]>([]);
+  // UI 元素镜像（slider/checkbox 绑定的内核对象参与 undo）：同步写入，
+  // 供 handleMouseDown 做前后差分、undo/redo 按命令回放增删
+  const uiElementsRef = useRef<UIElement[]>([]);
+  const setUIElementsTracked = useCallback((action: React.SetStateAction<UIElement[]>) => {
+    const next = typeof action === 'function' ? (action as (prev: UIElement[]) => UIElement[])(uiElementsRef.current) : action;
+    uiElementsRef.current = next;
+    setUIElements(next);
+  }, []);
   const [editingUIElement, setEditingUIElement] = useState<string | null>(null);
   const [draggingUIElement, setDraggingUIElement] = useState<string | null>(null);
   const boxModifierDown = useRef(false);
   const toolState = useRef<any>({});
   const [snapEnabled, setSnapEnabled] = useState(true);
-  const [snapToGrid, setSnapToGrid] = useState(true);
-  const [snapToPoint, setSnapToPoint] = useState(true);
+  // 吸附细节由 Options.pointCapturing 三态接管（automatic/snap_grid/off）；
+  // 对已有点的吸附始终开启（ snapping 到网格由 capturing 决定）。
+  const snapToPoint = true;
   const [panelTab, setPanelTab] = useState<'algebra' | 'properties'>('algebra');
   const undoStack = useRef<Command[]>([]);
   const redoStack = useRef<Command[]>([]);
@@ -172,6 +194,23 @@ export const GeometryCanvas: React.FC = () => {
   const pendingHover = useRef<{ screenX: number; screenY: number; worldX: number; worldY: number } | null>(null);
   // ── 右键菜单 ──
   const [contextMenuState, setContextMenuState] = useState<ContextMenuState | null>(null);
+  // ── 画布内数值输入（去 prompt 化）：工具处理器把"继续构造"闭包挂到这里 ──
+  const [valueRequest, setValueRequest] = useState<ValueRequest | null>(null);
+  const valueRequestSnapshot = useRef<ConstructionElement[] | null>(null);
+  // 浮层是 fixed portal：必须存**视口坐标**（clientX/Y），画布局部坐标会被
+  // SidePanel/Toolbar 的页面偏移平移（评审 U13）。
+  const lastClientPosRef = useRef({ x: 0, y: 0 });
+  // ── 标签拖拽（GeoGebra MoveMode.LABEL）──
+  const [draggingLabel, setDraggingLabel] = useState<GeoElement | null>(null);
+  const [labelDragStart, setLabelDragStart] = useState<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
+  // ── 构造步骤导航（constIndex ≤ step 的对象才可见/可选；null = 未启用）──
+  const [navBarVisible, setNavBarVisible] = useState(false);
+  const [navStep, setNavStep] = useState<number | null>(null);
+  const [navPlaying, setNavPlaying] = useState(false);
+  // ── 轨迹层（TraceLayer：签名变化追加深影）──
+  const traceCanvasRef = useRef<HTMLCanvasElement>(null);
+  const [traceRecorder] = useState(() => new TraceRecorder());
+  const traceCoordKeyRef = useRef('');
 
   const addCommand = useCallback((cmd: Command) => {
     undoStack.current.push(cmd);
@@ -187,8 +226,22 @@ export const GeometryCanvas: React.FC = () => {
 
   const recordRename = useCallback((element: ConstructionElement, newLabel: string) => {
     const oldLabel = (element as any).label || '';
-    if (oldLabel !== newLabel) { (element as any).label = newLabel; addCommand({ type: 'rename', element, oldLabel, newLabel }); }
-  }, [addCommand]);
+    if (oldLabel === newLabel) return;
+    // 查重上提到统一入口（评审 U7）：此前右键菜单自查、工具栏内联输入不查，
+    // 能造出重复标签
+    const clash = kernel.getConstruction().getElements()
+      .some(el => el !== element && (el as { label?: string }).label === newLabel);
+    if (clash) { alert(t('ctxRenameDuplicate')); return; }
+    (element as { label?: string }).label = newLabel;
+    // 级联重写按标签解析的消费方：复选框联动（评审 U7：重命名被联动对象
+    // 会静默弄断 checkbox）。serializer 的 outputLabels 是保存时现读的，无此问题。
+    kernel.getConstruction().getElements().forEach(el => {
+      if (el instanceof GeoBoolean && el.linkedLabels.includes(oldLabel)) {
+        el.linkedLabels = el.linkedLabels.map(l => (l === oldLabel ? newLabel : l));
+      }
+    });
+    addCommand({ type: 'rename', element, oldLabel, newLabel });
+  }, [addCommand, kernel, t]);
 
   const handleLabelSubmit = useCallback(() => {
     if (selectedElements.length === 1) {
@@ -198,6 +251,7 @@ export const GeometryCanvas: React.FC = () => {
   }, [selectedElements, editingLabel, recordRename]);
 
   const handleAlgebraElementsCreated = useCallback((elements: ConstructionElement[]) => {
+    if (elements.length === 0) return; // Slider(a) 重定义等分支返回空数组，不入哑命令
     const construction = kernel.getConstruction();
     elements.forEach(element => construction.addElement(element));
     construction.updateAllAlgorithms();
@@ -209,6 +263,8 @@ export const GeometryCanvas: React.FC = () => {
   const snapshotStyle = useCallback((el: GeoElement): Record<string, unknown> => ({
     strokeColor: el.strokeColor, strokeWidth: el.strokeWidth, strokeDash: el.strokeDash ? [...el.strokeDash] : [],
     fillColor: el.fillColor, labelVisible: el.labelVisible, labelMode: el.labelMode, visible: el.visible,
+    labelOffsetX: el.labelOffsetX, labelOffsetY: el.labelOffsetY,
+    isFixed: el.isFixed, trace: el.trace, layer: el.layer,
   }), []);
 
   const applyStyleDirectly = useCallback((el: GeoElement, changes: Record<string, unknown>) => {
@@ -219,6 +275,11 @@ export const GeometryCanvas: React.FC = () => {
     if ('labelVisible' in changes) el.labelVisible = changes.labelVisible as boolean;
     if ('labelMode' in changes) el.labelMode = changes.labelMode as 'always' | 'mouse' | 'never';
     if ('visible' in changes) el.visible = changes.visible as boolean;
+    if ('labelOffsetX' in changes) el.labelOffsetX = changes.labelOffsetX as number;
+    if ('labelOffsetY' in changes) el.labelOffsetY = changes.labelOffsetY as number;
+    if ('isFixed' in changes) el.isFixed = changes.isFixed as boolean;
+    if ('trace' in changes) el.trace = changes.trace as boolean;
+    if ('layer' in changes) el.layer = changes.layer as number;
   }, []);
 
   const recordStyleChange = useCallback((element: GeoElement, changes: Record<string, unknown>) => {
@@ -228,15 +289,120 @@ export const GeometryCanvas: React.FC = () => {
     addCommand({ type: 'style', element, before, after });
   }, [applyStyleDirectly, addCommand, snapshotStyle]);
 
+  // ─── 画布内数值输入（去 prompt 化）────────────────────────────────
+  // 工具处理器在需要数值时调用 requestValue，把"继续构造"的闭包交给浮层；
+  // 关闭时对构造做前后差分，把异步新建的元素补进 undo 栈。
+  const requestValue = useCallback((title: string, defaultValue: string, onSubmit: (raw: string | null) => void) => {
+    valueRequestSnapshot.current = kernel.getConstruction().getElements();
+    const pos = lastClientPosRef.current;
+    setValueRequest({ kind: 'number', title, defaultValue, screenX: pos.x, screenY: pos.y, onSubmit });
+  }, [kernel]);
+
+  /** 请求画布内文本输入（重命名用）。 */
+  const requestTextValue = useCallback((title: string, defaultValue: string, onSubmit: (raw: string | null) => void) => {
+    const pos = lastClientPosRef.current;
+    setValueRequest({ kind: 'text', title, defaultValue, screenX: pos.x, screenY: pos.y, onSubmit });
+  }, []);
+
+  /** 显示全部对象（GeoGebra zoomToFit）：取有限对象的并集包围盒取景。 */
+  const zoomToFit = useCallback(() => {
+    const geoList = kernel.getConstruction().getElements()
+      .filter((el): el is GeoElement => el instanceof GeoElement && el.visible !== false);
+    let rect: { minX: number; maxX: number; minY: number; maxY: number } | null = null;
+    for (const el of geoList) {
+      const b = getElementBounds(el);
+      if (!b) continue;
+      rect = rect
+        ? { minX: Math.min(rect.minX, b.minX), maxX: Math.max(rect.maxX, b.maxX), minY: Math.min(rect.minY, b.minY), maxY: Math.max(rect.maxY, b.maxY) }
+        : b;
+    }
+    if (!rect) return;
+    const rectEl = containerRef.current?.getBoundingClientRect();
+    const w = rectEl?.width ?? 800, h = rectEl?.height ?? 600;
+    let bw = rect.maxX - rect.minX, bh = rect.maxY - rect.minY;
+    if (bw < 1e-9) bw = 4;
+    if (bh < 1e-9) bh = 4;
+    const margin = 0.5;
+    const scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, Math.min(w / (bw * (1 + margin)), h / (bh * (1 + margin)))));
+    const cx = (rect.minX + rect.maxX) / 2, cy = (rect.minY + rect.maxY) / 2;
+    setCoord(new CoordinateSystem(w, h, w / 2 - cx * scale, h / 2 + cy * scale, scale, scale));
+    setRenderRev(r => r + 1);
+  }, [kernel]);
+
+  // ─── 构造步骤导航 ────────────────────────────────────────────────
+  const toggleNavBar = useCallback(() => {
+    setNavBarVisible(v => {
+      const next = !v;
+      if (next) {
+        const geoList = kernel.getConstruction().getElements().filter(el => el instanceof GeoElement);
+        setNavStep(geoList.length > 0 ? Math.max(...geoList.map(el => el.constIndex)) : 0);
+      } else {
+        setNavPlaying(false);
+        setNavStep(null);
+      }
+      return next;
+    });
+  }, [kernel]);
+
+  /** 轨迹重绘（渲染循环与右键关闭轨迹共用）。 */
+  const redrawTrace = useCallback(() => {
+    const traceCanvas = traceCanvasRef.current;
+    if (!traceCanvas) return;
+    const ctx2d = traceCanvas.getContext('2d');
+    if (!ctx2d) return;
+    const dpr = window.devicePixelRatio || 1;
+    const all = kernel.getConstruction().getElements();
+    ctx2d.setTransform(1, 0, 0, 1, 0, 0);
+    ctx2d.clearRect(0, 0, traceCanvas.width, traceCanvas.height);
+    ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawTraceStamps(ctx2d, traceRecorder.getStamps(id => all.find(e => e.id === id)?.visible !== false));
+  }, [kernel, traceRecorder]);
+
+  const handleValueClosed = useCallback(() => {
+    setValueRequest(null);
+    const before = valueRequestSnapshot.current;
+    valueRequestSnapshot.current = null;
+    if (!before) return;
+    const after = kernel.getConstruction().getElements();
+    const added = after.filter(el => !before.includes(el));
+    if (added.length > 0) addCommand({ type: 'add', elements: added });
+    setRenderRev(r => r + 1);
+  }, [kernel, addCommand]);
+
+  /** 复选框勾选 → 内核 GeoBoolean 取值（入 undo 栈）。 */
+  const handleBooleanToggle = useCallback((element: { booleanLabel?: string }, next: boolean) => {
+    if (!element.booleanLabel) return;
+    const target = kernel.getConstruction().getElements()
+      .find(e => e instanceof GeoBoolean && (e as GeoBoolean).label === element.booleanLabel) as GeoBoolean | undefined;
+    if (!target) return;
+    addCommand({ type: 'boolean', element: target, oldValue: target.getValue(), newValue: next });
+    target.setValue(next);
+    setRenderRev(r => r + 1);
+  }, [kernel, addCommand]);
+
   const deleteWithDependents = useCallback((els: ConstructionElement[]) => {
     if (els.length === 0) return;
     const construction = kernel.getConstruction();
     const cascade = new Set<ConstructionElement>();
     for (const el of els) { for (const c of construction.collectDeletionCascade(el)) cascade.add(c); construction.deleteElementWithDependents(el); }
-    addCommand({ type: 'delete', elements: Array.from(cascade).sort((a, b) => a.constIndex - b.constIndex) });
+    // 被删除的对象若在动画列表里会留下僵尸 RAF 循环（每帧推进已删对象并重渲染），
+    // 级联集合里的每个成员都退订动画
+    const am = kernel.getAnimationManager();
+    for (const el of cascade) {
+      if (el instanceof GeoElement && el.isAnimating()) el.setAnimating(false);
+    }
+    // 绑定到被删对象的画布 UI 元素（slider/checkbox）随命令入栈，撤销时同步恢复
+    const labels = new Set(Array.from(cascade).map(el => (el as { label?: string }).label).filter(Boolean) as string[]);
+    const boundUI = uiElementsRef.current.filter(u =>
+      (u.booleanLabel && labels.has(u.booleanLabel)) || (u.numericLabel && labels.has(u.numericLabel)));
+    addCommand({ type: 'delete', elements: Array.from(cascade).sort((a, b) => a.constIndex - b.constIndex), uiElements: boundUI });
+    if (boundUI.length > 0) {
+      const boundIds = new Set(boundUI.map(u => u.id));
+      setUIElementsTracked(prev => prev.filter(u => !boundIds.has(u.id)));
+    }
     setSelectedElements([]);
     setRenderRev(r => r + 1);
-  }, [kernel, addCommand]);
+  }, [kernel, addCommand, setUIElementsTracked]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -258,7 +424,7 @@ export const GeometryCanvas: React.FC = () => {
 
   const _renderToSvg = useCallback((renderer: IRenderer, bounds: { minX: number; maxX: number; minY: number; maxY: number }) => {
     const vw = (bounds.maxX - bounds.minX) * coord.xScale, vh = (bounds.maxY - bounds.minY) * coord.xScale;
-    drawGrid(renderer, vw, vh, coord, showGrid, showAxes);
+    drawGrid(renderer, vw, vh, coord, showGrid, showAxes, kernel.getOptions().rounding);
     const elements = kernel.getConstruction().getElements().filter(el => el.visible !== false);
     elements.forEach(el => { if (el instanceof GeoPolygon) drawPolygon(renderer, el, false, coord.xScale); });
     elements.forEach(el => {
@@ -304,6 +470,24 @@ export const GeometryCanvas: React.FC = () => {
   const isAnimating = kernel.getAnimationManager().isRunning();
   const toggleAnimation = useCallback(() => { const am = kernel.getAnimationManager(); if (am.isRunning()) am.stopAnimation(); else am.startAnimation(); setRenderRev(r => r + 1); }, [kernel]);
 
+  // ─── 导航自动播放 ─────────────────────────────────────────────────
+  const navTotal = (() => {
+    const geoList = kernel.getConstruction().getElements().filter(el => el instanceof GeoElement);
+    return geoList.length > 0 ? Math.max(...geoList.map(el => el.constIndex)) : 0;
+  })();
+
+  useEffect(() => {
+    if (!navPlaying) return;
+    const timer = window.setInterval(() => {
+      setNavStep(prev => {
+        const next = (prev ?? 0) + 1;
+        if (next >= navTotal) { setNavPlaying(false); return navTotal; }
+        return next;
+      });
+    }, 900);
+    return () => window.clearInterval(timer);
+  }, [navPlaying, navTotal]);
+
   // ─── 初始化 / 画布尺寸 ────────────────────────────────────────────
   useEffect(() => {
     const canvas = canvasRef.current; if (!canvas) return;
@@ -326,6 +510,11 @@ export const GeometryCanvas: React.FC = () => {
         overlayCanvas.width = width * dpr; overlayCanvas.height = height * dpr;
         overlayCanvas.style.width = `${width}px`; overlayCanvas.style.height = `${height}px`;
       }
+      const traceCanvas = traceCanvasRef.current;
+      if (traceCanvas) {
+        traceCanvas.width = width * dpr; traceCanvas.height = height * dpr;
+        traceCanvas.style.width = `${width}px`; traceCanvas.style.height = `${height}px`;
+      }
       setCoord(c => c.setSize(width, height));
       setRenderRev(r => r + 1);
     };
@@ -333,21 +522,6 @@ export const GeometryCanvas: React.FC = () => {
     return () => window.removeEventListener('resize', updateSize);
   }, []);
 
-  // ─── 键盘快捷键 ───────────────────────────────────────────────────
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (document.activeElement?.tagName !== 'INPUT') {
-          e.preventDefault();
-          if (polygonPoints.length > 0) { polygonPoints.forEach(point => kernel.getConstruction().removeElement(point)); kernel.getConstruction().updateAllAlgorithms(); }
-          setMode('move'); setSelectedElements([]); setPolygonPoints([]); cancelBoxSelect(); setRenderRev(r => r + 1);
-        }
-      } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedElements.length > 0 && document.activeElement?.tagName !== 'INPUT') {
-        e.preventDefault(); deleteWithDependents(selectedElements);
-      } else if (e.altKey && (e.key === 's' || e.key === 'S')) { e.preventDefault(); setSnapEnabled(prev => !prev); }
-    };
-    window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h);
-  }, [selectedElements, kernel, polygonPoints, deleteWithDependents]);
 
   // ─── Demo 初始化 ──────────────────────────────────────────────────
   useEffect(() => {
@@ -367,38 +541,105 @@ export const GeometryCanvas: React.FC = () => {
       const ptOnCircle = new AlgoPointOnConic(kernel, circle.getOutput(), num); construction.addElement(ptOnCircle); construction.addElement(ptOnCircle.getOutput()); ptOnCircle.update();
     }
     kernel.setUpdateCallback(() => setRenderRev(r => r + 1));
+    // 卸载清理：停掉 RAF 动画循环与 hover 节流帧，解除内核回调，
+    // 避免对已卸载组件继续 setRenderRev / setFunctionHover
+    return () => {
+      kernel.getAnimationManager().stopAnimation();
+      if (hoverRAF.current !== null) cancelAnimationFrame(hoverRAF.current);
+      kernel.setUpdateCallback(null);
+    };
   }, [kernel]);
 
   // ─── 恢复状态（undo/redo） ────────────────────────────────────────
   const restoreState = useCallback((state: StateSnapshot) => {
-    state.coords.forEach((c, id) => { const el = kernel.getConstruction().getElementById(id); if (el instanceof GeoPoint) el.setCoords(c.x, c.y, c.z); });
-    state.numerics.forEach((val, id) => { const el = kernel.getConstruction().getElementById(id); if (el instanceof GeoNumeric) el.setValue(val); });
-    kernel.getConstruction().updateAllAlgorithms();
+    // 批处理 + 全场重算后丢弃增量队列：setCoords/setValue 每次都会入队，
+    // 不清理的话批末/微任务会把刚全场重算过的依赖链再增量跑一遍
+    kernel.withBatchedUpdates(() => {
+      state.coords.forEach((c, id) => {
+      const el = kernel.getConstruction().getElementById(id);
+      if (el instanceof GeoPoint) el.setCoords(c.x, c.y, c.z);
+      else if (el instanceof GeoPoint3D) el.setCoords(c.x, c.y, c.z);
+    });
+      state.numerics.forEach((val, id) => { const el = kernel.getConstruction().getElementById(id); if (el instanceof GeoNumeric) el.setValue(val); });
+      kernel.getConstruction().updateAllAlgorithms();
+      kernel.clearPendingUpdates();
+    });
+  }, [kernel]);
+
+  // 重命名的联动改写（仅 undo/redo 回放用，不再入命令栈）：复选框按标签
+  // 引用对象，撤销/重做重命名时必须同步反向/正向改写 linkedLabels
+  const rewriteLinkedLabels = useCallback((fromLabel: string, toLabel: string) => {
+    kernel.getConstruction().getElements().forEach(el => {
+      if (el instanceof GeoBoolean && el.linkedLabels.includes(fromLabel)) {
+        el.linkedLabels = el.linkedLabels.map(l => (l === fromLabel ? toLabel : l));
+      }
+    });
   }, [kernel]);
 
   const undo = useCallback(() => {
     if (undoStack.current.length === 0) return;
     const cmd = undoStack.current.pop()!; redoStack.current.push(cmd);
-    if (cmd.type === 'add') { [...cmd.elements].reverse().forEach(el => kernel.getConstruction().removeElement(el)); setSelectedElements(prev => prev.filter(e => !(cmd.elements as any[]).includes(e))); setPolygonPoints(prev => prev.filter(e => !(cmd.elements as any[]).includes(e))); }
-    else if (cmd.type === 'delete') { cmd.elements.slice().sort((a, b) => a.constIndex - b.constIndex).forEach(el => kernel.getConstruction().addElement(el)); setSelectedElements([]); }
+    if (cmd.type === 'add') { [...cmd.elements].reverse().forEach(el => kernel.getConstruction().removeElement(el)); setSelectedElements(prev => prev.filter(e => !(cmd.elements as any[]).includes(e))); setPolygonPoints(prev => prev.filter(e => !(cmd.elements as any[]).includes(e))); if (cmd.uiElements?.length) { const ids = new Set<string>(cmd.uiElements.map((u: any) => u.id)); setUIElementsTracked(prev => prev.filter(u => !ids.has(u.id))); } }
+    else if (cmd.type === 'delete') { cmd.elements.slice().sort((a, b) => a.constIndex - b.constIndex).forEach(el => kernel.getConstruction().addElement(el)); setSelectedElements([]); if (cmd.uiElements?.length) setUIElementsTracked(prev => [...prev, ...cmd.uiElements.filter((u: any) => !prev.some(p => p.id === u.id))]); }
     else if (cmd.type === 'move') restoreState(cmd.oldState);
     else if (cmd.type === 'numeric') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el instanceof GeoNumeric) el.setValue(cmd.oldValue); }
-    else if (cmd.type === 'rename') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el) el.label = cmd.oldLabel; }
+    else if (cmd.type === 'boolean') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el instanceof GeoBoolean) el.setValue(cmd.oldValue); }
+    else if (cmd.type === 'rename') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el) el.label = cmd.oldLabel; rewriteLinkedLabels(cmd.newLabel, cmd.oldLabel); }
     else if (cmd.type === 'style') applyStyleDirectly(cmd.element, cmd.before);
     kernel.getConstruction().updateAllAlgorithms(); setRenderRev(r => r + 1);
-  }, [kernel, restoreState, applyStyleDirectly]);
+  }, [kernel, restoreState, applyStyleDirectly, rewriteLinkedLabels, setUIElementsTracked]);
 
   const redo = useCallback(() => {
     if (redoStack.current.length === 0) return;
     const cmd = redoStack.current.pop()!; undoStack.current.push(cmd);
-    if (cmd.type === 'add') cmd.elements.forEach(el => kernel.getConstruction().addElement(el));
-    else if (cmd.type === 'delete') cmd.elements.slice().sort((a, b) => a.constIndex - b.constIndex).forEach(el => kernel.getConstruction().addElement(el));
+    if (cmd.type === 'add') { cmd.elements.forEach(el => kernel.getConstruction().addElement(el)); if (cmd.uiElements?.length) setUIElementsTracked(prev => [...prev, ...cmd.uiElements.filter((u: any) => !prev.some(p => p.id === u.id))]); }
+    // 重做删除 = 再次删除（按 constIndex 逆序移除）。此前误用 addElement，
+    // 删除 → 撤销 → 重做 会把同一批元素重复加回构造
+    else if (cmd.type === 'delete') { [...cmd.elements].sort((a, b) => b.constIndex - a.constIndex).forEach(el => kernel.getConstruction().removeElement(el)); if (cmd.uiElements?.length) { const ids = new Set<string>(cmd.uiElements.map((u: any) => u.id)); setUIElementsTracked(prev => prev.filter(u => !ids.has(u.id))); } }
     else if (cmd.type === 'move') restoreState(cmd.newState);
     else if (cmd.type === 'numeric') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el instanceof GeoNumeric) el.setValue(cmd.newValue); }
-    else if (cmd.type === 'rename') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el) el.label = cmd.newLabel; }
+    else if (cmd.type === 'boolean') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el instanceof GeoBoolean) el.setValue(cmd.newValue); }
+    else if (cmd.type === 'rename') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el) el.label = cmd.newLabel; rewriteLinkedLabels(cmd.oldLabel, cmd.newLabel); }
     else if (cmd.type === 'style') applyStyleDirectly(cmd.element, cmd.after);
     kernel.getConstruction().updateAllAlgorithms(); setRenderRev(r => r + 1);
-  }, [kernel, restoreState, applyStyleDirectly]);
+  }, [kernel, restoreState, applyStyleDirectly, rewriteLinkedLabels, setUIElementsTracked]);
+
+  // ─── 键盘快捷键 ───────────────────────────────────────────────────
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (document.activeElement?.tagName !== 'INPUT') {
+          e.preventDefault();
+          // 同 mode effect：只回收 polygon 工具新建的点，不碰用户既有点
+          if (polygonCreatedPointsRef.current.length > 0) {
+            polygonCreatedPointsRef.current.forEach(point => kernel.getConstruction().removeElement(point));
+            polygonCreatedPointsRef.current.length = 0;
+            kernel.getConstruction().updateAllAlgorithms();
+          }
+          setMode('move'); setSelectedElements([]); setPolygonPoints([]); cancelBoxSelect(); setRenderRev(r => r + 1);
+        }
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedElements.length > 0 && document.activeElement?.tagName !== 'INPUT') {
+        e.preventDefault(); deleteWithDependents(selectedElements);
+      } else if (e.altKey && (e.key === 's' || e.key === 'S') && document.activeElement?.tagName !== 'INPUT') { e.preventDefault(); setSnapEnabled(prev => !prev); }
+      // GeoGebra 快捷键：Ctrl+Z 撤销、Ctrl+Shift+Z / Ctrl+Y 重做
+      else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')
+        && document.activeElement?.tagName !== 'INPUT') {
+        e.preventDefault(); undo();
+      } else if ((e.ctrlKey || e.metaKey) && ((e.key === 'y' || e.key === 'Y') || (e.shiftKey && (e.key === 'z' || e.key === 'Z')))
+        && document.activeElement?.tagName !== 'INPUT') {
+        e.preventDefault(); redo();
+      }
+      // GeoGebra 快捷键：Ctrl+G/H 显隐对象，Ctrl+Shift+G/H 显隐标签
+      else if ((e.ctrlKey || e.metaKey) && (e.key === 'g' || e.key === 'G' || e.key === 'h' || e.key === 'H')
+        && selectedElements.length > 0 && document.activeElement?.tagName !== 'INPUT') {
+        e.preventDefault();
+        const show = e.key.toLowerCase() === 'g';
+        selectedElements.forEach(el => recordStyleChange(el, e.shiftKey ? { labelVisible: show } : { visible: show }));
+        setRenderRev(r => r + 1);
+      }
+    };
+    window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h);
+  }, [selectedElements, kernel, polygonPoints, deleteWithDependents, recordStyleChange, undo, redo]);
 
   // ─── 渲染循环 ─────────────────────────────────────────────────────
   const { schedule } = useRenderLoop(() => {
@@ -410,27 +651,34 @@ export const GeometryCanvas: React.FC = () => {
     // 世界 y 向上为正：渲染变换 y 取负（文本由 fillText 瓶颈点屏幕化，不会镜像）
     renderer.save(); renderer.scale(dpr, dpr); renderer.translate(coord.xZero, coord.yZero); renderer.scale(coord.xScale, -coord.yScale);
 
-    drawGrid(renderer, canvas.width / dpr, canvas.height / dpr, coord, showGrid, showAxes);
+    drawGrid(renderer, canvas.width / dpr, canvas.height / dpr, coord, showGrid, showAxes, kernel.getOptions().rounding);
 
-    const elements = kernel.getConstruction().getElements();
-    elements.forEach(el => {
-      if (el instanceof GeoPolygon) drawPolygon(renderer, el, selectedElements.includes(el), coord.xScale);
-      else if (el instanceof GeoConicPart) drawConicPart(renderer, el, selectedElements.includes(el), coord.xScale);
-      else if (el instanceof GeoArc) drawArc(renderer, el, selectedElements.includes(el), coord.xScale);
-      else if (el instanceof GeoConic) drawConic(renderer, el, selectedElements.includes(el), coord.xScale);
-      else if (el instanceof GeoLocus) drawLocus(renderer, el, selectedElements.includes(el), coord.xScale);
-      else if (el instanceof GeoBooleanRegion) drawBooleanRegion(renderer, el, selectedElements.includes(el), coord.xScale);
-      else if (el instanceof GeoFunction) drawFunction(renderer, el, selectedElements.includes(el), coord.visibleWorldBounds(), coord.xScale, canvas.width / dpr);
-      else if (el instanceof GeoCurve) drawCurve(renderer, el, selectedElements.includes(el), coord.visibleWorldBounds(), coord.xScale, canvas.width / dpr);
+    // 导航中只显示 constIndex ≤ navStep 的对象；图层稳定排序（同层保持构造序）
+    const elements = kernel.getConstruction().getElements()
+      .filter(el => navStep === null || el.constIndex <= navStep);
+    const drawOrder = elements.map((el, i) => ({ el, i }))
+      .sort((a, b) => (a.el.layer - b.el.layer) || (a.i - b.i))
+      .map(({ el }) => el);
+    const selectedSet = new Set(selectedElements);
+    drawOrder.forEach(el => {
+      const sel = selectedSet.has(el);
+      if (el instanceof GeoPolygon) drawPolygon(renderer, el, sel, coord.xScale);
+      else if (el instanceof GeoConicPart) drawConicPart(renderer, el, sel, coord.xScale);
+      else if (el instanceof GeoArc) drawArc(renderer, el, sel, coord.xScale);
+      else if (el instanceof GeoConic) drawConic(renderer, el, sel, coord.xScale);
+      else if (el instanceof GeoLocus) drawLocus(renderer, el, sel, coord.xScale);
+      else if (el instanceof GeoBooleanRegion) drawBooleanRegion(renderer, el, sel, coord.xScale);
+      else if (el instanceof GeoFunction) drawFunction(renderer, el, sel, coord.visibleWorldBounds(), coord.xScale, canvas.width / dpr);
+      else if (el instanceof GeoCurve) drawCurve(renderer, el, sel, coord.visibleWorldBounds(), coord.xScale, canvas.width / dpr);
       else if (el instanceof GeoInequality) drawInequality(renderer, el, coord.visibleWorldBounds(), coord.xScale);
-      else if (el instanceof GeoText) drawText(renderer, el, selectedElements.includes(el), coord.xScale);
-      else if (el instanceof GeoPolyLine) drawPolyLine(renderer, el, selectedElements.includes(el), coord.xScale);
-      else if (el instanceof GeoVector) drawVector(renderer, el, selectedElements.includes(el), coord.xScale);
-      else if (el instanceof GeoSegment) drawSegment(renderer, el, selectedElements.includes(el), coord.xScale);
-      else if (el instanceof GeoRay) drawRay(renderer, el, selectedElements.includes(el), coord.visibleWorldBounds(), coord.xScale);
-      else if (el instanceof GeoLine) drawLine(renderer, el, selectedElements.includes(el), coord.visibleWorldBounds(), coord.xScale);
+      else if (el instanceof GeoText) drawText(renderer, el, sel, coord.xScale);
+      else if (el instanceof GeoPolyLine) drawPolyLine(renderer, el, sel, coord.xScale);
+      else if (el instanceof GeoVector) drawVector(renderer, el, sel, coord.xScale);
+      else if (el instanceof GeoSegment) drawSegment(renderer, el, sel, coord.xScale);
+      else if (el instanceof GeoRay) drawRay(renderer, el, sel, coord.visibleWorldBounds(), coord.xScale);
+      else if (el instanceof GeoLine) drawLine(renderer, el, sel, coord.visibleWorldBounds(), coord.xScale);
     });
-    elements.forEach(el => { if (el instanceof GeoPoint) drawPoint(renderer, el, selectedElements.includes(el), coord.xScale); });
+    drawOrder.forEach(el => { if (el instanceof GeoPoint) drawPoint(renderer, el, selectedSet.has(el), coord.xScale); });
 
     if (mode === 'polygon' && polygonPoints.length > 0) {
       renderer.strokeStyle = '#9ca3af'; renderer.lineWidth = 1 / coord.xScale;
@@ -440,7 +688,7 @@ export const GeometryCanvas: React.FC = () => {
       renderer.lineTo(mousePos.x, mousePos.y); renderer.stroke(); renderer.setLineDash([]);
     }
 
-    renderPreviews(mode, selectedElements, mousePos, hoveredPoint, coord, renderer, radius, coord.visibleWorldBounds());
+    renderPreviews(mode, selectedElements, mousePos, hoveredPoint, coord, renderer, coord.visibleWorldBounds());
 
     // 函数 hover 吸附点（在预览之上，避免被 preview 线段遮挡）
     if (functionHover) {
@@ -448,6 +696,17 @@ export const GeometryCanvas: React.FC = () => {
     }
 
     renderer.frameCommit();
+
+    // ── 轨迹层（TraceLayer）：签名变化追加深影；视口变化/删除对象后重绘 ──
+    if (traceCanvasRef.current) {
+      const coordKey = `${coord.xZero},${coord.yZero},${coord.xScale}`;
+      let needsRedraw = false;
+      if (traceCoordKeyRef.current !== coordKey) { traceCoordKeyRef.current = coordKey; traceRecorder.clear(); needsRedraw = true; }
+      const allElements = kernel.getConstruction().getElements();
+      if (traceRecorder.prune(new Set(allElements.map(el => el.id)))) needsRedraw = true;
+      if (traceRecorder.update(allElements, coord)) needsRedraw = true;
+      if (needsRedraw) redrawTrace();
+    }
 
     // WebGL 文本通过 overlay Canvas2D 绘制
     const textCanvas = textOverlayRef.current;
@@ -471,17 +730,31 @@ export const GeometryCanvas: React.FC = () => {
     }
 
     renderer.restore();
-  }, [view, renderRev, selectedElements, mousePos, mode, polygonPoints, radius, hoveredPoint, coord, showGrid, showAxes, renderer, functionHover]);
+  }, [view, renderRev, selectedElements, mousePos, mode, polygonPoints, hoveredPoint, coord, showGrid, showAxes, renderer, functionHover, kernel, navStep, traceRecorder, redrawTrace]);
 
   useEffect(() => { schedule(); }, [schedule]);
 
   // ─── 坐标 / 鼠标辅助 ─────────────────────────────────────────────
   const getScreenPos = (e: React.MouseEvent | React.WheelEvent) => { const rect = canvasRef.current!.getBoundingClientRect(); return { screenX: e.clientX - rect.left, screenY: e.clientY - rect.top }; };
   const getGridStep = () => calculateGridStep(coord.xScale);
-  const getMousePos = (e: React.MouseEvent | React.WheelEvent, useSnap = false) => {
+  /**
+   * 点捕捉三态（对标 GeoGebra Options→Point Capturing）：
+   *   off        不吸附；
+   *   automatic  吸附已有点始终生效，网格吸附只在按下（创建）时生效；
+   *   snap_grid  网格 + 已有点始终吸附。
+   */
+  const getMousePos = (e: React.MouseEvent | React.WheelEvent, useSnap = false, phase: 'down' | 'move' = 'down') => {
     const { screenX, screenY } = getScreenPos(e); const world = coord.screenToWorld(screenX, screenY);
     let { x, y } = world;
-    if (useSnap && snapEnabled) { const snapRadius = SNAP_POINT_RADIUS / coord.xScale; const snapped = applySnap(x, y, snapRadius, snapToGrid, snapToPoint, kernel.getConstruction().getElements().filter(e => e instanceof GeoPoint) as GeoPoint[], getGridStep()); x = snapped.x; y = snapped.y; }
+    if (useSnap && snapEnabled) {
+      const capturing = kernel.getOptions().pointCapturing;
+      if (capturing !== 'off') {
+        const snapRadius = SNAP_POINT_RADIUS / coord.xScale;
+        const gridSnap = capturing === 'snap_grid' || (capturing === 'automatic' && phase === 'down');
+        const snapped = applySnap(x, y, snapRadius, gridSnap, snapToPoint, kernel.getConstruction().getElements().filter(el => el instanceof GeoPoint) as GeoPoint[], getGridStep());
+        x = snapped.x; y = snapped.y;
+      }
+    }
     return { screenX, screenY, x, y };
   };
 
@@ -500,35 +773,85 @@ export const GeometryCanvas: React.FC = () => {
   // ─── 鼠标事件 ─────────────────────────────────────────────────────
   const handleMouseDown = (e: React.MouseEvent) => {
     const { screenX, screenY, x, y } = getMousePos(e, true);
+    lastClientPosRef.current = { x: e.clientX, y: e.clientY };
+    // 数值输入浮层打开时点击画布 = 取消输入并**消费本次点击**（评审 U4：
+    // 若继续下落，circle/segment_fixed 等单步工具会立刻重新弹框、孤儿点成倍增加）。
+    // 想重来再点一次即可；Esc 同样取消。
+    if (valueRequest) {
+      const req = valueRequest;
+      valueRequestSnapshot.current = null;
+      setValueRequest(null);
+      req.onSubmit(null);
+      return;
+    }
     if (e.button === 1 || e.button === 2 || (e.button === 0 && e.shiftKey)) { setIsPanning(true); setLastPanPos({ x: screenX, y: screenY }); return; }
     if (mode === 'pan') { setIsPanning(true); setLastPanPos({ x: screenX, y: screenY }); return; }
     if (mode === 'zoom_in') { zoom(1.25); return; }
     if (mode === 'zoom_out') { zoom(1 / 1.25); return; }
+    // 标签拖拽优先于对象命中（GeoGebra：labels > objects）；隐藏对象与导航未到的对象不可命中
+    if ((mode === 'move' || mode === 'select') && e.button === 0) {
+      const labelHit = hitLabel(kernel.getConstruction().getElements().filter(el => el.visible !== false && (navStep === null || el.constIndex <= navStep)), x, y, coord.xScale, coord.visibleWorldBounds());
+      if (labelHit) {
+        setDraggingLabel(labelHit);
+        setLabelDragStart({ sx: screenX, sy: screenY, ox: labelHit.labelOffsetX, oy: labelHit.labelOffsetY });
+        setSelectedElements([labelHit]);
+        setRenderRev(r => r + 1);
+        return;
+      }
+    }
+    // GeoGebra Move 语义：空白拖拽 = 平移视图（Alt = 框选；Ctrl+空白交给 handlers 清选区）
+    if (mode === 'move' && e.button === 0 && !e.altKey) {
+      // 隐藏对象/导航未到的对象不拦平移：点在"看不见的点"上应表现为空白拖拽
+      const els = kernel.getConstruction().getElements().filter(el => el.visible !== false && (navStep === null || el.constIndex <= navStep));
+      const ptHit = hitScreenPoint(els, x, y, SNAP_POINT_RADIUS / coord.xScale);
+      const objHit = ptHit ? undefined : hitScreenObject(els, x, y, coord.xScale);
+      if (!ptHit && !objHit && !e.ctrlKey && !e.metaKey) {
+        setIsPanning(true);
+        setLastPanPos({ x: screenX, y: screenY });
+        panStartRef.current = { x: screenX, y: screenY };
+        panFromEmptyClick.current = true;
+        return;
+      }
+    }
     const elementsBefore = kernel.getConstruction().getElements().length;
+    const uiIdsBefore = new Set(uiElementsRef.current.map(u => u.id));
     const currentDragStartState = captureState(kernel); setDragStartState(currentDragStartState);
     setLastMousePos({ x, y });
     const ts = toolState.current;
-    boxModifierDown.current = e.ctrlKey || e.metaKey; ts.boxModifierDown = e.ctrlKey || e.metaKey; ts.shiftKey = e.shiftKey;
+    boxModifierDown.current = e.ctrlKey || e.metaKey; ts.boxModifierDown = e.ctrlKey || e.metaKey; ts.shiftKey = e.shiftKey; ts.altKey = e.altKey;
     toolHandlers[mode]?.({
-      kernel, construction: kernel.getConstruction(), coord, elements: kernel.getConstruction().getElements(),
-      selectedElements, mode, mousePos: { x, y }, hoveredPoint: null, radius, polygonPoints, uiElements,
+      kernel, construction: kernel.getConstruction(), coord,
+      elements: kernel.getConstruction().getElements().filter(el => navStep === null || el.constIndex <= navStep),
+      selectedElements, mode, mousePos: { x, y }, hoveredPoint: null, polygonPoints, polygonCreatedPoints: polygonCreatedPointsRef.current, uiElements,
       setMode, setSelectedElements, setRenderRev, setPolygonPoints, addCommand, captureState,
       recordNumericChange: notifyNumericChange, recordRename: handleLabelSubmit, recordStyleChange, deleteElements: deleteWithDependents, t,
-      setBoxSelecting: setIsBoxSelecting, setBoxStartScreen, setBoxEndScreen,
+      setBoxSelecting: setIsBoxSelecting, setBoxStartScreen, setBoxEndScreen, requestValue,
       // handlers 端按 ref 语义读取 ctx.toolState.current（测试同样以 { current: ts } 传参）；
       // 此前误传裸对象 toolState.current，导致所有 ts.xxx 状态分支（圆3点/圆弧/正多边形/变换）崩溃。
-      setDraggedElement, setUIElements, setEditingUIElement, toolState: toolState,
+      setDraggedElement, setUIElements: setUIElementsTracked, setEditingUIElement, toolState: toolState,
     }, { x, y }, { x: screenX, y: screenY });
-    ts.boxModifierDown = false; ts.shiftKey = false; boxModifierDown.current = false;
+    ts.boxModifierDown = false; ts.shiftKey = false; ts.altKey = false; boxModifierDown.current = false;
     const elementsAfter = kernel.getConstruction().getElements();
-    if (elementsAfter.length > elementsBefore) addCommand({ type: 'add', elements: elementsAfter.slice(elementsBefore) });
+    if (elementsAfter.length > elementsBefore || uiElementsRef.current.length > uiIdsBefore.size) {
+      // 本次点击新建的 UI 元素（滑块/复选框）随命令入栈，撤销时同步移除
+      const addedUI = uiElementsRef.current.filter(u => !uiIdsBefore.has(u.id));
+      addCommand({ type: 'add', elements: elementsAfter.slice(elementsBefore), uiElements: addedUI });
+    }
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    const { screenX, screenY, x, y } = getMousePos(e, true); setMousePos({ x, y });
+    const { screenX, screenY, x, y } = getMousePos(e, true, 'move'); setMousePos({ x, y });
+    lastClientPosRef.current = { x: e.clientX, y: e.clientY };
     if (isPanning) { setCoord(prev => prev.panBy(screenX - lastPanPos.x, screenY - lastPanPos.y)); setLastPanPos({ x: screenX, y: screenY }); setRenderRev(r => r + 1); return; }
-    if (draggingUIElement) { setUIElements(prev => prev.map(el => el.id === draggingUIElement ? { ...el, x, y } : el)); return; }
-    const elements = kernel.getConstruction().getElements().filter(el => el.visible !== false);
+    if (draggingUIElement) { setUIElementsTracked(prev => prev.map(el => el.id === draggingUIElement ? { ...el, x, y } : el)); return; }
+    // 标签拖拽：偏移按屏幕像素累计（+x 右 / +y 下），绘制与命中共享 labels.ts 锚点
+    if (draggingLabel && labelDragStart) {
+      draggingLabel.labelOffsetX = labelDragStart.ox + (screenX - labelDragStart.sx);
+      draggingLabel.labelOffsetY = labelDragStart.oy + (screenY - labelDragStart.sy);
+      setRenderRev(r => r + 1);
+      return;
+    }
+    const elements = kernel.getConstruction().getElements().filter(el => el.visible !== false && (navStep === null || el.constIndex <= navStep));
     const hovered = elements.slice().reverse().find(el => el instanceof GeoPoint && Math.hypot(el.getX() - x, el.getY() - y) < 10 / coord.xScale) as GeoPoint | undefined;
     setHoveredPoint(hovered || null);
     // 函数曲线 hover 数值提示：用 rAF 节流避免过频采样
@@ -572,13 +895,36 @@ export const GeometryCanvas: React.FC = () => {
         ctx.save(); ctx.globalAlpha = 0.15; ctx.fillStyle = '#3b82f6'; ctx.fillRect(sx, sy, sw, sh); ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 1; ctx.setLineDash([4, 4]); ctx.strokeRect(sx, sy, sw, sh); ctx.restore();
       }
     }
-    if (draggedElement) {
+    if (draggedElement && !(draggedElement as GeoElement).isFixed) {
       if (draggedElement instanceof GeoPoint && draggedElement.isIndependent()) draggedElement.setCoords(x, y);
-      else if (draggedElement instanceof GeoPoint && draggedElement.parentAlgo) { const algo = draggedElement.parentAlgo; if ((algo as any).updateParameter) { (algo as any).updateParameter(x, y); algo.update(); } }
-      else if (draggedElement instanceof GeoPolygon || draggedElement instanceof GeoConic || draggedElement instanceof GeoSegment || draggedElement instanceof GeoLine) {
+      else if (draggedElement instanceof GeoPoint && draggedElement.parentAlgo) {
+        const algo = draggedElement.parentAlgo;
+        if ((algo as any).updateParameter) {
+          (algo as any).updateParameter(x, y);
+          algo.update();
+          // 输出点不是独立元素，其 setCoords 不会进 pendingUpdates；
+          // 不走隐藏参数的约束算法（如 PointIn(region)）必须在这里手动重算下游，
+          // 否则拖拽时挂在该点上的对象（中点、面积等）全部不动
+          kernel.recomputeDependents(draggedElement);
+        }
+      }
+      else if (
+        draggedElement instanceof GeoPolygon || draggedElement instanceof GeoConic ||
+        draggedElement instanceof GeoSegment || draggedElement instanceof GeoLine ||
+        draggedElement instanceof GeoRay || draggedElement instanceof GeoVector
+      ) {
         const dx = x - lastMousePos.x, dy = y - lastMousePos.y;
-        if (draggedElement instanceof GeoPolygon || draggedElement instanceof GeoConic) (draggedElement as any).translate(new GeoVec3D(dx, dy, 0));
-        else if (draggedElement.parentAlgo) { draggedElement.parentAlgo.getInput().forEach(el => { if (el instanceof GeoPoint && el.isIndependent()) el.setCoords(el.getX() + dx, el.getY() + dy); }); draggedElement.parentAlgo.update(); }
+        if (draggedElement instanceof GeoPolygon || draggedElement instanceof GeoConic) {
+          (draggedElement as GeoPolygon | GeoConic).translate(new GeoVec3D(dx, dy, 0));
+        } else if (draggedElement.parentAlgo) {
+          // 依赖对象 = 官方 hasMoveableInputPoints 语义：搬其全部自由输入点
+          draggedElement.parentAlgo.getInput().forEach(el => { if (el instanceof GeoPoint && el.isIndependent()) el.setCoords(el.getX() + dx, el.getY() + dy); }); draggedElement.parentAlgo.update();
+        } else if (draggedElement instanceof GeoVector) {
+          (draggedElement as GeoVector).translate(new GeoVec3D(dx, dy, 0));
+        } else {
+          // 独立直线（方程输入创建，无 parentAlgo）：平移方程
+          (draggedElement as GeoLine).translate(new GeoVec3D(dx, dy, 0));
+        }
         setLastMousePos({ x, y });
       }
       kernel.flushNow();
@@ -586,8 +932,32 @@ export const GeometryCanvas: React.FC = () => {
   };
 
   const handleMouseUp = () => {
-    if (isPanning) { setIsPanning(false); return; }
+    if (isPanning) {
+      setIsPanning(false);
+      // Move 工具空白"点击"（几乎无位移）= 清选区（GeoGebra 语义：拖拽平移、单击取消选择）
+      if (panFromEmptyClick.current && panStartRef.current) {
+        const moved = Math.hypot(lastPanPos.x - panStartRef.current.x, lastPanPos.y - panStartRef.current.y);
+        if (moved < 4) { setSelectedElements([]); setRenderRev(r => r + 1); }
+      }
+      panFromEmptyClick.current = false;
+      panStartRef.current = null;
+      return;
+    }
     if (draggingUIElement) { setDraggingUIElement(null); return; }
+    if (draggingLabel) {
+      if (labelDragStart) {
+        const moved = draggingLabel.labelOffsetX !== labelDragStart.ox || draggingLabel.labelOffsetY !== labelDragStart.oy;
+        if (moved) {
+          addCommand({
+            type: 'style', element: draggingLabel,
+            before: { labelOffsetX: labelDragStart.ox, labelOffsetY: labelDragStart.oy },
+            after: { labelOffsetX: draggingLabel.labelOffsetX, labelOffsetY: draggingLabel.labelOffsetY },
+          });
+        }
+      }
+      setDraggingLabel(null); setLabelDragStart(null);
+      return;
+    }
     if (isBoxSelecting) {
       if (!boxStartScreen || !boxEndScreen) { cancelBoxSelect(); return; }
       const dist = Math.hypot(boxEndScreen.x - boxStartScreen.x, boxEndScreen.y - boxStartScreen.y);
@@ -595,8 +965,24 @@ export const GeometryCanvas: React.FC = () => {
       const p1 = coord.screenToWorld(boxStartScreen.x, boxStartScreen.y), p2 = coord.screenToWorld(boxEndScreen.x, boxEndScreen.y);
       const rect = { minX: Math.min(p1.x, p2.x), maxX: Math.max(p1.x, p2.x), minY: Math.min(p1.y, p2.y), maxY: Math.max(p1.y, p2.y) };
       const hitElements: GeoElement[] = [];
-      for (const el of kernel.getConstruction().getElements()) { if (elementIntersectsRect(el, rect)) hitElements.push(el); }
-      if (boxModifierDown.current) { const hitSet = new Set(hitElements); setSelectedElements(prev => prev.filter(e => !hitSet.has(e)).concat(hitElements)); } else setSelectedElements(hitElements);
+      // 容差 eps 按像素换算成世界单位（默认 5 是世界单位，缩放下框选会抓到矩形外很远的对象）
+      const marqueeEps = 5 / coord.xScale;
+      for (const el of kernel.getConstruction().getElements()) {
+        if (el.visible === false) continue;
+        if (navStep !== null && el.constIndex > navStep) continue;
+        if (elementIntersectsRect(el, rect, marqueeEps)) hitElements.push(el);
+      }
+      // Ctrl/Cmd + 框选 = 成员取反（toggle）：在框内的选中者取消，框内的未选者加入
+      if (boxModifierDown.current) {
+        const hitSet = new Set(hitElements);
+        setSelectedElements(prev => {
+          const next = new Set(prev);
+          for (const el of hitElements) {
+            if (next.has(el)) next.delete(el); else next.add(el);
+          }
+          return Array.from(next);
+        });
+      } else setSelectedElements(hitElements);
       cancelBoxSelect(); return;
     }
     if (draggedElement && dragStartState) {
@@ -624,12 +1010,14 @@ export const GeometryCanvas: React.FC = () => {
   useEffect(() => { const el = containerRef.current; if (!el) return; el.addEventListener('wheel', handleWheel, { passive: false }); return () => el.removeEventListener('wheel', handleWheel); }, [handleWheel]);
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
+    lastClientPosRef.current = { x: e.clientX, y: e.clientY };
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
     const screenX = e.clientX - rect.left;
     const screenY = e.clientY - rect.top;
     const world = coord.screenToWorld(screenX, screenY);
-    const els = kernel.getConstruction().getElements();
+    // 隐藏对象/导航未到的对象不弹菜单
+    const els = kernel.getConstruction().getElements().filter(el => el.visible !== false && (navStep === null || el.constIndex <= navStep));
     const hit = hitScreenObject(els, world.x, world.y, coord.xScale);
     if (!hit) { setContextMenuState(null); return; }
 
@@ -637,14 +1025,63 @@ export const GeometryCanvas: React.FC = () => {
     items.push({ id: 'delete', label: t('ctxDelete'), icon: Trash2, onClick: () => deleteWithDependents([hit]) });
     items.push({ id: 'visibility', label: t('ctxToggleVisible'), icon: hit.visible === false ? EyeOff : Eye, onClick: () => recordStyleChange(hit, { visible: hit.visible === false }) });
     items.push({ id: 'label', label: t('ctxToggleLabel'), icon: Tag, onClick: () => recordStyleChange(hit, { labelVisible: !hit.labelVisible }) });
+    // ── 元能力右键项（对标 GeoGebra ContextMenuGeoElement）──
+    items.push({
+      id: 'fix', label: hit.isFixed ? t('ctxUnfixObject') : t('ctxFixObject'),
+      icon: hit.isFixed ? Lock : LockOpen,
+      onClick: () => { recordStyleChange(hit, { isFixed: !hit.isFixed }); setRenderRev(r => r + 1); },
+    });
+    items.push({
+      id: 'trace', label: hit.trace ? t('ctxTraceOff') : t('ctxTraceOn'),
+      icon: Waypoints,
+      onClick: () => {
+        const turningOff = hit.trace;
+        recordStyleChange(hit, { trace: !hit.trace });
+        if (turningOff) { traceRecorder.remove(hit.id); redrawTrace(); }
+        setRenderRev(r => r + 1);
+      },
+    });
+    items.push({
+      id: 'layerUp', label: t('ctxLayerUp'), icon: ChevronsUp,
+      onClick: () => { if (hit.layer < 9) { recordStyleChange(hit, { layer: hit.layer + 1 }); setRenderRev(r => r + 1); } },
+    });
+    items.push({
+      id: 'layerDown', label: t('ctxLayerDown'), icon: ChevronsDown,
+      onClick: () => { if (hit.layer > 0) { recordStyleChange(hit, { layer: hit.layer - 1 }); setRenderRev(r => r + 1); } },
+    });
+    // 复制对象（仅自由点/数值；派生对象无独立定义可复制）
+    if (hit.isIndependent() && (hit instanceof GeoPoint || hit instanceof GeoNumeric)) {
+      items.push({
+        id: 'duplicate', label: t('ctxDuplicate'), icon: Copy,
+        onClick: () => {
+          const cons = kernel.getConstruction();
+          if (hit instanceof GeoPoint) {
+            const dup = new GeoPoint(kernel, new GeoVec3D(hit.getX(), hit.getY(), 1));
+            dup.label = cons.getNextPointLabel();
+            cons.addElement(dup);
+            kernel.notifyUpdate(dup);
+            addCommand({ type: 'add', elements: [dup] });
+          } else {
+            const dup = new GeoNumeric(kernel, hit.getValue());
+            dup.intervalMin = hit.intervalMin;
+            dup.intervalMax = hit.intervalMax;
+            dup.label = cons.getNextNumericLabel();
+            cons.addElement(dup);
+            cons.updateDependentAlgorithms(dup);
+            addCommand({ type: 'add', elements: [dup] });
+          }
+          setRenderRev(r => r + 1);
+        },
+      });
+    }
     items.push({ id: 'rename', label: t('ctxRename'), icon: Tag, onClick: () => {
-      const existing = kernel.getConstruction().getElements().filter(el => el !== hit).map(el => (el as any).label || '');
-      const raw = window.prompt(t('ctxRenamePrompt'), (hit as any).label || '');
-      if (raw === null) return;
-      const newName = raw.trim();
-      if (!newName) { alert(t('ctxRenameEmpty')); return; }
-      if (existing.includes(newName)) { alert(t('ctxRenameDuplicate')); return; }
-      recordRename(hit, newName); setRenderRev(r => r + 1);
+      // 重命名改画布内输入（替代 window.prompt）；查重统一在 recordRename
+      requestTextValue(t('ctxRenamePrompt'), (hit as any).label || '', (raw) => {
+        if (raw === null) return;
+        const newName = raw.trim();
+        if (!newName) { alert(t('ctxRenameEmpty')); return; }
+        recordRename(hit, newName); setRenderRev(r => r + 1);
+      });
     } });
     if (hit instanceof GeoFunction) {
       items.push({ id: 'pointOnCurve', label: t('ctxCreatePointOnCurve'), icon: MousePointerClick, onClick: () => setMode('point_on_object') });
@@ -652,7 +1089,7 @@ export const GeometryCanvas: React.FC = () => {
     if ((hit instanceof GeoNumeric || hit instanceof GeoPoint) && hit.isAnimatable()) {
       items.push({ id: 'animation', label: t('play'), icon: hit.isAnimating() ? Pause : Play, onClick: () => {
         const am = kernel.getAnimationManager();
-        if (hit.isAnimating()) { am.stopAnimation(); hit.setAnimating(false); }
+        if (hit.isAnimating()) { hit.setAnimating(false); }
         else { hit.setAnimating(true); am.addAnimatedGeo(hit); am.startAnimation(); }
         setRenderRev(r => r + 1);
       } });
@@ -685,9 +1122,11 @@ export const GeometryCanvas: React.FC = () => {
     view, setView,
     editingLabel, handleLabelChange, handleLabelSubmit,
     selectedElementsLength: selectedElements.length,
-    radius, setRadius,
+    options: kernel.getOptions(),
+    updateOptions: (patch: Parameters<ReturnType<Kernel['getOptions']>['set']>[0]) => { kernel.getOptions().set(patch); setRenderRev(r => r + 1); },
     handleExport, handleExportPNG, handleExportSVG, fileInputRef, handleImportPick,
     snapEnabled, setSnapEnabled, toggleAnimation, isAnimating,
+    navBarVisible, toggleNavBar,
     language, setLanguage, undo, redo,
     undoCount: undoStack.current.length, redoCount: redoStack.current.length,
     t,
@@ -731,12 +1170,20 @@ export const GeometryCanvas: React.FC = () => {
             onContextMenu={handleContextMenu}
           />
 
+          {/* 轨迹层：trace 对象的残影（主画布之上、文本层之下，pointer-events 关闭） */}
+          <canvas ref={traceCanvasRef} className="absolute inset-0 pointer-events-none z-[3]" style={{ touchAction: 'none', display: view === '3d' ? 'none' : undefined }} />
+
           {view === '3d' && (
-            <Geometry3DView kernel={kernel} renderRev={renderRev} selectedElements={selectedElements} setSelectedElements={setSelectedElements} showGrid={showGrid} showAxes={showAxes} setShowGrid={setShowGrid} setShowAxes={setShowAxes} />
+            <Geometry3DView kernel={kernel} renderRev={renderRev} selectedElements={selectedElements} setSelectedElements={setSelectedElements} addCommand={addCommand} captureState={captureState} showGrid={showGrid} showAxes={showAxes} setShowGrid={setShowGrid} setShowAxes={setShowAxes} />
           )}
 
           {view === '2d' && (
-            <CanvasOverlay uiElements={uiElements} setUIElements={setUIElements} editingUIElement={editingUIElement} setEditingUIElement={setEditingUIElement} draggingUIElement={draggingUIElement} setDraggingUIElement={setDraggingUIElement} coord={coord} kernel={kernel} />
+            <CanvasOverlay uiElements={uiElements} setUIElements={setUIElementsTracked} editingUIElement={editingUIElement} setEditingUIElement={setEditingUIElement} draggingUIElement={draggingUIElement} setDraggingUIElement={setDraggingUIElement} coord={coord} kernel={kernel} onBooleanToggle={handleBooleanToggle} />
+          )}
+
+          {/* 画布内数值/文本输入浮层（去 prompt 化） */}
+          {valueRequest && (
+            <CanvasValueInput request={valueRequest} onClose={handleValueClosed} ignorePointerDownRef={containerRef} t={t} />
           )}
 
           {/* Hover tooltip for function curves */}
@@ -758,8 +1205,22 @@ export const GeometryCanvas: React.FC = () => {
             <div className="absolute bottom-8 right-6 flex flex-col shadow-lg rounded-lg overflow-hidden border border-gray-200 bg-white">
               <button className="w-10 h-10 flex items-center justify-center text-gray-600 hover:bg-gray-100 hover:text-blue-600 transition-colors border-b border-gray-100" onClick={() => zoom(1.2)} title={t('zoomIn')}><ZoomIn size={20} /></button>
               <button className="w-10 h-10 flex items-center justify-center text-gray-600 hover:bg-gray-100 hover:text-blue-600 transition-colors border-b border-gray-100" onClick={() => zoom(1 / 1.2)} title={t('zoomOut')}><ZoomOut size={20} /></button>
+              <button className="w-10 h-10 flex items-center justify-center text-gray-600 hover:bg-gray-100 hover:text-blue-600 transition-colors border-b border-gray-100" onClick={zoomToFit} title={t('zoomToFit')}><Maximize size={20} /></button>
               <button className="w-10 h-10 flex items-center justify-center text-gray-600 hover:bg-gray-100 hover:text-blue-600 transition-colors" onClick={() => { const rect = containerRef.current?.getBoundingClientRect(); setCoord(CoordinateSystem.centered(rect?.width ?? canvasSize.width, rect?.height ?? canvasSize.height, DEFAULT_SCALE)); }} title={t('resetView')}><Home size={20} /></button>
             </div>
+          )}
+
+          {/* 构造步骤导航条 */}
+          {view === '2d' && navBarVisible && (
+            <ConstructionNavBar
+              step={navStep ?? navTotal}
+              total={navTotal}
+              playing={navPlaying}
+              onStep={step => setNavStep(step)}
+              onTogglePlay={() => setNavPlaying(p => !p)}
+              onClose={toggleNavBar}
+              t={t}
+            />
           )}
 
           {/* Tool hint bar */}

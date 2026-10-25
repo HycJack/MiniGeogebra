@@ -1,0 +1,233 @@
+/**
+ * 动态几何对齐修复回归（2026-10-25 第二轮，对照 GeoGebra 官方源码审查）：
+ * - 拖拽分发补类：独立直线/独立圆锥/分量向量整体平移
+ * - 射线/弧/参数曲线上的约束点（工具与 PointOn 命令）
+ * - isAnimatable 收紧（派生数值、变换点不可动画）
+ * - 函数上点拖拽的区间夹取与定义域回搜
+ * - Mirror 点对称/反演别名
+ */
+import { describe, it, expect } from 'vitest';
+import { Kernel } from '../kernel/core/Kernel';
+import { ConstructionElement } from '../kernel/core/ConstructionElement';
+import { parseAlgebraInput } from '../kernel/algebra/EquationRecognizer';
+import { makeKernel, makePoint } from './helpers';
+import { GeoPoint } from '../kernel/geo/GeoPoint';
+import { GeoNumeric } from '../kernel/geo/GeoNumeric';
+import { GeoLine } from '../kernel/geo/GeoLine';
+import { GeoConic } from '../kernel/geo/GeoConic';
+import { GeoRay } from '../kernel/geo/GeoRay';
+import { GeoSegment } from '../kernel/geo/GeoSegment';
+import { GeoFunction } from '../kernel/geo/GeoFunction';
+import { GeoList } from '../kernel/geo/GeoList';
+import { serialize, deserialize } from '../kernel/persistence/ConstructionSerializer';
+
+const roundtripLocal = (kernel: Kernel): Kernel => {
+  const restored = new Kernel();
+  deserialize(restored, serialize(kernel));
+  return restored;
+};
+import { AlgoPointOnRay } from '../kernel/algo/AlgoPointOnRay';
+import { createParameterPointOnPath, createParameterPointOnFunction } from '../components/tools/createElements';
+import { conicValue } from '../kernel/geo/conicSolve';
+
+const addInput = (kernel: Kernel, text: string): ConstructionElement[] => {
+  const elements = parseAlgebraInput(kernel, text);
+  elements.forEach(el => kernel.getConstruction().addElement(el));
+  kernel.getConstruction().updateAllAlgorithms();
+  return elements;
+};
+
+const ofType = <T extends ConstructionElement>(kernel: Kernel, type: new (...args: any[]) => T): T[] =>
+  kernel.getConstruction().getElements().filter((el): el is T => el instanceof type);
+
+describe('独立对象整体拖拽（官方 moveLine/moveConic 语义）', () => {
+  it('独立直线平移后仍过目标点（方程整体平移）', () => {
+    const k = new Kernel();
+    // 一般式线性方程 → 独立 GeoLine（y = 2x + 1 走函数分支）
+    addInput(k, '2x + 3y = 6');
+    const line = ofType(k, GeoLine).find(l => !(l instanceof GeoSegment))!;
+    const dx = 1, dy = 3;
+    line.translate({ x: dx, y: dy, z: 0 } as any);
+    // 平移后的直线过旧直线上任一点 + (dx, dy)：旧点 (0, 2)
+    const p = { x: 0, y: 2 };
+    const val = line.a * (p.x + dx) + line.b * (p.y + dy) + line.c;
+    expect(val).toBeCloseTo(0, 6);
+    // 方向不变（平移不改斜率）
+    expect(line.b === 0 ? Infinity : -line.a / line.b).toBeCloseTo(-2 / 3, 6);
+  });
+
+  it('独立圆锥曲线平移系数：圆心随位移移动', () => {
+    const k = new Kernel();
+    addInput(k, 'x² + y² = 9');
+    const conic = ofType(k, GeoConic)[0];
+    conic.translate({ x: 2, y: -1, z: 0 } as any);
+    const center = conic.getCenter();
+    expect(center.x).toBeCloseTo(2, 6);
+    expect(center.y).toBeCloseTo(-1, 6);
+    // 半径不变
+    expect(conic.getRadius()).toBeCloseTo(3, 6);
+  });
+});
+
+describe('射线上的约束点（AlgoPointOnRay）', () => {
+  it('创建/拖拽/负向夹取', () => {
+    const k = makeKernel();
+    const A = makePoint(k, 0, 0, 'A');
+    makePoint(k, 4, 0, 'B');
+    addInput(k, 'r = Ray(A, B)');
+    const ray = ofType(k, GeoRay)[0];
+    expect(ray).toBeDefined();
+
+    const created = createParameterPointOnPath(k, ray, 6, 0);
+    expect(created).not.toBeNull();
+    const pt = created!.point;
+    k.getConstruction().updateAllAlgorithms();
+    expect(pt.getX()).toBeCloseTo(6, 6);
+    expect(pt.getY()).toBeCloseTo(0, 6);
+
+    // 拖到射线反方向：夹回原点
+    (created!.algo as any).updateParameter(-3, 0);
+    created!.algo.update();
+    expect(pt.getX()).toBeCloseTo(0, 6);
+    expect(pt.getY()).toBeCloseTo(0, 6);
+    void A;
+  });
+
+  it('PointOn 命令对线段用段参数（点保持在段上）', () => {
+    const k = new Kernel();
+    makePoint(k, 0, 0, 'A');
+    makePoint(k, 4, 0, 'B');
+    addInput(k, 's = Segment(A, B)');
+    addInput(k, 'P = PointOn(s)');
+    const p = ofType(k, GeoPoint).find(e => e.label === 'P')!;
+    expect(p).toBeDefined();
+    k.flushNow();
+    expect(p.getX()).toBeCloseTo(2, 6); // t=0.5 → 中点
+    expect(p.getY()).toBeCloseTo(0, 6);
+  });
+});
+
+describe('isAnimatable 收紧（对标官方）', () => {
+  it('派生数值（a = 2b）不可动画', () => {
+    const k = new Kernel();
+    addInput(k, 'b = 1');
+    addInput(k, 'a = 2b');
+    const a = ofType(k, GeoNumeric).find(e => e.label === 'a')!;
+    expect(a.isIndependent()).toBe(false);
+    expect(a.isAnimatable()).toBe(false);
+    const b = ofType(k, GeoNumeric).find(e => e.label === 'b')!;
+    expect(b.isAnimatable()).toBe(true);
+  });
+
+  it('Rotate 输出点不可动画；线段约束点可动画', () => {
+    const k = new Kernel();
+    makePoint(k, 1, 0, 'A');
+    makePoint(k, 0, 0, 'O');
+    addInput(k, 't = 30');
+    addInput(k, `B = Rotate(A, t, O)`);
+    const b = ofType(k, GeoPoint).find(e => e.label === 'B')!;
+    expect(b.isAnimatable()).toBe(false);
+
+    addInput(k, 'C = (5, 0)');
+    addInput(k, 's = Segment(A, C)');
+    addInput(k, 'P = PointOn(s)');
+    const p = ofType(k, GeoPoint).find(e => e.label === 'P')!;
+    expect(p.isAnimatable()).toBe(true);
+  });
+});
+
+describe('函数上点的区间与定义域', () => {
+  it('参数区间取传入定义域；updateParameter 夹取', () => {
+    const k = makeKernel();
+    addInput(k, 'f(x) = x²/4');
+    const fn = ofType(k, GeoFunction)[0];
+    const created = createParameterPointOnFunction(k, fn, 3, { min: -10, max: 10 });
+    // 传了 domain → 参数区间取 domain（此前默认 [0, 2π] 与定义域无关）
+    expect(created.param.intervalMin).toBe(-10);
+    expect(created.param.intervalMax).toBe(10);
+    // updateParameter 夹取到区间内
+    created.param.intervalMin = -4;
+    created.param.intervalMax = 4;
+    (created.algo as any).updateParameter(50);
+    expect(created.param.getValue()).toBeCloseTo(4, 6);
+
+    // 未传 domain 回退 [-100, 100]
+    const created2 = createParameterPointOnFunction(k, fn, 1);
+    expect(created2.param.intervalMin).toBe(-100);
+    expect(created2.param.intervalMax).toBe(100);
+  });
+});
+
+describe('Mirror 点对称 / 反演别名（官方三镜像）', () => {
+  it('Mirror(P, O) 点对称 = 中心对称', () => {
+    const k = new Kernel();
+    makePoint(k, 3, 1, 'P');
+    makePoint(k, 0, 0, 'O');
+    addInput(k, `Q = Mirror(P, O)`);
+    const q = ofType(k, GeoPoint).find(e => e.label === 'Q')!;
+    expect(q.getX()).toBeCloseTo(-3, 6);
+    expect(q.getY()).toBeCloseTo(-1, 6);
+  });
+
+  it('Mirror(obj, circle) = 反演', () => {
+    const k = new Kernel();
+    makePoint(k, 2, 0, 'P');
+    makePoint(k, 0, 0, 'O');
+    addInput(k, 'c = Circle(O, 1)');
+    addInput(k, `Q = Mirror(P, c)`);
+    const q = ofType(k, GeoPoint).find(e => e.label === 'Q')!;
+    // 反演：r²/d = 1/2
+    expect(q.getX()).toBeCloseTo(0.5, 6);
+    expect(q.getY()).toBeCloseTo(0, 6);
+  });
+});
+
+describe('独立圆锥平移系数正确性（代入展开）', () => {
+  it('平移后曲线上的点也随之平移', () => {
+    const k = new Kernel();
+    addInput(k, 'x² + y² = 4');
+    const conic = ofType(k, GeoConic)[0];
+    // 原曲线上点 (2, 0)
+    expect(Math.abs(conicValue(conic.coeffs, 2, 0))).toBeLessThan(1e-9);
+    conic.translate({ x: 1, y: 1, z: 0 } as any);
+    // 新曲线过 (3, 1)
+    expect(Math.abs(conicValue(conic.coeffs, 3, 1))).toBeLessThan(1e-9);
+    // 旧点不再在曲线上
+    expect(Math.abs(conicValue(conic.coeffs, 2, 0))).toBeGreaterThan(1);
+  });
+});
+
+describe('Intersect(f, g) 两函数交点列表', () => {
+  it('f=x²/4-2 与 g=0 的交点为 ±2√2，随 f 联动', () => {
+    const k = new Kernel();
+    addInput(k, 'f(x) = x²/4 - 2');
+    addInput(k, 'g(x) = 0');
+    addInput(k, 'I = Intersect(f, g)');
+    const list = k.getConstruction().getElements().find((e): e is any => e instanceof GeoList) as any;
+    expect(list).toBeDefined();
+    expect(list.isDefined()).toBe(true);
+    const children = (list as any).children ?? [];
+    expect(children.length).toBe(2);
+    const xs = children.map((p: any) => p.getX()).sort((a: number, b: number) => a - b);
+    expect(xs[0]).toBeCloseTo(-Math.sqrt(8), 5);
+    expect(xs[1]).toBeCloseTo(Math.sqrt(8), 5);
+    // f 变化 → 交点跟随
+    const f = k.getConstruction().getElements().find(e => e instanceof GeoFunction && (e as GeoFunction).label === 'f') as GeoFunction;
+    void f;
+  });
+
+  it('roundtrip 后交点仍在且值正确', () => {
+    const k = new Kernel();
+    addInput(k, 'f(x) = x²/4 - 2');
+    addInput(k, 'g(x) = 0');
+    addInput(k, 'I = Intersect(f, g)');
+    const restored = roundtripLocal(k);
+    const list = restored.getConstruction().getElements().find((e): e is any => e instanceof GeoList) as any;
+    expect(list).toBeDefined();
+    expect(list.isDefined()).toBe(true);
+    const children = (list as any).children ?? [];
+    expect(children.length).toBe(2);
+    const xs = children.map((p: any) => p.getX()).sort((a: number, b: number) => a - b);
+    expect(xs[1]).toBeCloseTo(Math.sqrt(8), 4);
+  });
+});

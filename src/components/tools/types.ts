@@ -108,6 +108,7 @@ export interface ToolContext {
   hoveredPoint: GeoPoint | null;
   radius?: number;                // circle 模式半径
   polygonPoints?: GeoPoint[];      // polygon 模式顶点累积
+  polygonCreatedPoints?: GeoPoint[]; // polygon 模式本工具新建的点（退出时只删这些，不删用户既有点）
   uiElements?: any[];              // UI 元素工具元素表
   // --- 状态写入（由 CanvasView 转发）----
   setMode: (m: ToolMode) => void;
@@ -133,6 +134,9 @@ export interface ToolContext {
   // ---- UI 元素工具（由 GeometryCanvas 管理：text/slider/button/checkbox）----
   setUIElements?: Dispatch<SetStateAction<any>>;
   setEditingUIElement?: Dispatch<SetStateAction<string | null>>;
+  // ---- 画布内数值输入（去 prompt 化）：handler 把"继续构造"的闭包交给视图层，
+  // 用户在浮层输入后回调；raw 为 null 表示取消。 ----
+  requestValue?: (title: string, defaultValue: string, onSubmit: (raw: string | null) => void) => void;
   // ---- 变换工具暂态（引用可变）----
   toolState: any;
   t?: (key: string) => string;

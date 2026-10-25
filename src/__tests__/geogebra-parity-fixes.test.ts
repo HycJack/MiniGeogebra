@@ -837,9 +837,9 @@ describe('Slider 命令（对标 CmdSlider）', () => {
   it('Slider 产出的滑块可驱动依赖对象', () => {
     const kernel = makeKernel();
     addInput(kernel, 'Slider(0, 10, 1, 2)');
-    addInput(kernel, 'f(x) = t1*x');
-    // 找到 Slider 创建的数值（标签 t1）
-    const t1 = kernel.getConstruction().getElements().find(el => el instanceof GeoNumeric && (el as GeoNumeric).label === 't1') as GeoNumeric;
+    addInput(kernel, 'f(x) = a*x');
+    // 找到 Slider 创建的数值（标签 a）
+    const t1 = kernel.getConstruction().getElements().find(el => el instanceof GeoNumeric && (el as GeoNumeric).label === 'a') as GeoNumeric;
     expect(t1.getValue()).toBe(2);
     const fn = kernel.getConstruction().getElements().find(el => (el as any).evaluateAt) as any;
     expect(fn.evaluateAt(3)).toBeCloseTo(6, 9);

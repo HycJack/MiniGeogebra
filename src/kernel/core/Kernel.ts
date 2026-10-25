@@ -2,11 +2,13 @@ import { IKernel } from './Interfaces';
 import { Construction } from './Construction';
 import { ConstructionElement } from './ConstructionElement';
 import { AnimationManager } from './AnimationManager';
+import { ViewOptions } from './Options';
 
 export class Kernel implements IKernel {
   private construction: Construction;
   private updateCallback: (() => void) | null = null;
   private animationManager: AnimationManager;
+  private options = new ViewOptions();
 
   // 微任务级批处理：同一个事件循环 tick 内的多次 notifyUpdate 合并为一次增量更新，
   // 避免拖动时每一帧都全场重算（原 updateAllAlgorithms 行为）。
@@ -19,6 +21,11 @@ export class Kernel implements IKernel {
     this.animationManager = new AnimationManager(this);
   }
 
+  /** 视图级选项（rounding / 角度单位 / 点捕捉），见 core/Options.ts。 */
+  getOptions(): ViewOptions {
+    return this.options;
+  }
+
   getConstruction(): Construction {
     return this.construction;
   }
@@ -27,7 +34,7 @@ export class Kernel implements IKernel {
     return this.animationManager;
   }
 
-  setUpdateCallback(callback: () => void) {
+  setUpdateCallback(callback: (() => void) | null) {
     this.updateCallback = callback;
   }
 
@@ -118,15 +125,30 @@ export class Kernel implements IKernel {
       (a, b) => a.constIndex - b.constIndex
     );
     for (const algo of sorted) {
-      algo.update();
+      // 单个算法抛错不拖垮整批：pendingUpdates 已清空，若直接中断剩余算法
+      // 将永远不会被重算（直到下一次独立元素变动）
+      try {
+        algo.update();
+      } catch (err) {
+        console.error(`[kernel] update failed in ${algo.getClassName()}`, err);
+      }
     }
   }
 
   /**
-   * 同步 flush pending updates（拖动等场景需要"本帧立即重算依赖"，不能等微任务）。
+   * 同步 flush pending updates（拖动等需要"本帧立即重算依赖"，不能等微任务）。
    */
   flushNow(): void {
     this.flushScheduled = false;
     this.flushAffectedAlgorithms();
+  }
+
+  /**
+   * 丢弃待更新集（不重算）。供"刚做过全场重算（updateAllAlgorithms）"的场景
+   * 调用：全场重算已覆盖增量内容，不丢弃的话已排程的微任务 flush 会把同一条
+   * 依赖链再增量重算一遍。
+   */
+  clearPendingUpdates(): void {
+    this.pendingUpdates.clear();
   }
 }

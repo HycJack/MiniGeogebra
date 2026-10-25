@@ -14,3 +14,4 @@ test/
 
 # 本地工具产物（不提交）
 .video_agent/
+.v2c/

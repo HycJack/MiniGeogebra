@@ -254,18 +254,25 @@ export class WebGLRendererFallback implements IRenderer {
 
   /** 弧：stroke → 折线段；fill → 扇形。 */
   private arcLines(a: ArcEntry): { p0: { x: number; y: number }; p1: { x: number; y: number } }[] {
-    if (a.r <= 1e-9 || Math.abs(a.ea - a.sa) < 1e-6) return [];
+    // 扫幅按"从 sa 正向（角度增加）绕到 ea"解释 —— 与 Canvas2D 的 ctx.arc
+    // （ea < sa 时自动补 2π）及 GeoGebra 的"恒逆时针从起点扫到终点"一致。
+    // 此前 dir=+1 扫 |ea−sa|，ea<sa 时落在错误端点（弧不终止于定义点）。
+    const TWO_PI = 2 * Math.PI;
+    if (a.r <= 1e-9) return [];
+    const sweep = a.ccw
+      ? ((a.sa - a.ea) % TWO_PI + TWO_PI) % TWO_PI
+      : ((a.ea - a.sa) % TWO_PI + TWO_PI) % TWO_PI;
+    if (sweep < 1e-6) return [];
     const r = a.r;
-    const dA = Math.abs(a.ea - a.sa);
     // 段数按**像素**弧长预算（r × MV 缩放 ≈ 屏幕半径）：约每 3px 一段，
     // 下限 24。旧实现按世界弧长 0.3/段 + 下限 8，导致小半径的点
     // （世界半径 ~0.12）只分到 8 段 —— 八边形观感（"点不圆"）。
-    const segs = Math.max(24, Math.ceil(dA * r * this.mvPixelScale() / 3));
+    const segs = Math.max(24, Math.ceil(sweep * r * this.mvPixelScale() / 3));
     const dir = a.ccw ? -1 : 1;
     const out: { p0: { x: number; y: number }; p1: { x: number; y: number } }[] = [];
     for (let i = 0; i < segs; i++) {
-      const a1 = a.sa + dir * dA * (i / segs);
-      const a2 = a.sa + dir * dA * ((i + 1) / segs);
+      const a1 = a.sa + dir * sweep * (i / segs);
+      const a2 = a.sa + dir * sweep * ((i + 1) / segs);
       out.push({
         p0: { x: a.cx + r * Math.cos(a1), y: a.cy + r * Math.sin(a1) },
         p1: { x: a.cx + r * Math.cos(a2), y: a.cy + r * Math.sin(a2) },
@@ -280,14 +287,19 @@ export class WebGLRendererFallback implements IRenderer {
     return Math.max(Math.abs(this.mv[0]), Math.abs(this.mv[4]), 1e-6);
   }
   private arcFanPoints(a: ArcEntry): { x: number; y: number }[] {
-    if (a.r <= 1e-9 || Math.abs(a.ea - a.sa) < 1e-6) return [];
+    // 扫幅解释与 arcLines 一致（正向绕到 ea / ccw 时反向）
+    const TWO_PI = 2 * Math.PI;
+    if (a.r <= 1e-9) return [];
+    const sweep = a.ccw
+      ? ((a.sa - a.ea) % TWO_PI + TWO_PI) % TWO_PI
+      : ((a.ea - a.sa) % TWO_PI + TWO_PI) % TWO_PI;
+    if (sweep < 1e-6) return [];
     const pts: { x: number; y: number }[] = [{ x: a.cx, y: a.cy }];
     const r = a.r;
-    const dA = Math.abs(a.ea - a.sa);
-    const segs = Math.max(32, Math.ceil(dA * r * this.mvPixelScale() / 1.5));
+    const segs = Math.max(32, Math.ceil(sweep * r * this.mvPixelScale() / 1.5));
     const dir = a.ccw ? -1 : 1;
     for (let i = 1; i <= segs; i++) {
-      const ang = a.sa + dir * dA * (i / segs);
+      const ang = a.sa + dir * sweep * (i / segs);
       pts.push({ x: a.cx + r * Math.cos(ang), y: a.cy + r * Math.sin(ang) });
     }
     return pts;

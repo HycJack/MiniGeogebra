@@ -30,17 +30,46 @@ export function conicValue(coeffs: number[], x: number, y: number): number {
 /**
  * 圆锥曲线是否退化（空集、单点、一对直线）。
  *
- * 判据是 3×3 矩阵行列式为零：
- *   |A    B/2  D/2|
- *   |B/2   C   E/2|
- *   |D/2  E/2   F| = 0
- * 展开为 ACF − (AE² + B²F + CD²)/4 + BDE/4。det3 按系数三次方缩放，
- * 因此容差也必须按 mag³ 缩放，否则「缩放过的同一曲线」判定会翻转。
+ * 直接用 3×3 行列式 |det3| < ε·mag³ 会在曲线远离原点时失效：
+ * 平移只污染 D/E/F 而不动 det3（圆的 det3 = −r² 与圆心无关），
+ * mag³ 却随 |F| ~ 圆心距² 立方膨胀，几百单位外半径 10 的圆就被误判退化。
+ *
+ * 因此改为平移不变的两步判据：
+ *   1. 二次块 Q = [[A,B/2],[B/2,C]] 的行列式（平移不变量）相对降秩？
+ *      降秩时旋到特征系，零特征方向上的线性分量 ev=0 ⟺ 可分解为两直线（退化）；
+ *      ev≠0 是抛物线（非退化）。旋转保范数，用 |D|+|E| 作相对基准。
+ *   2. 满秩（中心型）：平移到中心后 det3 = det(Q)·F'，退化 ⟺ F'=0。
+ *      F' 由大数相消得到，容差按参与相消各项的幅值计（而非 mag³）。
  */
-export function isConicDegenerate(coeffs: number[], mag = 1): boolean {
+export function isConicDegenerate(coeffs: number[]): boolean {
   const [A, B, C, D, E, F] = coeffs;
-  const det3 = A * C * F - (A * E * E + B * B * F + C * D * D) / 4 + (B * D * E) / 4;
-  return Math.abs(det3) < 1e-12 * mag * mag * mag;
+  const qmag = Math.max(Math.abs(A), Math.abs(B), Math.abs(C));
+  if (qmag === 0) return true; // 无二次项：本身是直线（或空集）
+
+  const detQ = A * C - (B * B) / 4;
+  if (Math.abs(detQ) < 1e-10 * qmag * qmag) {
+    // 二次型降秩：抛物线型或一对平行线
+    const halfB = B / 2;
+    const sqrtDisc = Math.sqrt(((A - C) / 2) ** 2 + halfB * halfB);
+    const lambda1 = (A + C) / 2 + sqrtDisc;
+    const lambda2 = (A + C) / 2 - sqrtDisc;
+    const squaredIsLambda1 = Math.abs(lambda1) >= Math.abs(lambda2);
+    const thetaSqr = 0.5 * Math.atan2(B, A - C) + (squaredIsLambda1 ? 0 : Math.PI / 2);
+    const thetaAxis = thetaSqr + Math.PI / 2;
+    const ev = D * Math.cos(thetaAxis) + E * Math.sin(thetaAxis);
+    const linMag = Math.abs(D) + Math.abs(E);
+    if (linMag === 0) return true; // λu² + F = 0：一对（平行/重合/虚）直线
+    return Math.abs(ev) < 1e-10 * linMag;
+  }
+
+  // 中心型：平移到中心，退化 ⟺ F' = 0
+  const denom = 4 * detQ;
+  const cx = (B * E - 2 * C * D) / denom;
+  const cy = (B * D - 2 * A * E) / denom;
+  if (!Number.isFinite(cx) || !Number.isFinite(cy)) return true;
+  const fPrime = F + (D * cx + E * cy) / 2;
+  const cancel = Math.abs(F) + (Math.abs(D * cx) + Math.abs(E * cy)) / 2 + 1e-30;
+  return Math.abs(fPrime) < 1e-12 * cancel;
 }
 
 /**
@@ -341,8 +370,6 @@ export interface CanonicalConic {
  */
 export function analyzeConic(coeffs: number[]): CanonicalConic | null {
   const [A, B, C, D, E, F] = coeffs;
-  const mag = Math.max(Math.abs(A), Math.abs(B), Math.abs(C), Math.abs(D), Math.abs(E), Math.abs(F), 1);
-  if (mag < 1e-12) return null;
 
   const trace = A + C;
   const halfDiff = (A - C) / 2;
@@ -352,16 +379,20 @@ export function analyzeConic(coeffs: number[]): CanonicalConic | null {
   const lambda2 = trace / 2 - sqrtDisc;
   // λ1 特征向量方向
   const theta = 0.5 * Math.atan2(B, A - C);
-  const scale = Math.max(Math.abs(lambda1), Math.abs(lambda2), Math.abs(F), 1e-12);
-  const relDetQ = (A * C - halfB * halfB) / (scale * scale);
+  const qmag = Math.max(Math.abs(lambda1), Math.abs(lambda2), 1e-30);
+  if (qmag < 1e-300) return null;
 
-  if (Math.abs(relDetQ) > 1e-10) {
+  // 中心/抛物线的分界只看二次块（平移不变量）。此前 relDetQ 把 |F| 混进
+  // 基准，远离原点的曲线 F 巨大，正常圆会被推进抛物线分支后判 null。
+  const detQ = A * C - halfB * halfB;
+  if (Math.abs(detQ) > 1e-10 * qmag * qmag) {
     // ---- 中心型 ----
-    const denom = 4 * A * C - B * B;
+    const denom = 4 * detQ;
     const center = {
       x: (B * E - 2 * C * D) / denom,
       y: (B * D - 2 * A * E) / denom,
     };
+    // 直接在中心取值：F' = F + (D·cx + E·cy)/2，对远心大数相消稳健
     const fPrime = F + (D * center.x + E * center.y) / 2;
     const type = (() => {
       if (lambda1 * lambda2 > 0) {
@@ -404,8 +435,9 @@ export function analyzeConic(coeffs: number[]): CanonicalConic | null {
   // 旋转后的线性系数：d'u + e'v + f
   const du = D * Math.cos(thetaSqr) + E * Math.sin(thetaSqr);
   const ev = D * Math.cos(thetaAxis) + E * Math.sin(thetaAxis);
-  const eigScale = Math.max(Math.abs(lambda1), Math.abs(lambda2), 1e-12);
-  if (Math.abs(lambdaSqr) < 1e-10 * eigScale || Math.abs(ev) < 1e-10 * scale) return null;
+  // 线性项基准用 |D|+|E|（旋转保范数，平移不变量），不掺 |F|
+  const linMag = Math.abs(D) + Math.abs(E);
+  if (Math.abs(lambdaSqr) < 1e-10 * qmag || Math.abs(ev) < 1e-10 * linMag) return null;
 
   // λSqr·u² + du·u + ev·v + F = 0 → λSqr(u − u0)² + ev(v − v0) = 0
   const u0 = -du / (2 * lambdaSqr);

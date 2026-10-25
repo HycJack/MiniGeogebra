@@ -11,6 +11,7 @@ import { GeoSegment } from '../../kernel/geo/GeoSegment';
 import { GeoLine } from '../../kernel/geo/GeoLine';
 import { GeoConic } from '../../kernel/geo/GeoConic';
 import { GeoFunction } from '../../kernel/geo/GeoFunction';
+import { GeoRay } from '../../kernel/geo/GeoRay';
 import { GeoPolyLine } from '../../kernel/geo/GeoPolyLine';
 import { GeoArc } from '../../kernel/geo/GeoArc';
 import { GeoCurve } from '../../kernel/geo/GeoCurve';
@@ -20,6 +21,7 @@ import { AlgoPointOnSegment } from '../../kernel/algo/AlgoPointOnSegment';
 import { AlgoPointOnLine } from '../../kernel/algo/AlgoPointOnLine';
 import { AlgoPointOnConic } from '../../kernel/algo/AlgoPointOnConic';
 import { AlgoPointOnPolyLine } from '../../kernel/algo/AlgoPointOnPolyLine';
+import { AlgoPointOnRay } from '../../kernel/algo/AlgoPointOnRay';
 import { AlgoPointOnArc } from '../../kernel/algo/AlgoPointOnArc';import { AlgoPointOnCurve } from '../../kernel/algo/AlgoCurveFamily';
 import { AlgoPointOnFunction } from '../../kernel/algo/AlgoPointOnFunction';
 
@@ -38,26 +40,28 @@ export function addPoint(kernel: Kernel, x: number, y: number): GeoPoint {
   return p;
 }
 
-/** 为距离测量生成唯一数值标签（原代码约定：d1,d2…）。 */
+/**
+ * 测量标签：对齐 GeoGebra 的命名习惯——距离/面积走数值字符表（a, b, c…），
+ * 角度走希腊字母表（α, β, γ…，无 π），全部查重唯一（此前 d{n}/∠/S 会撞名）。
+ */
 export function nextDistanceLabel(construction: Construction): string {
-  const count = construction.getElements().filter(e => e instanceof GeoNumeric).length + 1;
-  return `d${count}`;
+  return construction.getNextNumericLabel();
 }
 
-/** 为角度测量生成唯一数值标签（原代码约定：∠）。 */
+/** 为角度测量生成唯一数值标签（希腊字母序列）。 */
 export function nextAngleLabel(construction: Construction): string {
-  return '∠';
+  return construction.getNextAngleLabel();
 }
 
-/** 为面积测量生成唯一数值标签（原代码约定：S）。 */
+/** 为面积测量生成唯一数值标签。 */
 export function nextAreaLabel(construction: Construction): string {
-  return 'S';
+  return construction.getNextNumericLabel();
 }
 
 /** 在路径（线段/直线/圆/折线）上根据屏幕位置创建一个带参数的约束点。 */
 export function createParameterPointOnPath(
   kernel: Kernel,
-  path: GeoSegment | GeoLine | GeoConic | GeoPolyLine | GeoArc | GeoCurve,
+  path: GeoSegment | GeoLine | GeoRay | GeoConic | GeoPolyLine | GeoArc | GeoCurve,
   screenX: number, screenY: number
 ): { param: GeoNumeric; point: GeoPoint; algo: AlgoElement } | null {
   const param = new GeoNumeric(kernel, 0);
@@ -73,6 +77,10 @@ export function createParameterPointOnPath(
   } else if (path instanceof GeoConic) {
     param.intervalMin = 0; param.intervalMax = 2 * Math.PI;
     algo = new AlgoPointOnConic(kernel, path, param);
+  } else if (path instanceof GeoRay) {
+    // 射线：t 为距原点弧长（AlgoPointOnRay 内部夹取 t≥0）
+    param.intervalMin = 0; param.intervalMax = 10;
+    algo = new AlgoPointOnRay(kernel, path, param);
   } else if (path instanceof GeoPolyLine) {
     param.intervalMin = 0; param.intervalMax = path.vertices.length - 1;
     algo = new AlgoPointOnPolyLine(kernel, path, param);
@@ -110,9 +118,19 @@ export function createParameterPointOnFunction(
   kernel: Kernel,
   fn: GeoFunction,
   x: number,
+  domain?: { min: number; max: number },
 ): { param: GeoNumeric; point: GeoPoint; algo: AlgoPointOnFunction } {
   const param = new GeoNumeric(kernel, x);
   param.label = kernel.getConstruction().getNextNumericLabel();
+  // 参数区间 = 函数所在视口 x 范围（此前沿用默认 [0, 2π]，与函数定义域无关，
+  // 约束点动画/拖拽的可用范围完全错误）
+  if (domain && Number.isFinite(domain.min) && Number.isFinite(domain.max)) {
+    param.intervalMin = domain.min;
+    param.intervalMax = domain.max;
+  } else {
+    param.intervalMin = -100;
+    param.intervalMax = 100;
+  }
 
   const algo = new AlgoPointOnFunction(kernel, fn, param);
   const point = algo.getOutput();

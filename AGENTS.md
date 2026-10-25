@@ -38,6 +38,8 @@ src/
 │   ├── Geometry3DView.tsx      # 3D 视图编排核心（WebGL 渲染 + 3D 工具）
 │   ├── Toolbar / ToolButton / SidePanel / AlgebraInputBar  # 工具栏与代数输入
 │   ├── CanvasOverlay / HoverTooltip / ContextMenu / ToolHintBar / SliderControl
+│   ├── CanvasValueInput / ConstructionNavBar                # 画布内数值输入浮层 / 构造步骤导航条
+│   ├── TraceLayer / labels.ts  # 轨迹层（trace 残影）/ 标签锚点（绘制与命中共用）
 │   ├── NavigationCube / Geometry3DToolbar                   # 3D 辅助控件
 │   ├── drawHelpers.ts          # 2D 绘制函数（各类 GeoElement 的绘制实现）
 │   ├── tools/                  # 交互层
@@ -51,7 +53,7 @@ src/
 ├── i18n/
 │   └── LanguageContext.tsx     # 中/英双语（t() 函数）
 └── kernel/                     # 核心计算引擎（不依赖 React）
-    ├── core/                   # Kernel、Construction、AnimationManager、坐标系统、吸附
+    ├── core/                   # Kernel、Construction、AnimationManager、坐标系统、吸附、Options（rounding/角度单位/点捕捉）
     ├── geo/                    # GeoElement 及其所有子类（点/线/圆/圆锥曲线/函数/曲面…，约 29 个文件）
     ├── algebra/                # 表达式解析、方程识别、求导、多项式、数值算法
     ├── algo/                   # AlgoElement 及全部构造算法（约 60 个文件）
@@ -131,7 +133,7 @@ src/__tests__/                  # Vitest 测试（按 phase 与主题分组）
 - 参数曲线/区域：`Curve` `PointOn` `PointIn` `RandomPointIn` `Surface`
 - 3D 构造：`Point3D` `Line3D` `Plane3D` `Sphere3D` `Cylinder3D` `Cone3D` `Prism3D` `Pyramid3D` `Volume3D` `Angle3D` `IntersectLinePlane` 等
 
-完整命令清单与实现状态见 `docs/未实现清单.md` 与 `docs/已实现功能与GeoGebra逐项比对.md`。
+完整命令清单与实现状态见 `docs/未实现清单.md` 与 `docs/已实现功能与GeoGebra逐项比对.md`；交互惯例/操作习惯的对齐状态见 `docs/UX差距清单.md`。
 
 辅助模块：`Differentiator.ts`（符号求导，支撑 `Derivative` 命令与切线）、`Polynomial.ts`（多项式插值）、`Numerics.ts`（根查找、数值积分等）。
 
@@ -199,8 +201,9 @@ src/__tests__/                  # Vitest 测试（按 phase 与主题分组）
 
 ## 相关文档
 
-- `docs/已实现功能与GeoGebra逐项比对.md`：**已实现功能与 GeoGebra 官方源码的逐项比对快照**（80 项，✅/🟡/⚠️ 三级判定，2026-09-17）
+- `docs/已实现功能与GeoGebra逐项比对.md`：**已实现功能与 GeoGebra 官方源码的逐项比对快照**（80 项，✅/🟡/⚠️ 三级判定，2026-09-17；第七节为 2026-10-02 追加的交互层快照）
 - `docs/未实现清单.md`：**未实现与待修复清单**（A 类正确性修复 / B 类 2D 缺口 / C 类 3D 缺口 / D 类明确不做），后续实现的 backlog
+- `docs/UX差距清单.md`：**交互惯例与元能力差距清单**（2026-10-01 两轮 UX 对齐的完成记录 + E 类剩余 backlog：操作习惯/属性系统/构造管理/对象类型四层）
 - `docs/2D-alignment-{requirements,design}.md`：2D 功能与 GeoGebra 对齐的需求与设计基线
 - `docs/2D-drawing-animation-{design,plan}.md`：2D 绘制动画方案（plan 中部分条目已实现，见文档内状态标注）
 - `docs/3D-grid-axes-design.md`：3D 网格与坐标轴设计（已实现，与代码现状一致）

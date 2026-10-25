@@ -44,10 +44,12 @@ import {
 } from '../../kernel/algo';
 import { GeoConicPart } from '../../kernel/geo/GeoConicPart';
 import { GeoArc } from '../../kernel/geo/GeoArc';
+import { GeoCurve } from '../../kernel/geo/GeoCurve';
 import { GeoVector } from '../../kernel/geo/GeoVector';
 import { GeoPolyLine } from '../../kernel/geo/GeoPolyLine';
 import { GeoRay } from '../../kernel/geo/GeoRay';
 import { GeoElement } from '../../kernel/geo/GeoElement';
+import { GeoBoolean } from '../../kernel/geo/GeoBoolean';
 
 // ---- 命中热区 ----
 const POINT_EPS = 10;   // 点热区（像素）
@@ -102,7 +104,7 @@ export const handlePointerDown = (
     if (out instanceof GeoPoint) out.label = cons.getNextPointLabel();
     else if (out instanceof GeoConic) out.label = cons.getNextCircleLabel();
     else if (out instanceof GeoLine) out.label = cons.getNextLineLabel();
-    else if (out instanceof GeoVector) out.label = cons.getNextLineLabel();
+    else if (out instanceof GeoVector) out.label = cons.getNextVectorLabel();
     else if (out instanceof GeoPolygon) out.label = cons.getNextPolygonLabel();
     else if (out instanceof GeoNumeric) out.label = cons.getNextNumericLabel();
     else if (out instanceof GeoFunction) out.label = cons.getNextFunctionLabel();
@@ -160,8 +162,11 @@ export const handlePointerDown = (
   };
 
   /** 在空白处创建一个带唯一标签的自由点。 */
-  const emptyClickNewPoint = (): GeoPoint => {
-    const p = createLabeledPoint(kernel, point.x, point.y);
+  const emptyClickNewPoint = (): GeoPoint => emptyClickNewPointAt(point.x, point.y);
+
+  /** 在指定世界坐标创建带标签自由点（推迟创建路径用，评审 U3）。 */
+  const emptyClickNewPointAt = (x: number, y: number): GeoPoint => {
+    const p = createLabeledPoint(kernel, x, y);
     kernel.getConstruction().addElement(p);
     kernel.notifyUpdate(p);
     return p;
@@ -170,7 +175,7 @@ export const handlePointerDown = (
   /** 点击命中路径对象（线/圆/曲线）时创建"对象上的点"（GeoGebra 构造吸附语义）。 */
   const hitPathNewPoint = (): GeoPoint | null => {
     const obj = hitObject();
-    if (obj instanceof GeoSegment || obj instanceof GeoLine || obj instanceof GeoConic || obj instanceof GeoPolyLine) {
+    if (obj instanceof GeoSegment || obj instanceof GeoLine || obj instanceof GeoRay || obj instanceof GeoArc || obj instanceof GeoCurve || obj instanceof GeoConic || obj instanceof GeoPolyLine) {
       const created = createParameterPointOnPath(kernel, obj, point.x, point.y);
       if (created) {
         notifyUpdate(created.point);
@@ -182,8 +187,9 @@ export const handlePointerDown = (
 
   /** 两点构造辅助（直线/线段/射线）：支持"先点一点 → 再点终点"和"空白点两点"两种流程。 */
   const twoPointBuild = (algoCtor: new (k: Kernel, a: GeoPoint, b: GeoPoint) => any) => {
-    let picked = hitPoint();
-    if (!picked && selectedElements.length === 0) picked = emptyClickNewPoint();
+    // 空白点击一律新建点：第一击建 P1 并选中，第二击若因"已有选区"被吞，
+    // 两点工具就无法在空白处两次点击完成最基本流程
+    let picked = hitPoint() ?? emptyClickNewPoint();
     if (!picked) return;
     if (selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
       const p1 = selectedElements[0];
@@ -216,8 +222,31 @@ export const handlePointerDown = (
   const ts = ctx.toolState.current;
   const multi = (ts?.boxModifierDown ?? false);   // Ctrl/Cmd 键 -> 框选取反
   const shifty = (ts?.shiftKey ?? false);          // Shift 键 -> 平移/取消选择
+  const alt = (ts?.altKey ?? false);               // Alt 键 -> Move 工具下强制框选
 
   const mode: ToolMode = ctx.mode;
+
+  // checkbox 第二阶段（对标 GeoGebra checkbox 工具）：创建复选框后逐个点击对象
+  // 建立显隐联动；点击空白处结束关联。
+  if (ts?.checkboxBoolean && mode === 'checkbox') {
+    const target = hitAnyObject();
+    if (target && target !== ts.checkboxBoolean) {
+      const bool = ts.checkboxBoolean as GeoBoolean;
+      const el = target as GeoElement;
+      // 联动按标签引用：无标签对象先补一个，否则点击被静默忽略、用户以为已关联
+      if (!el.label) {
+        el.label = el instanceof GeoPoint
+          ? construction.getNextPointLabel()
+          : construction.getNextLineLabel();
+      }
+      if (!bool.linkedLabels.includes(el.label)) bool.linkedLabels.push(el.label);
+      setRenderRev(r => r + 1);
+    } else if (!target) {
+      ts.checkboxBoolean = null;
+      setRenderRev(r => r + 1);
+    }
+    return;
+  }
 
   switch (mode) {
 
@@ -244,8 +273,9 @@ export const handlePointerDown = (
           setDraggedElement(oHit);
           setSelectedElements([oHit]);
         }
-      } else if (!multi && !shifty) {
-        // 空白处左键按下 -> 启动框选
+      } else if (!multi && (alt || mode === 'select')) {
+        // 空白处左键按下 -> 框选（GeoGebra：Move 工具需按 Alt；Select 工具直接框选；
+        // Move 不按 Alt 的空白拖拽由 GeometryCanvas 截获为平移视图）
         setBoxSelecting(true);
         setBoxStartScreen(screen);
       } else {
@@ -262,7 +292,8 @@ export const handlePointerDown = (
     case 'point_on_object': {
       const obj = hitObject();
       if (
-        obj instanceof GeoSegment || obj instanceof GeoLine ||
+        obj instanceof GeoSegment || obj instanceof GeoLine || obj instanceof GeoRay ||
+        obj instanceof GeoArc || obj instanceof GeoCurve ||
         obj instanceof GeoConic || obj instanceof GeoPolyLine || obj instanceof GeoFunction
       ) {
         if (obj instanceof GeoFunction) {
@@ -273,7 +304,7 @@ export const handlePointerDown = (
             pixelWidth: 1600,
           });
           if (!Number.isFinite(x)) break;
-          const created = createParameterPointOnFunction(kernel, obj, x);
+          const created = createParameterPointOnFunction(kernel, obj, x, { min: bounds.minX, max: bounds.maxX });
           setSelectedElements([created.point]);
           setRenderRev(r => r + 1);
           break;
@@ -284,7 +315,9 @@ export const handlePointerDown = (
           setSelectedElements([created.point]);
           setRenderRev(r => r + 1);
         }
-      } else {
+      } else if (mode === 'point') {
+        // 空白点击仅"点"工具创建自由点；"对象上的点"工具在空白处无动作
+        //（GeoGebra 语义：该工具只能落在对象上）
         emptyClickNewPoint();
       }
       break;
@@ -314,15 +347,19 @@ export const handlePointerDown = (
     }
 
     case 'circle': {
-      // 对标 GeoGebra 的"圆 (圆心和半径)"：先点圆心，再弹窗输入半径。
-      // 此前是一次点击直接画半径 50 格的固定圆（radius state 无任何入口），交互错误。
-      const center = hitPoint() ?? emptyClickNewPoint();
-      const input = (globalThis as any).prompt(t('circleRadiusValuePrompt'), '3');
-      if (input === null) return; // 取消：不生成（圆心点保留，供重试）
-      const r = Number(input);
-      if (!isFinite(r) || r <= 0) return;
-      const circle = new AlgoCirclePointRadius(kernel, center, r);
-      addAlgoAndNotify(circle);
+      // 对标 GeoGebra 的"圆 (圆心和半径)"：先点圆心，画布内输入框输入半径。
+      // 圆心点的创建**推迟到确认回调**（评审 U3/U4）：取消 = 什么都不曾创建，
+      // mousedown 的元素差分也不会把孤儿点记进 undo。
+      const centerHit = hitPoint();
+      const centerPos = { x: point.x, y: point.y };
+      ctx.requestValue?.(t('circleRadiusValuePrompt'), '3', (raw) => {
+        if (raw === null) return;
+        const r = Number(raw);
+        if (!isFinite(r) || r <= 0) return;
+        const center = centerHit ?? emptyClickNewPointAt(centerPos.x, centerPos.y);
+        const circle = new AlgoCirclePointRadius(kernel, center, r);
+        addAlgoAndNotify(circle);
+      });
       break;
     }
 
@@ -484,6 +521,8 @@ export const handlePointerDown = (
             kernel.getConstruction().addElement(seg.getOutput());
           }
           kernel.notifyUpdate(poly);
+          // 顶点已归属多边形：清掉"本工具新建"记录，之后 Escape 不得回收它们
+          ctx.polygonCreatedPoints?.splice(0);
           setPolygonPoints([]);
           clearSel();
         } else {
@@ -493,6 +532,8 @@ export const handlePointerDown = (
         }
       } else {
         const p = emptyClickNewPoint();
+        // 记录为本工具新建：中途退出时只回收这类点，命中的既有点不能动
+        ctx.polygonCreatedPoints?.push(p);
         setPolygonPoints([...pts, p]);
         setSelectedElements([...selectedElements, p]);
         setRenderRev(r => r + 1);
@@ -529,7 +570,8 @@ export const handlePointerDown = (
       if (pHit) {
         if (selectedElements.length === 2 && selectedElements.every(e => e instanceof GeoPoint)) {
           const [p1, p2] = selectedElements as GeoPoint[];
-          const ang = new AlgoAngle(kernel, p1, pHit, p2);
+          // GeoGebra 语义 ∠P1P2P3：第二击是顶点（AlgoAngle 的第 2 参数）
+          const ang = new AlgoAngle(kernel, p1, p2, pHit);
           ang.getOutput().label = nextAngleLabel(construction);
           kernel.getConstruction().addElement(ang);
           kernel.getConstruction().addElement(ang.getOutput());
@@ -561,25 +603,29 @@ export const handlePointerDown = (
     }
 
     case 'tangent': {
+      // GeoGebra 语义：依次点一个点与一条圆锥曲线（顺序任意）。
+      // 此前两击都必须命中点、曲线取"构造中最新的一条"，多点一线时必然选错目标。
+      const conicHit = (() => { const el = hitObject(); return el instanceof GeoConic ? el : null; })();
       const pHit = hitPoint();
+      const buildTangent = (conic: GeoConic, pt: GeoPoint) => {
+        const tan = new AlgoTangent(kernel, conic, pt);
+        kernel.getConstruction().addElement(tan);
+        tan.getOutputLines().forEach(l => kernel.getConstruction().addElement(l));
+        tan.getOutputPoints().forEach(p => kernel.getConstruction().addElement(p));
+        tan.compute();
+        clearSel();
+        setRenderRev(r => r + 1);
+      };
+      if (conicHit) {
+        const pt = selectedElements.find(e => e instanceof GeoPoint) as GeoPoint | undefined;
+        if (pt) buildTangent(conicHit, pt);
+        else { setSelectedElements([conicHit]); setRenderRev(r => r + 1); }
+        break;
+      }
       if (pHit) {
-        const current = [...selectedElements, pHit];
-        if (current.length === 2 && current[0] instanceof GeoPoint) {
-          const clickedPoint = current[0];
-          // 支持任意圆锥曲线（圆/椭圆/双曲线/抛物线），取最上层的那个
-          const conic = elements.slice().reverse().find(el => el instanceof GeoConic) as GeoConic | undefined;
-          if (conic) {
-            const tan = new AlgoTangent(kernel, conic, clickedPoint);
-            kernel.getConstruction().addElement(tan);
-            tan.getOutputLines().forEach(l => kernel.getConstruction().addElement(l));
-            tan.getOutputPoints().forEach(p => kernel.getConstruction().addElement(p));
-            tan.compute();
-            clearSel();
-            setRenderRev(r => r + 1);
-            return;
-          }
-        }
-        setSelectedElements(current.slice(-2));
+        const conic = selectedElements.find(e => e instanceof GeoConic) as GeoConic | undefined;
+        if (conic) buildTangent(conic, pHit);
+        else { setSelectedElements([pHit]); setRenderRev(r => r + 1); }
       }
       break;
     }
@@ -628,29 +674,39 @@ export const handlePointerDown = (
     case 'regular_polygon': {
       // GeoGebra 交互：两次点击定义第一条边的两个端点，弹窗输入边数 n，
       // 多边形在屏幕上呈逆时针展开。此前实现是"中心+半径"模型且边数硬编码 6。
-      const clicked = hitPoint() ?? emptyClickNewPoint();
       if (!ts.regPolyStart) {
+        const clicked = hitPoint() ?? emptyClickNewPoint();
         ts.regPolyStart = clicked;
         selOne(clicked);
         break;
       }
       const start = ts.regPolyStart;
-      if (start === clicked) { ts.regPolyStart = null; break; }
-      const raw = (globalThis as any).prompt(t('regularPolygonSidesPrompt'), '6');
-      if (raw === null) { ts.regPolyStart = null; clearSel(); break; }
-      const nSides = Number(raw);
-      if (!isFinite(nSides) || nSides < 3) { ts.regPolyStart = null; clearSel(); break; }
-      const polyAlgo = new AlgoRegularPolygonEdge(kernel, start, clicked, Math.floor(nSides));
-      addAlgoAndNotify(polyAlgo);
-      // 边 segment（GeoGebra 同样为每条边输出一条线段）
-      const verts = polyAlgo.getOutput().vertices;
-      for (let i = 0; i < verts.length; i++) {
-        const seg = new AlgoSegmentTwoPoints(kernel, verts[i], verts[(i + 1) % verts.length]);
-        addAlgoAndNotify(seg);
+      const startHit = hitPoint();
+      // 第二个顶点推迟到确认回调创建（评审 U3：取消不留孤儿点）
+      const secondPos = { x: point.x, y: point.y };
+      if (startHit) {
+        if (startHit === start) { ts.regPolyStart = null; break; }
       }
-      clearSel();
-      ts.regPolyStart = null;
-      setRenderRev(r => r + 1);
+      // 边数改画布内输入（替代 window.prompt）
+      ctx.requestValue?.(t('regularPolygonSidesPrompt'), '6', (raw) => {
+        if (raw === null) {
+          ts.regPolyStart = null; clearSel(); setRenderRev(r => r + 1); return;
+        }
+        const nSides = Number(raw);
+        if (!isFinite(nSides) || nSides < 3) { ts.regPolyStart = null; clearSel(); setRenderRev(r => r + 1); return; }
+        const clicked = startHit ?? emptyClickNewPointAt(secondPos.x, secondPos.y);
+        const polyAlgo = new AlgoRegularPolygonEdge(kernel, start, clicked, Math.floor(nSides));
+        addAlgoAndNotify(polyAlgo);
+        // 边 segment（GeoGebra 同样为每条边输出一条线段）
+        const verts = polyAlgo.getOutput().vertices;
+        for (let i = 0; i < verts.length; i++) {
+          const seg = new AlgoSegmentTwoPoints(kernel, verts[i], verts[(i + 1) % verts.length]);
+          addAlgoAndNotify(seg);
+        }
+        clearSel();
+        ts.regPolyStart = null;
+        setRenderRev(r => r + 1);
+      });
       break;
     }
 
@@ -681,26 +737,29 @@ export const handlePointerDown = (
         ts.center = centerHit
           ? { x: centerHit.getX(), y: centerHit.getY(), el: centerHit }
           : { x: point.x, y: point.y };
-        const raw = (globalThis as any).prompt(
+        // 角度/比例改画布内输入（替代 window.prompt）；回调里完成构造
+        ctx.requestValue?.(
           t(op === 'rotate' ? 'rotateAnglePrompt' : 'dilateFactorPrompt'),
           op === 'rotate' ? '45' : '2',
+          (raw) => {
+            if (raw === null) { ts.inputs = []; ts.center = null; return; }
+            const value = Number(raw);
+            if (!isFinite(value)) { ts.inputs = []; ts.center = null; return; }
+            // 活中心：命中已有点时把 GeoPoint 注册为输入，移动中心联动重算
+            const centerArg: GeoPoint | { x: number; y: number } =
+              (ts.center as any).el ?? { x: ts.center.x, y: ts.center.y };
+            for (const { el } of ts.inputs as { el: GeoElement }[]) {
+              if (!isTransformable(el)) continue;
+              const algo = op === 'rotate'
+                ? new AlgoRotate(kernel, el, centerArg, (value * Math.PI) / 180)
+                : new AlgoDilate(kernel, el, centerArg, value);
+              addAlgoAndNotify(algo);
+            }
+            clearSel();
+            setRenderRev(r => r + 1);
+            ts.inputs = []; ts.center = null;
+          },
         );
-        if (raw === null) { ts.inputs = []; ts.center = null; return; }
-        const value = Number(raw);
-        if (!isFinite(value)) { ts.inputs = []; ts.center = null; return; }
-        // 活中心：命中已有点时把 GeoPoint 注册为输入，移动中心联动重算
-        const centerArg: GeoPoint | { x: number; y: number } =
-          (ts.center as any).el ?? { x: ts.center.x, y: ts.center.y };
-        for (const { el } of ts.inputs as { el: GeoElement }[]) {
-          if (!isTransformable(el)) continue;
-          const algo = op === 'rotate'
-            ? new AlgoRotate(kernel, el, centerArg, (value * Math.PI) / 180)
-            : new AlgoDilate(kernel, el, centerArg, value);
-          addAlgoAndNotify(algo);
-        }
-        clearSel();
-        setRenderRev(r => r + 1);
-        ts.inputs = []; ts.center = null;
       }
       return;
     }
@@ -726,28 +785,30 @@ export const handlePointerDown = (
             if (!ts.transformRef) return;
           }
 
-          const raw = (globalThis as any).prompt(t(mode === 'shear' ? 'shearFactorPrompt' : 'stretchFactorPrompt'), '1');
-          if (raw === null) return;
-          const factor = Number(raw);
-          if (!isFinite(factor)) return;
+          // 系数改画布内输入（替代 window.prompt）
+          ctx.requestValue?.(t(mode === 'shear' ? 'shearFactorPrompt' : 'stretchFactorPrompt'), '1', (raw) => {
+            if (raw === null) return;
+            const factor = Number(raw);
+            if (!isFinite(factor)) return;
 
-          // all-or-nothing：任一输入不支持或轴退化则整批不入 construction（步骤状态保留）
-          try {
-            const axisRef = ts.transformRef as { axis: { a: number; b: number; c: number }; line?: GeoLine };
-            const algos = (ts.inputs as { el: GeoElement }[])
-              .filter(({ el }) => isTransformable(el))
-              .map(({ el }) => new AlgoShearStretch(
-                kernel, el,
-                axisRef.line ?? [axisRef.axis.a, axisRef.axis.b, axisRef.axis.c],
-                factor, mode === 'shear' ? 'shear' : 'stretch',
-              ));
-            algos.forEach(algo => addAlgoAndNotify(algo));
-            clearSel();
-            setRenderRev(r => r + 1);
-            ts.inputs = []; ts.transformRef = null; ts.refStart = null;
-          } catch {
-            // Degenerate axes stay in the current step so the user can pick another line.
-          }
+            // all-or-nothing：任一输入不支持或轴退化则整批不入 construction（步骤状态保留）
+            try {
+              const axisRef = ts.transformRef as { axis: { a: number; b: number; c: number }; line?: GeoLine };
+              const algos = (ts.inputs as { el: GeoElement }[])
+                .filter(({ el }) => isTransformable(el))
+                .map(({ el }) => new AlgoShearStretch(
+                  kernel, el,
+                  axisRef.line ?? [axisRef.axis.a, axisRef.axis.b, axisRef.axis.c],
+                  factor, mode === 'shear' ? 'shear' : 'stretch',
+                ));
+              algos.forEach(algo => addAlgoAndNotify(algo));
+              clearSel();
+              setRenderRev(r => r + 1);
+              ts.inputs = []; ts.transformRef = null; ts.refStart = null;
+            } catch {
+              // Degenerate axes stay in the current step so the user can pick another line.
+            }
+          });
           return;
         }
 
@@ -955,13 +1016,17 @@ export const handlePointerDown = (
 
     case 'segment_fixed': {
       if (!ts.fixedStart) {
-        const start = hitPoint() ?? emptyClickNewPoint();
-        const input = (globalThis as any).prompt(t('fixedLengthPrompt'), '5');
-        const length = Number(input);
-        if (input === null || !isFinite(length) || length <= 0) return;
-        ts.fixedStart = start;
-        ts.fixedLength = length;
-        setRenderRev(r => r + 1);
+        const startHit = hitPoint();
+        const startPos = { x: point.x, y: point.y };
+        // 长度画布内输入；起点推迟到确认回调创建（评审 U3：取消不留孤儿点）
+        ctx.requestValue?.(t('fixedLengthPrompt'), '5', (raw) => {
+          if (raw === null) return;
+          const length = Number(raw);
+          if (!isFinite(length) || length <= 0) return;
+          ts.fixedStart = startHit ?? emptyClickNewPointAt(startPos.x, startPos.y);
+          ts.fixedLength = length;
+          setRenderRev(r => r + 1);
+        });
         return;
       }
       const dx = point.x - ts.fixedStart.getX();
@@ -986,15 +1051,17 @@ export const handlePointerDown = (
 
     case 'angle_fixed': {
       if (!ts.angleVertex) {
-        ts.angleVertex = hitPoint() ?? emptyClickNewPoint();
-        const input = (globalThis as any).prompt(t('fixedAnglePrompt'), '60');
-        const degrees = Number(input);
-        if (input === null || !isFinite(degrees)) {
-          ts.angleVertex = null;
-          return;
-        }
-        ts.angleDegrees = degrees;
-        setRenderRev(r => r + 1);
+        const vertexHit = hitPoint();
+        const vertexPos = { x: point.x, y: point.y };
+        // 角度画布内输入；顶点推迟到确认回调创建（评审 U3：取消不留孤儿点）
+        ctx.requestValue?.(t('fixedAnglePrompt'), '60', (raw) => {
+          if (raw === null) return;
+          const degrees = Number(raw);
+          if (!isFinite(degrees)) return;
+          ts.angleVertex = vertexHit ?? emptyClickNewPointAt(vertexPos.x, vertexPos.y);
+          ts.angleDegrees = degrees;
+          setRenderRev(r => r + 1);
+        });
         return;
       }
       const first = hitPoint() ?? emptyClickNewPoint();
@@ -1069,6 +1136,18 @@ export const handlePointerDown = (
         construction.addElement(numeric);
         construction.updateDependentAlgorithms(numeric);
         newUIElement.numericLabel = numeric.label;
+        setRenderRev?.(r => r + 1);
+      }
+      // 复选框绑定**内核 GeoBoolean**（此前只是 React state，刷新即丢）：
+      // 勾选状态入内核/undo/序列化；创建后进入"点击对象建立显隐联动"阶段。
+      if (mode === 'checkbox') {
+        const boolean = new GeoBoolean(kernel, false);
+        const construction = kernel.getConstruction();
+        boolean.label = construction.getNextNumericLabel();
+        construction.addElement(boolean);
+        kernel.notifyUpdate(boolean);
+        newUIElement.booleanLabel = boolean.label;
+        ts.checkboxBoolean = boolean;
         setRenderRev?.(r => r + 1);
       }
       setUIElements?.([...(ctx.uiElements ?? []), newUIElement]);
@@ -1159,29 +1238,28 @@ export const handlePointerDown = (
     case 'ellipse':
     case 'hyperbola':
     case 'parabola': {
-      // 第一次点击允许在空白处创建焦点自由点（此前点空白直接被忽略，工具无响应）
-      const pHit = hitPoint() ?? emptyClickNewPoint();
-      if (pHit) {
-        // 抛物线改 2 步交互：第 1 次点击焦点；第 2 次点击"准线上的位置"——
-        // 命中直线则该线为准线；点在空白/非直线上则取该处水平线为准线。
-        // 此前静默取"构造中最后一条直线"，用户无法知道准线是哪条。
-        if (mode === 'parabola') {
-          const current = [...selectedElements, pHit];
-          if (selectedElements.length >= 1 && selectedElements[0] instanceof GeoPoint) {
-            const focus = selectedElements[0];
-            const directrix = (current[1] instanceof GeoLine)
-              ? (current[1] as GeoLine)
-              : new GeoLine(kernel, 0, 1, -pHit.getY());
-            const algo = new AlgoParabola(kernel, focus, directrix);
-            addAlgoAndNotify(algo);
-            clearSel();
-            setRenderRev(r => r + 1);
-            break;
-          }
-          setSelectedElements([pHit]);
+      // 抛物线 2 步交互：第 1 击焦点（空白可新建）；第 2 击准线——
+      // 命中直线则该线为准线，否则取该处水平线为准线。
+      // 此前第二击强制新建游离点，"命中直线为准线"分支成了死代码，
+      // 且对竖直/斜准线必然给出错误结果。
+      if (mode === 'parabola') {
+        if (selectedElements.length >= 1 && selectedElements[0] instanceof GeoPoint) {
+          const focus = selectedElements[0];
+          const el = hitObject();
+          const directrix = el instanceof GeoLine ? el : new GeoLine(kernel, 0, 1, -point.y);
+          const algo = new AlgoParabola(kernel, focus, directrix);
+          addAlgoAndNotify(algo);
+          clearSel();
           setRenderRev(r => r + 1);
           break;
         }
+        const pFocus = hitPoint() ?? emptyClickNewPoint();
+        if (pFocus) { setSelectedElements([pFocus]); setRenderRev(r => r + 1); }
+        break;
+      }
+      // 椭圆/双曲线：三击——焦点1、焦点2、曲线上一点（空白可新建）
+      const pHit = hitPoint() ?? emptyClickNewPoint();
+      if (pHit) {
         const current = [...selectedElements, pHit];
         if (current.length === 3 && current.every(e => e instanceof GeoPoint)) {
           const [f1, f2, p] = current as GeoPoint[];
@@ -1246,6 +1324,7 @@ export const clearToolState = (ts: any) => {
   ts.fixedStart = null; ts.fixedLength = null;
   ts.angleVertex = null; ts.angleDegrees = null;
   ts.polylinePts = []; ts.sectorPicks = []; ts.circArcPicks = [];
+  ts.checkboxBoolean = null;
 };
 
 export const toolHandlers: Record<ToolMode, (ctx: ToolContext, point: WorldPoint, screen: ScreenPoint) => ToolResult | void> = {} as unknown as any;

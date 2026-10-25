@@ -2,6 +2,7 @@ import React from 'react';
 import { CoordinateSystem } from '../kernel/core/CoordinateSystem';
 import { Kernel } from '../kernel/core/Kernel';
 import { GeoNumeric } from '../kernel/geo/GeoNumeric';
+import { GeoBoolean } from '../kernel/geo/GeoBoolean';
 
 export interface UIElement {
   id: string;
@@ -14,6 +15,10 @@ export interface UIElement {
   max?: number;
   step?: number;
   checked?: boolean;
+  /** checkbox 绑定的内核 GeoBoolean 标签（勾选状态入内核/undo/序列化） */
+  booleanLabel?: string;
+  /** slider 绑定的内核 GeoNumeric 标签 */
+  numericLabel?: string;
 }
 
 interface CanvasOverlayProps {
@@ -25,11 +30,13 @@ interface CanvasOverlayProps {
   setDraggingUIElement: React.Dispatch<React.SetStateAction<string | null>>;
   coord: CoordinateSystem;
   kernel?: Kernel;
+  /** 复选框勾选回调：由 GeometryCanvas 写内核 GeoBoolean 并记 undo。 */
+  onBooleanToggle?: (element: UIElement, next: boolean) => void;
 }
 
 const CanvasOverlay: React.FC<CanvasOverlayProps> = ({
   uiElements, setUIElements, editingUIElement, setEditingUIElement,
-  draggingUIElement, setDraggingUIElement, coord, kernel
+  draggingUIElement, setDraggingUIElement, coord, kernel, onBooleanToggle
 }) => {
   return (
     <>
@@ -149,6 +156,12 @@ const CanvasOverlay: React.FC<CanvasOverlayProps> = ({
             </button>
           );
         } else if (element.type === 'checkbox') {
+          // 勾选状态以内核 GeoBoolean 为准（React state 仅作兜底显示）
+          const kernelBool = element.booleanLabel && kernel
+            ? kernel.getConstruction().getElements()
+                .find(el => el instanceof GeoBoolean && (el as GeoBoolean).label === element.booleanLabel) as GeoBoolean | undefined
+            : undefined;
+          const checked = kernelBool ? kernelBool.getValue() : (element.checked ?? false);
           return (
             <label
               key={element.id}
@@ -162,13 +175,18 @@ const CanvasOverlay: React.FC<CanvasOverlayProps> = ({
             >
               <input
                 type="checkbox"
-                checked={element.checked}
+                checked={checked}
                 onChange={(e) => {
                   e.stopPropagation();
-                  const updated = uiElements.map(el =>
-                    el.id === element.id ? { ...el, checked: e.target.checked } : el
-                  );
-                  setUIElements(updated);
+                  if (onBooleanToggle) {
+                    // 走内核路径：GeoBoolean.setValue 联动关联对象显隐 + undo 入栈
+                    onBooleanToggle(element, e.target.checked);
+                  } else {
+                    const updated = uiElements.map(el =>
+                      el.id === element.id ? { ...el, checked: e.target.checked } : el
+                    );
+                    setUIElements(updated);
+                  }
                 }}
                 className="w-4 h-4"
                 onMouseDown={(e) => e.stopPropagation()}

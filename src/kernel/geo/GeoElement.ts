@@ -1,6 +1,7 @@
 import { ConstructionElement } from '../core/ConstructionElement';
 import { IKernel, Path, Region, Transformable, PathMover } from '../core/Interfaces';
 import { GeoVec3D } from '../core/GeoVec3D';
+import { formatNumber } from '../core/Options';
 import type { GeoPoint } from './GeoPoint';
 import type { GeoLine } from './GeoLine';
 import type { AlgoElement } from '../algo/AlgoElement';
@@ -30,6 +31,17 @@ export abstract class GeoElement extends ConstructionElement
   public labelVisible = true;                   // 是否显示标签
   public labelMode: 'always' | 'mouse' | 'never' = 'always';
   public visible = true;                        // 对象级可见性（隐藏对象仍参与构造）
+  // 标签相对默认锚点的偏移（**屏幕像素**，拖动标签时由视图层写入；
+  // +x 向右、+y 向下），随样式一并序列化。
+  public labelOffsetX = 0;
+  public labelOffsetY = 0;
+  // ---- 元能力三样（对标 GeoGebra Basic/Advanced 属性）----
+  /** 固定：不可拖动（仍可删除/改样式），右键菜单与序列化均可用。 */
+  public isFixed = false;
+  /** 轨迹：对象移动时在画布上留下踪迹（视图层 TraceLayer 消费）。 */
+  public trace = false;
+  /** 图层 0–9：渲染与命中按层排序（高层在上、优先命中）。 */
+  public layer = 0;
 
   // 各子类型可覆写的默认样式（绘制层 fallback 用）
   public get defaultStrokeColor(): string { return '#000000'; }
@@ -62,6 +74,11 @@ export abstract class GeoElement extends ConstructionElement
       if (this.animating) am.addAnimatedGeo(this);
       else am.removeAnimatedGeo(this);
     }
+  }
+
+  /** 按当前 rounding 选项格式化数值（对标 GeoGebra Options→Rounding，默认 2 位小数）。 */
+  protected fmt(v: number): string {
+    return formatNumber(v, this.kernel.getOptions());
   }
 
   getNameDescription(): string { return this.label || `GeoElement_${this.id}`; }

@@ -19,7 +19,7 @@ describe('point on path', () => {
     const created = createParameterPointOnPath(kernel, segmentAlgo.getOutput(), 1, 0);
 
     expect(created).not.toBeNull();
-    expect(created!.param.label).toBe('t1');
+    expect(created!.param.label).toBe('a');
     expect(created!.param.isAnimating()).toBe(false);
     expect(created!.point.parentAlgo).not.toBeNull();
     expect(created!.point.getX()).toBeCloseTo(1, 8);

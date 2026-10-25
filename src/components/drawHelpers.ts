@@ -25,14 +25,27 @@ import { GeoCurve } from '../kernel/geo/GeoCurve';
 import { GeoInequality } from '../kernel/geo/GeoInequality';
 import { GeoBooleanRegion } from '../kernel/geo/GeoBooleanRegion';
 import { GeoElement } from '../kernel/geo/GeoElement';
+import { formatNumber } from '../kernel/core/Options';
 import { WorldPoint } from './tools/types';
+import { getLabelAnchor, labelDrawable } from './labels';
 
 export interface DrawBounds { minX: number; maxX: number; minY: number; maxY: number; }
 
 // ---- 基础绘图 ----
 
 /** 坐标轴 + 网格。 */
-export function drawGrid(renderer: IRenderer, wScreen: number, hScreen: number, coord: CoordinateSystem, showGrid: boolean, showAxes: boolean): void {
+/**
+ * 轴刻度文本：按 max(rounding, 步长所需小数位) 显示——rounding 是"数值显示"
+ * 选项，挪用于刻度时必须保证**相邻刻度可分辨**（rounding=1 且步长 0.01 时
+ * 0.11/0.12 曾都渲染成 "0.1"，评审 U9）；被舍入成 0 的非零值回退 4 位有效数字。
+ */
+function axisLabelText(v: number, decimals: number): string {
+  const formatted = formatNumber(v, { rounding: decimals });
+  if (formatted === '0' && Math.abs(v) > 1e-12) return parseFloat(v.toPrecision(4)).toString();
+  return formatted;
+}
+
+export function drawGrid(renderer: IRenderer, wScreen: number, hScreen: number, coord: CoordinateSystem, showGrid: boolean, showAxes: boolean, rounding = 2): void {
   const startX = coord.screenToWorldX(0);
   const endX = coord.screenToWorldX(wScreen);
   // y-up：屏幕顶部是世界 y 最大值；统一为 min/max 使循环方向无关
@@ -50,6 +63,10 @@ export function drawGrid(renderer: IRenderer, wScreen: number, hScreen: number, 
 
   const firstX = Math.floor(startX / step) * step;
   const firstY = Math.floor(startY / step) * step;
+
+  // 刻度标签小数位：至少能分辨相邻两格（0.5→1 位、0.01→3 位），且不低于 rounding
+  const stepDecimals = Math.max(0, -Math.floor(Math.log10(step) + 1e-9) + 1);
+  const labelDecimals = Math.max(rounding, stepDecimals);
 
   if (showGrid) {
     // 次级网格（细分主格 5 份，色更淡）
@@ -169,7 +186,7 @@ export function drawGrid(renderer: IRenderer, wScreen: number, hScreen: number, 
     for (let x = firstX, labelIndex = 0; x <= endX; x += step, labelIndex++) {
       if (labelIndex % xLabelEvery !== 0) continue;
       if (Math.abs(x) > 1e-10) {
-        renderer.fillText(parseFloat(x.toPrecision(4)).toString(), x, -4 / coord.xScale);
+        renderer.fillText(axisLabelText(x, labelDecimals), x, -4 / coord.xScale);
       }
     }
     renderer.textAlign = 'right';
@@ -178,13 +195,32 @@ export function drawGrid(renderer: IRenderer, wScreen: number, hScreen: number, 
     for (let y = firstY, labelIndex = 0; y <= endY; y += step, labelIndex++) {
       if (labelIndex % yLabelEvery !== 0) continue;
       if (Math.abs(y) > 1e-10) {
-        renderer.fillText(parseFloat(y.toPrecision(4)).toString(), -4 / coord.xScale, y);
+        renderer.fillText(axisLabelText(y, labelDecimals), -4 / coord.xScale, y);
       }
     }
     renderer.textAlign = 'right';
     renderer.textBaseline = 'top';
     renderer.fillText('0', -4 / coord.xScale, -4 / coord.xScale);
   }
+}
+
+/**
+ * 对象标签：锚点/偏移由 labels.ts 统一给出，selected 时用高亮色。
+ * 各 draw* 函数在绘制完几何本体后调用。
+ */
+export function drawLabel(renderer: IRenderer, el: GeoElement, selected: boolean, scale: number, bounds?: DrawBounds): void {
+  if (!labelDrawable(el) || el.visible === false) return;
+  const anchor = getLabelAnchor(el, scale, bounds);
+  if (!anchor) return;
+  // save/restore：font/textAlign/baseline/fillStyle 不外泄（评审 U-M4），
+  // 否则 drawPolygon 等依赖调用前 fillStyle 的不变式只是碰巧成立
+  renderer.save();
+  renderer.font = `bold ${14 / scale}px sans-serif`;
+  renderer.textAlign = anchor.align;
+  renderer.textBaseline = anchor.baseline;
+  renderer.fillStyle = selected ? '#1e40af' : '#1f2937';
+  renderer.fillText(el.label, anchor.x, anchor.y);
+  renderer.restore();
 }
 
 /** 点。 */
@@ -219,16 +255,7 @@ export function drawPoint(renderer: IRenderer, p: GeoPoint, selected: boolean, s
   renderer.lineWidth = selected ? ptWidth * 2 : ptWidth;
   renderer.stroke();
 
-  if (!p.labelVisible || p.labelMode !== 'always') return;
-  const label = p.label || p.id;
-  renderer.font = `bold ${14 / scale}px sans-serif`;
-  renderer.textAlign = 'left';
-  renderer.fillStyle = selected ? '#1e40af' : '#1f2937';
-  renderer.textBaseline = 'bottom';
-  // Label offsets are screen-space: convert them back to world units because
-  // the whole 2D canvas is already transformed by the current view scale.
-  const labelOffset = (baseRadius + (selected ? 8 : 4)) / scale;
-  renderer.fillText(label, x + labelOffset, y + labelOffset);
+  drawLabel(renderer, p, selected, scale);
 }
 
 /** 直线（贯穿整个视野）。 */
@@ -251,6 +278,7 @@ export function drawLine(renderer: IRenderer, l: GeoLine, selected: boolean, bou
     renderer.lineTo(x, bounds.maxY);
   }
   renderer.stroke();
+  drawLabel(renderer, l, selected, scale, bounds);
 }
 
 /** 线段。 */
@@ -264,6 +292,7 @@ export function drawSegment(renderer: IRenderer, s: GeoSegment, selected: boolea
   renderer.moveTo(s.startPoint.getX(), s.startPoint.getY());
   renderer.lineTo(s.endPoint.getX(), s.endPoint.getY());
   renderer.stroke();
+  drawLabel(renderer, s, selected, scale);
 }
 
 /** 多边形（填充+描边）。 */
@@ -284,6 +313,7 @@ export function drawPolygon(renderer: IRenderer, poly: GeoPolygon, selected: boo
   renderer.closePath();
   renderer.fill();
   renderer.stroke();
+  drawLabel(renderer, poly, selected, scale);
 }
 
 /** 圆锥曲线（圆 / 椭圆 / 双曲线 / 抛物线）。 */
@@ -315,13 +345,7 @@ export function drawConic(renderer: IRenderer, c: GeoConic, selected: boolean, s
     renderer.arc(center.x, center.y, r, 0, 2 * Math.PI);
     renderer.stroke();
 
-    if (selected && c.labelVisible && c.labelMode === 'always') {
-      const label = c.label || c.id;
-      renderer.font = `bold ${14 / scale}px sans-serif`;
-      renderer.fillStyle = '#1e40af';
-      renderer.textBaseline = 'bottom';
-      renderer.fillText(label, center.x + r + 10 / scale, center.y);
-    }
+    drawLabel(renderer, c, selected, scale);
     return;
   }
 
@@ -351,14 +375,7 @@ export function drawConic(renderer: IRenderer, c: GeoConic, selected: boolean, s
 
   strokePolyline(pts);
 
-  if (selected && c.labelVisible && c.labelMode === 'always') {
-    const label = c.label || c.id;
-    const center = c.getCenter();
-    renderer.font = `bold ${14 / scale}px sans-serif`;
-    renderer.fillStyle = '#1e40af';
-    renderer.textBaseline = 'bottom';
-    renderer.fillText(label, center.x + 10 / scale, center.y);
-  }
+  drawLabel(renderer, c, selected, scale);
 }
 
 /** 轨迹曲线（断段绘制）。 */
@@ -517,6 +534,7 @@ export function drawVector(renderer: IRenderer, v: GeoVector, selected: boolean,
   renderer.moveTo(ex, ey);
   renderer.lineTo(ex + headLen * Math.cos(a2), ey + headLen * Math.sin(a2));
   renderer.stroke();
+  drawLabel(renderer, v, selected, scale);
 }
 
 /** 折线。 */
@@ -532,6 +550,7 @@ export function drawPolyLine(renderer: IRenderer, pl: GeoPolyLine, selected: boo
     renderer.lineTo(pl.vertices[i].getX(), pl.vertices[i].getY());
   }
   renderer.stroke();
+  drawLabel(renderer, pl, selected, scale);
 }
 
 /** 圆弧（GeoArc 和 GeoConicPart ARC 类型）。 */
@@ -547,6 +566,7 @@ export function drawArc(renderer: IRenderer, arc: GeoArc, selected: boolean, sca
   renderer.beginPath();
   renderer.arc(center.x, center.y, r, arc.getStartAngle(), arc.getEndAngle(), arc.isCounterClockwise());
   renderer.stroke();
+  drawLabel(renderer, arc, selected, scale);
 }
 
 /** 圆锥曲线片段（扇形 / 弓形 / 弧）。 */
@@ -580,6 +600,7 @@ export function drawConicPart(renderer: IRenderer, cp: GeoConicPart, selected: b
     renderer.lineTo(center.x + r * Math.cos(ea), center.y + r * Math.sin(ea));
     renderer.stroke();
   }
+  drawLabel(renderer, cp, selected, scale);
 }
 
 /** 射线。 */
@@ -597,12 +618,13 @@ export function drawRay(renderer: IRenderer, ray: GeoRay, selected: boolean, bou
   renderer.moveTo(sp.getX(), sp.getY());
   renderer.lineTo(sp.getX() + 10000 * dx, sp.getY() + 10000 * dy);
   renderer.stroke();
+  drawLabel(renderer, ray, selected, scale);
 }
 
 // ---- 绘制预览（工具构造中，未提交前的临时效果）----
 
 /** 根据当前模式渲染构造预览（预览线、预览圆、预览多边形等）。 */
-export function renderPreviews(mode: string, selectedElements: readonly GeoElement[], mousePos: WorldPoint, hoveredPoint: GeoPoint | null, coord: CoordinateSystem, renderer: IRenderer, radius?: number, bounds?: DrawBounds): void {
+export function renderPreviews(mode: string, selectedElements: readonly GeoElement[], mousePos: WorldPoint, hoveredPoint: GeoPoint | null, coord: CoordinateSystem, renderer: IRenderer, bounds?: DrawBounds): void {
   if (!bounds) return;
   const { minX, maxX, minY, maxY } = bounds;
   const targetX = hoveredPoint ? hoveredPoint.getX() : mousePos.x;
@@ -629,10 +651,6 @@ export function renderPreviews(mode: string, selectedElements: readonly GeoEleme
       renderer.lineTo(p1.getX() + 10000 * dx, p1.getY() + 10000 * dy);
       renderer.stroke();
     }
-  } else if (mode === 'circle') {
-    renderer.beginPath();
-    renderer.arc(targetX, targetY, radius ?? 50, 0, 2 * Math.PI);
-    renderer.stroke();
   } else if (mode === 'circle_center_point' && selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
     const center = selectedElements[0] as GeoPoint;
     const r = Math.hypot(targetX - center.getX(), targetY - center.getY());
@@ -713,7 +731,12 @@ export function renderPreviews(mode: string, selectedElements: readonly GeoEleme
       const lenBC = Math.hypot(bcx, bcy);
       if (lenBA > 1e-9 && lenBC > 1e-9) {
         const uX = bax / lenBA, uY = bay / lenBA, vX = bcx / lenBC, vY = bcy / lenBC;
-        let nx = -uY, ny = uX;
+        // 预览方向 = normalize(BA + BC)，与 AlgoAngleBisector 的最终构造一致
+        //（此前画的是垂直于第一臂的方向，指示完全错误）
+        let nx = uX + vX, ny = uY + vY;
+        const wLen = Math.hypot(nx, ny);
+        if (wLen < 1e-9) { nx = -uY; ny = uX; } // 180° 平角：与构造同样的垂直回退
+        else { nx /= wLen; ny /= wLen; }
         renderer.beginPath();
         renderer.moveTo(B.getX(), B.getY());
         renderer.lineTo(B.getX() + nx * 10000, B.getY() + ny * 10000);

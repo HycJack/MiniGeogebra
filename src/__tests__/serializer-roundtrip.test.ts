@@ -9,6 +9,7 @@ import { GeoSegment } from '../kernel/geo/GeoSegment';
 import { GeoRay } from '../kernel/geo/GeoRay';
 import { GeoVector } from '../kernel/geo/GeoVector';
 import { GeoConic } from '../kernel/geo/GeoConic';
+import { GeoPolygon } from '../kernel/geo/GeoPolygon';
 import { GeoFunction } from '../kernel/geo/GeoFunction';
 import { AlgoSegmentTwoPoints } from '../kernel/algo/AlgoSegmentTwoPoints';
 import { AlgoRayTwoPoints } from '../kernel/algo/AlgoRayTwoPoints';
@@ -94,7 +95,7 @@ describe('serialize -> deserialize fidelity', () => {
     addInput(kernel, 'Segment(A, B)');
 
     const restored = roundtrip(kernel);
-    const segment = byLabel(restored, GeoSegment, 'l1');
+    const segment = byLabel(restored, GeoSegment, 'f');
 
     expect(segment.startPoint.label).toBe('A');
     expect(segment.endPoint.label).toBe('B');
@@ -113,7 +114,7 @@ describe('serialize -> deserialize fidelity', () => {
     addInput(kernel, 'Line(A, B)');
 
     const restored = roundtrip(kernel);
-    const line = byLabel(restored, GeoLine, 'l1');
+    const line = byLabel(restored, GeoLine, 'f');
 
     expect(line.a).toBeCloseTo(-4, 10);
     expect(line.b).toBeCloseTo(3, 10);
@@ -127,7 +128,7 @@ describe('serialize -> deserialize fidelity', () => {
     addInput(kernel, 'Ray(A, B)');
 
     const restored = roundtrip(kernel);
-    const ray = byLabel(restored, GeoRay, 'l1');
+    const ray = byLabel(restored, GeoRay, 'f');
 
     expect(ray.getStartPoint().label).toBe('A');
     expect(ray.getSecondPoint().label).toBe('B');
@@ -142,7 +143,7 @@ describe('serialize -> deserialize fidelity', () => {
     addInput(kernel, 'Vector(A, B)');
 
     const restored = roundtrip(kernel);
-    const vector = byLabel(restored, GeoVector, 'l1');
+    const vector = byLabel(restored, GeoVector, 'u');
 
     expect(vector.startX).toBeCloseTo(1, 10);
     expect(vector.startY).toBeCloseTo(2, 10);
@@ -157,12 +158,61 @@ describe('serialize -> deserialize fidelity', () => {
     addInput(kernel, 'Circle(A, B)');
 
     const restored = roundtrip(kernel);
-    const circle = byLabel(restored, GeoConic, 'c1');
+    const circle = byLabel(restored, GeoConic, 'c');
     const center = circle.getCenter();
 
     expect(center.x).toBeCloseTo(1, 8);
     expect(center.y).toBeCloseTo(1, 8);
     expect(circle.getRadius()).toBeCloseTo(5, 8);
+  });
+
+  it('round-trips a circle with a numeric radius (P0-1: 半径曾恒回退 50)', () => {
+    const kernel = makeKernel();
+    makePoint(kernel, 1, 1, 'A');
+    addInput(kernel, 'Circle(A, 5)');
+
+    const restored = roundtrip(kernel);
+    const circle = byLabel(restored, GeoConic, 'c');
+    expect(circle.getRadius()).toBeCloseTo(5, 9);
+  });
+
+  it('round-trips Length(P) including its hidden helper origin (P0-2)', () => {
+    const kernel = makeKernel();
+    makePoint(kernel, 3, 4, 'A');
+    addInput(kernel, 'Length(A)');
+
+    // 保存前测量值 = 5
+    const before = ofType(kernel, GeoNumeric)[0];
+    expect(before.getValue()).toBeCloseTo(5, 9);
+
+    const restored = roundtrip(kernel);
+    const after = ofType(restored, GeoNumeric);
+    expect(after.length).toBeGreaterThan(0);
+    // 重载后测量值仍在（此前 inputs 引用未登记的原点 → missing inputs 静默丢对象）
+    expect(after[0].getValue()).toBeCloseTo(5, 9);
+  });
+
+  it('round-trips Circle(A, (x, y)) with the inline tuple point (P0-2 同类)', () => {
+    const kernel = makeKernel();
+    makePoint(kernel, 0, 0, 'A');
+    addInput(kernel, 'Circle(A, (4, 1))');   // 半径 = |A→(4,1)| = √17
+
+    const restored = roundtrip(kernel);
+    const circles = ofType(restored, GeoConic).filter(c => c.isCircle());
+    expect(circles).toHaveLength(1);
+    expect(circles[0].getRadius()).toBeCloseTo(Math.sqrt(17), 9);
+  });
+
+  it('round-trips Polygon with inline coordinate vertices and its Area (评审 C2)', () => {
+    const kernel = makeKernel();
+    addInput(kernel, 'sq = Polygon((0,0),(4,0),(4,3),(0,3))');
+    addInput(kernel, 'Area(sq)');
+
+    const restored = roundtrip(kernel);
+    const polys = ofType(restored, GeoPolygon);
+    expect(polys).toHaveLength(1);
+    const nums = ofType(restored, GeoNumeric);
+    expect(nums.some(n => Math.abs(n.getValue() - 12) < 1e-9)).toBe(true);
   });
 
   it('round-trips derived midpoints, parallels, and perpendiculars', () => {
@@ -279,7 +329,7 @@ describe('serialize -> deserialize fidelity', () => {
     const kernel = buildSliderFunctionPoint();
     const data = JSON.parse(serialize(kernel)) as any;
 
-    expect(data.version).toBe(3);
+    expect(data.version).toBe(4);
     expect(data.yUp).toBe(true);
     const functionAlgo = data.algorithms.find((a: any) => a.type === 'AlgoDependentFunction');
     const pointAlgo = data.algorithms.find((a: any) => a.type === 'AlgoPointOnFunction');

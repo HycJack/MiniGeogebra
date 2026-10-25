@@ -3,6 +3,7 @@ import { ConstructionElement } from './ConstructionElement';
 import { GeoPoint } from '../geo/GeoPoint';
 import { GeoLine } from '../geo/GeoLine';
 import { GeoVec3D } from './GeoVec3D';
+import type { ViewOptions } from './Options';
 
 export interface IKernel {
   notifyUpdate(element: ConstructionElement): void;
@@ -10,6 +11,8 @@ export interface IKernel {
   notifyViewChanged(): void;
   getConstruction(): Construction;
   getAnimationManager(): any;
+  /** 视图级选项（rounding / 角度单位 / 点捕捉）。 */
+  getOptions(): ViewOptions;
   withBatchedUpdates<T>(fn: () => T): T;
   recomputeDependents(changedElement: ConstructionElement): void;
 }
