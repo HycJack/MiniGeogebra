@@ -8,6 +8,7 @@ type Token =
   | { type: 'rightParen' }
   | { type: 'comma' }
   | { type: 'equals' }
+  | { type: 'string'; value: string }
   | { type: 'eof' };
 
 const BUILTIN_FUNCTIONS = new Set([
@@ -218,6 +219,25 @@ const tokenize = (input: string): Token[] => {
       index++;
       continue;
     }
+    if (char === '"' || char === "'") {
+      // 字符串字面量（动态文本 "面积 = " + a 用）；支持 " 转义
+      const quote = char;
+      let value = '';
+      index++;
+      while (index < input.length && input[index] !== quote) {
+        if (input[index] === '\\' && index + 1 < input.length) {
+          value += input[index + 1];
+          index += 2;
+          continue;
+        }
+        value += input[index];
+        index++;
+      }
+      if (index >= input.length) throw new Error(`Unterminated string at end of input`);
+      index++; // closing quote
+      tokens.push({ type: 'string', value });
+      continue;
+    }
     if (/[0-9.]/.test(char)) {
       const rest = input.slice(index);
       const match = /^[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|^\.[0-9]+/.exec(rest);
@@ -345,6 +365,7 @@ class Parser {
   private parseAtom(): ExpressionNode {
     const token = this.advance();
     if (token.type === 'number') return { kind: 'number', value: token.value };
+    if (token.type === 'string') return { kind: 'string', value: token.value };
     if (token.type === 'identifier') {
       if (this.peek().type === 'leftParen') {
         // 非内建函数名也建 call 节点：表达式内调用用户函数（f(2)）由此支撑，

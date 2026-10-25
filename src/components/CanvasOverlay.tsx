@@ -6,7 +6,7 @@ import { GeoBoolean } from '../kernel/geo/GeoBoolean';
 
 export interface UIElement {
   id: string;
-  type: 'text' | 'slider' | 'button' | 'checkbox';
+  type: 'text' | 'slider' | 'button' | 'checkbox' | 'inputbox';
   x: number;
   y: number;
   label?: string;
@@ -19,6 +19,10 @@ export interface UIElement {
   booleanLabel?: string;
   /** slider 绑定的内核 GeoNumeric 标签 */
   numericLabel?: string;
+  /** 按钮点击时执行的脚本命令列表（SetValue/StartAnimation 等最小脚本） */
+  script?: string[];
+  /** inputbox 绑定的内核 GeoNumeric 标签（输入即改值） */
+  inputTarget?: string;
 }
 
 interface CanvasOverlayProps {
@@ -44,7 +48,42 @@ const CanvasOverlay: React.FC<CanvasOverlayProps> = ({
         const screenX = element.x * coord.xScale + coord.xZero;
         const screenY = coord.yZero - element.y * coord.yScale;
 
-        /** 滑块显示值：绑定内核数值时读其当前值（动画/重定义后保持同步），否则用 UI 状态。 */
+        /** 最小脚本执行器（对标官方脚本子集）：SetValue(target, value) / StartAnimation(target)。
+ *  逐条解析执行，未知命令静默跳过（与官方宽松语义一致）。 */
+function runMiniScript(kernel: Kernel, script: readonly string[]): void {
+  for (const line of script) {
+    const m = /^(\w+)\s*\((.*)\)$/.exec(line.trim());
+    if (!m) continue;
+    const [, cmd, argText] = m;
+    const args = argText.split(',').map(a => a.trim()).filter(a => a.length > 0);
+    if (cmd === 'SetValue' && args.length === 2) {
+      const [label, valueText] = args;
+      const target = kernel.getConstruction().getElements().find(
+        el => (el as { label?: string }).label === label);
+      const value = Number(valueText.replace(/^["']|["']$/g, ''));
+      if (target instanceof GeoNumeric && Number.isFinite(value)) {
+        target.setValue(value);
+        kernel.notifyUpdate(target);
+      } else if (target instanceof GeoBoolean) {
+        target.setValue(valueText.replace(/^["']|["']$/g, '') === 'true');
+        kernel.notifyUpdate(target);
+      }
+    } else if (cmd === 'StartAnimation' && args.length === 1) {
+      const target = kernel.getConstruction().getElements().find(
+        el => (el as { label?: string }).label === args[0]);
+      const am = kernel.getAnimationManager();
+      if (target && 'setAnimating' in target) {
+        (target as unknown as { setAnimating(v: boolean): void }).setAnimating(true);
+        am.startAnimation();
+      } else {
+        // 无参/未知目标：全部播放
+        am.startAnimation();
+      }
+    }
+  }
+}
+
+/** 滑块显示值：绑定内核数值时读其当前值（动画/重定义后保持同步），否则用 UI 状态。 */
   const sliderLiveValue = (el: UIElement): number => {
     if (el.numericLabel && kernel) {
       const numeric = kernel.getConstruction().getElements()
@@ -157,13 +196,61 @@ const CanvasOverlay: React.FC<CanvasOverlayProps> = ({
                 transform: 'translate(-50%, -50%)'
               }}
               onMouseDown={handleUIDragStart}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                // 最小脚本编辑（过渡方案）：每行一条 SetValue/StartAnimation
+                const current = (element.script ?? []).join('\n');
+                const input = window.prompt('SetValue(a, 3) / StartAnimation(a) — one per line:', current);
+                if (input !== null) {
+                  const script = input.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+                  setUIElements(prev => prev.map(el => el.id === element.id ? { ...el, script } : el));
+                }
+              }}
               onClick={(e) => {
                 e.stopPropagation();
-                alert(`Button "${element.label}" clicked!`);
+                // 按钮脚本：SetValue/StartAnimation（对标官方按钮脚本，最小子集）
+                if (element.script?.length && kernel) runMiniScript(kernel, element.script);
               }}
             >
               {element.label}
             </button>
+          );
+        } else if (element.type === 'inputbox') {
+          const liveValue = element.numericLabel && kernel
+            ? (() => {
+                const numeric = kernel.getConstruction().getElements()
+                  .find(n => n instanceof GeoNumeric && (n as GeoNumeric).label === element.numericLabel) as GeoNumeric | undefined;
+                return numeric?.getValue();
+              })()
+            : undefined;
+          return (
+            <div
+              key={element.id}
+              className="absolute bg-white border border-gray-300 rounded-lg shadow-sm p-2 cursor-move"
+              style={{ left: `${screenX}px`, top: `${screenY}px`, transform: 'translate(-50%, -50%)' }}
+              onMouseDown={handleUIDragStart}
+            >
+              <input
+                type="text"
+                defaultValue={liveValue ?? element.value ?? ''}
+                className="w-28 px-2 py-1 text-sm border rounded font-mono"
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === 'Enter') {
+                    const v = Number((e.target as HTMLInputElement).value);
+                    if (element.numericLabel && kernel && Number.isFinite(v)) {
+                      const numeric = kernel.getConstruction().getElements()
+                        .find(n => n instanceof GeoNumeric && (n as GeoNumeric).label === element.numericLabel) as GeoNumeric | undefined;
+                      if (numeric) { numeric.setValue(v); kernel.notifyUpdate(numeric); }
+                    }
+                    (e.target as HTMLInputElement).blur();
+                  } else if (e.key === 'Escape') {
+                    (e.target as HTMLInputElement).blur();
+                  }
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+              />
+            </div>
           );
         } else if (element.type === 'checkbox') {
           // 勾选状态以内核 GeoBoolean 为准（React state 仅作兜底显示）

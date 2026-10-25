@@ -97,7 +97,7 @@ describe('TOOL_HINTS', () => {
     'polyline', 'vector_from_point', 'distance', 'angle', 'angle_fixed', 'area', 'slope',
     'tangent', 'locus', 'rotate', 'dilate', 'mirror', 'mirror_line', 'mirror_point',
     'mirror_circle', 'translate_vector', 'shear', 'stretch', 'text', 'slider', 'button',
-    'checkbox', 'ellipse', 'hyperbola', 'parabola', 'conic5', 'compass', 'pan', 'zoom_in',
+    'checkbox', 'inputbox', 'ellipse', 'hyperbola', 'parabola', 'conic5', 'compass', 'pan', 'zoom_in',
     'zoom_out', 'show_hide', 'show_hide_label', 'delete',
   ];
 

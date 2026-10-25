@@ -50,6 +50,7 @@ export type ToolMode =
   | 'slider'
   | 'button'
   | 'checkbox'
+  | 'inputbox'
   | 'distance'
   | 'angle'
   | 'area'

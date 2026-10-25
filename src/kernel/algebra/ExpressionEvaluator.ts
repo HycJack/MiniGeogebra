@@ -33,6 +33,7 @@ export function evaluate(node: ExpressionNode, scope: Scope, userFunctions?: Map
   switch (node.kind) {
     case 'number': return node.value;
     case 'variable': return scope.get(node.name) ?? NaN;
+    case 'string': return NaN; // 数值上下文里字符串无意义（文本求值走 evaluateToText）
     case 'call': {
       const args = node.args.map(arg => evaluate(arg, scope, userFunctions));
       if (userFunctions?.has(node.name)) {
@@ -67,4 +68,55 @@ export function evaluate(node: ExpressionNode, scope: Scope, userFunctions?: Map
       }
     }
   }
+}
+
+/**
+ * 动态文本求值（对标 AlgoDependentText）：字符串 + 数值/字符串混合表达式 → 文本。
+ * '+' 语义：任一侧为字符串 → 连接；数值侧按 rounding 选项格式化（简单 2 位）。
+ */
+export function evaluateToText(node: ExpressionNode, scope: Scope, userFunctions?: Map<string, UserFunctionView>): string {
+  switch (node.kind) {
+    case 'string': return node.value;
+    case 'number': return formatNum(node.value);
+    case 'variable': {
+      const v = scope.get(node.name);
+      return v === undefined ? '?' : formatNum(v);
+    }
+    case 'call': {
+      const args = node.args.map(a => evaluateToText(a, scope, userFunctions));
+      const fn = userFunctions?.get(node.name);
+      if (fn) {
+        const numeric = evaluate(node, scope, userFunctions);
+        return Number.isFinite(numeric) ? formatNum(numeric) : '?';
+      }
+      void args;
+      const numeric = evaluate(node, scope, userFunctions);
+      return Number.isFinite(numeric) ? formatNum(numeric) : '?';
+    }
+    case 'unary': {
+      const numeric = evaluate(node, scope, userFunctions);
+      return Number.isFinite(numeric) ? formatNum(numeric) : '?';
+    }
+    case 'binary': {
+      if (node.op === '+') {
+        const hasString = containsString(node.left, scope) || containsString(node.right, scope);
+        if (hasString) {
+          return evaluateToText(node.left, scope, userFunctions) + evaluateToText(node.right, scope, userFunctions);
+        }
+      }
+      const numeric = evaluate(node, scope, userFunctions);
+      return Number.isFinite(numeric) ? formatNum(numeric) : '?';
+    }
+  }
+}
+
+function containsString(node: ExpressionNode, scope: Scope): boolean {
+  if (node.kind === 'string') return true;
+  if (node.kind === 'binary' && node.op === '+') return containsString(node.left, scope) || containsString(node.right, scope);
+  return false;
+}
+
+function formatNum(v: number): string {
+  if (!Number.isFinite(v)) return '?';
+  return String(parseFloat(v.toFixed(2)));
 }

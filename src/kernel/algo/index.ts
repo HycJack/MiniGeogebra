@@ -23,6 +23,7 @@ export { AlgoPointOnConic } from './AlgoPointOnConic';
 export { AlgoPointOnPolyLine } from './AlgoPointOnPolyLine';
 export { AlgoPointOnRay } from './AlgoPointOnRay';
 export { AlgoPointOnSphere3D } from './AlgoPointOn3D';
+export { AlgoDependentText } from './AlgoDependentText';
 export { AlgoAngleTwoLines } from './AlgoAngle';
 export { AlgoIntersectFunctions } from './AlgoIntersectFunctions';
 export { AlgoIntersect } from './AlgoIntersect';

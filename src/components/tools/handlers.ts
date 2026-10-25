@@ -1111,7 +1111,8 @@ export const handlePointerDown = (
     case 'text':
     case 'slider':
     case 'button':
-    case 'checkbox': {
+    case 'checkbox':
+    case 'inputbox': {
       const id = `ui_${Date.now()}`;
       let newUIElement: any = {
         id,
@@ -1136,6 +1137,22 @@ export const handlePointerDown = (
         construction.addElement(numeric);
         construction.updateDependentAlgorithms(numeric);
         newUIElement.numericLabel = numeric.label;
+        setRenderRev?.(r => r + 1);
+      }
+      // 输入框绑定**最近的自由数值**（对标官方 InputBox：输入即改绑定值）；
+      // 无自由数值时创建一个 a=1 兜底
+      if (mode === 'inputbox') {
+        const construction = kernel.getConstruction();
+        const target = [...construction.getElements()].reverse().find(
+          el => el instanceof GeoNumeric && el.isIndependent()) as GeoNumeric | undefined;
+        let bound = target;
+        if (!bound) {
+          bound = new GeoNumeric(kernel, 1);
+          bound.label = construction.getNextNumericLabel();
+          construction.addElement(bound);
+        }
+        newUIElement.numericLabel = bound.label;
+        newUIElement.label = bound.label;
         setRenderRev?.(r => r + 1);
       }
       // 复选框绑定**内核 GeoBoolean**（此前只是 React state，刷新即丢）：

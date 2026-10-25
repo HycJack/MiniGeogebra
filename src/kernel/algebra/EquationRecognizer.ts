@@ -91,6 +91,7 @@ import { AlgoFunctionExtremumPoint, makeDerivativeEvaluator } from '../algo/Algo
 import { AlgoExtremumList, EXTREMUM_LIST_CAPACITY } from '../algo/AlgoExtremumList';
 import { GeoList } from '../geo/GeoList';
 import { AlgoText } from '../algo/AlgoText';
+import { AlgoDependentText } from '../algo/AlgoDependentText';
 import { AlgoAngle, AlgoAngleOriented, AlgoAngleTwoLines } from '../algo/AlgoAngle';
 import { AlgoPointOnLine } from '../algo/AlgoPointOnLine';
 import { AlgoPointOnSegment } from '../algo/AlgoPointOnSegment';
@@ -295,6 +296,15 @@ const splitArgs = (argsText: string): string[] => {
 };
 
 /** 解析字符串字面量参数（"..." 或 '...'），非字符串返回 null。 */
+/** 表达式树里是否含字符串字面量（动态文本分支判定）。 */
+const containsStringLiteral = (node: ExpressionNode): boolean => {
+  if (node.kind === 'string') return true;
+  if (node.kind === 'binary') return containsStringLiteral(node.left) || containsStringLiteral(node.right);
+  if (node.kind === 'unary') return containsStringLiteral(node.operand);
+  if (node.kind === 'call') return node.args.some(containsStringLiteral);
+  return false;
+};
+
 const parseStringArg = (arg: string): string | null => {
   const m = /^"(.*)"$/s.exec(arg.trim()) || /^'(.*)'$/s.exec(arg.trim());
   return m ? m[1] : null;
@@ -851,6 +861,13 @@ let redefineSeq = 0;
           existingLabels.add(leftText);
           return [algo, algo.getOutput()];
         }
+      }
+      // 动态文本：RHS 含字符串字面量（"面积 = " + a）→ AlgoDependentText
+      if (containsStringLiteral(expression)) {
+        const textDeps = makeNumericDependencies(expression);
+        const algo = new AlgoDependentText(kernel, expression, textDeps, rightText);
+        algo.getOutput().label = leftText;
+        return [algo, algo.getOutput()];
       }
       const dependencies = makeNumericDependencies(expression);
       const fnDeps = makeFunctionDeps(expression);

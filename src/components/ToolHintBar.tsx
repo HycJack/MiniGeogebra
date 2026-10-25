@@ -82,6 +82,8 @@ export const TOOL_HINTS: Record<ToolMode, TranslationKey> = {
   slider: 'toolHintSlider',
   button: 'toolHintButton',
   checkbox: 'toolHintCheckbox',
+
+  inputbox: 'insertInputbox',
   // 圆锥曲线
   ellipse: 'ellipse',
   hyperbola: 'hyperbola',

@@ -421,3 +421,58 @@ describe('Trace 扩容（线/函数/非圆二次曲面）', () => {
     expect(rec.getStamps(() => true).length).toBeGreaterThanOrEqual(2);
   });
 });
+
+describe('动态文本（对标 AlgoDependentText）', () => {
+  it('txt = "面积 = " + a 随 a 实时刷新', () => {
+    const k = new Kernel();
+    addInput(k, 'a = 3');
+    addInput(k, 'txt = "面积 = " + a');
+    const txt = byLabel<any>(k, 'txt');
+    expect(txt.getClassName()).toBe('GeoText');
+    expect(txt.text).toBe('面积 = 3');
+    addInput(k, 'a = 5.25');
+    expect(txt.text).toBe('面积 = 5.25');
+  });
+
+  it('纯字符串常量文本 + roundtrip', () => {
+    const k = new Kernel();
+    addInput(k, 'note = "Hello " + "World"');
+    const note = byLabel<any>(k, 'note');
+    expect(note.text).toBe('Hello World');
+    const restored = roundtripLocal(k);
+    const note2 = restored.getConstruction().getElements().find(e => (e as any).label === 'note') as any;
+    expect(note2).toBeDefined();
+    expect(note2.text).toBe('Hello World');
+  });
+
+  it('动态文本 roundtrip 后依赖联动保持', () => {
+    const k = new Kernel();
+    addInput(k, 'a = 2');
+    addInput(k, 't = "v=" + a');
+    const restored = roundtripLocal(k);
+    const a = restored.getConstruction().getElements().find(e => e instanceof GeoNumeric && (e as GeoNumeric).label === 'a') as GeoNumeric;
+    a.setValue(9);
+    restored.flushNow();
+    const t2 = restored.getConstruction().getElements().find(e => (e as any).label === 't') as any;
+    expect(t2.text).toBe('v=9');
+  });
+});
+
+describe('UI 元素序列化（v4.3 widgets）', () => {
+  it('widgets 随存档往返', async () => {
+    const { serialize, deserialize } = await import('../kernel/persistence/ConstructionSerializer');
+    const k = new Kernel();
+    addInput(k, 'a = 1');
+    const json = serialize(k, undefined, [
+      { id: 'ui_1', type: 'slider', x: 0.2, y: 0.3, label: 'a', numericLabel: 'a' },
+      { id: 'ui_2', type: 'button', x: 0.5, y: 0.5, label: 'Run', script: ['SetValue(a, 3)', 'StartAnimation(a)'] },
+    ]);
+    const k2 = new Kernel();
+    const { uiWidgets } = deserialize(k2, json);
+    expect(uiWidgets?.length).toBe(2);
+    expect(uiWidgets![1].script).toEqual(['SetValue(a, 3)', 'StartAnimation(a)']);
+    // 绑定对象已在内核恢复
+    const a = k2.getConstruction().getElements().find(e => e instanceof GeoNumeric && (e as GeoNumeric).label === 'a') as GeoNumeric;
+    expect(a).toBeDefined();
+  });
+});

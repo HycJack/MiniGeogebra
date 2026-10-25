@@ -62,9 +62,10 @@ import { ToolHintBar } from './ToolHintBar';
 
 import Toolbar from './Toolbar';
 import SidePanel from './SidePanel';
+
 import CanvasOverlay from './CanvasOverlay';
-import Geometry3DView from './Geometry3DView';
 import type { UIElement } from './CanvasOverlay';
+import Geometry3DView from './Geometry3DView';
 
 /** 捕获所有独立点的坐标和数值型参数的值，用于 undo/redo 快照。 */
 const captureState = (kernel: Kernel) => {
@@ -409,7 +410,17 @@ export const GeometryCanvas: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ─── 文件 I/O ─────────────────────────────────────────────────────
-  const handleExport = useCallback(() => { try { downloadJSON('minigeogebra-construction.json', serializeConstruction(kernel, coord)); } catch (err) { console.error('[export failed]', err); alert('导出失败'); } }, [kernel, coord]);
+const handleExport = useCallback(() => {
+    try {
+      // UI 元素一并落盘（v4.3）：widget 位置与内核绑定
+      const widgets = uiElementsRef.current.map(u => ({
+        id: u.id, type: u.type, x: u.x, y: u.y,
+        label: u.label, numericLabel: u.numericLabel, booleanLabel: u.booleanLabel,
+        script: u.script,
+      }));
+      downloadJSON('minigeogebra-construction.json', serializeConstruction(kernel, coord, widgets));
+    } catch (err) { console.error('[export failed]', err); alert('导出失败'); }
+  }, [kernel, coord]);
 
   const downloadFile = useCallback((content: string, filename: string, type?: string) => {
     const blob = new Blob([content], { type: type || 'application/octet-stream' });
@@ -459,7 +470,17 @@ export const GeometryCanvas: React.FC = () => {
         if (isOff && !/^\s*\{/.test(text)) {
           importOFF(kernel, text);
         } else {
-          const { coord: restored } = deserializeConstruction(kernel, text); if (restored) setCoord(restored);
+          const { coord: restored, uiWidgets } = deserializeConstruction(kernel, text);
+          if (restored) setCoord(restored);
+          // v4.3：恢复画布 UI 元素（内核绑定对象已由反序列化重建）
+          if (uiWidgets?.length) {
+            setUIElementsTracked(prev => {
+              const restoredWidgets = uiWidgets
+                .filter(w => w.type !== 'slider' || prev.every(p => p.numericLabel !== w.numericLabel))
+                .map(w => ({ ...w, value: 0, min: 0, max: 100, step: 1 }) as UIElement);
+              return [...prev, ...restoredWidgets];
+            });
+          }
         }
         setSelectedElements([]); setPolygonPoints([]); setRenderRev(r => r + 1);
       } catch (err) { console.error('[import failed]', err); alert('导入失败'); }

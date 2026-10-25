@@ -46,6 +46,7 @@ import { AlgoSlope } from '../algo/AlgoSlope';
 import { AlgoFitPoly } from '../algo/AlgoFitPoly';
 import { AlgoFunctionRootPoint } from '../algo/AlgoFunctionRootPoint';
 import { AlgoText } from '../algo/AlgoText';
+import { AlgoDependentText } from '../algo/AlgoDependentText';
 import { AlgoAngleOriented } from '../algo/AlgoAngle';
 import { GeoText } from '../geo/GeoText';
 import { GeoList } from '../geo/GeoList';
@@ -194,8 +195,21 @@ export interface ConstructionJSON {
     angleUnit: string;
     pointCapturing: string;
   };
+  /** v4.3 起：画布 UI 元素（slider/checkbox/button/inputbox/text 的位置与绑定）。 */
+  uiWidgets?: SerializedUIWidget[];
   independentElements: SerializedElement[];
   algorithms: SerializedAlgorithm[];
+}
+
+export interface SerializedUIWidget {
+  id: string;
+  type: 'text' | 'slider' | 'button' | 'checkbox' | 'inputbox';
+  x: number;
+  y: number;
+  label?: string;
+  numericLabel?: string;
+  booleanLabel?: string;
+  script?: string[];
 }
 
 const GENERATOR = 'MiniGeogebra';
@@ -271,6 +285,9 @@ export function collectAlgoExtras(algo: AlgoElement): Partial<SerializedAlgorith
         // 额外保存每个槽位的当前极值 x（NaN→null 占位，scalars[2..]），重建时恢复窗口播种
         const slotXs = algo.getSlotRoots().map(v => (Number.isFinite(v) ? v : null));
         extras.scalars = [elo, ehi, ...slotXs];
+      } else if (algo instanceof AlgoDependentText) {
+        extras.expressionText = algo.getExpressionText();
+        extras.scalars = [...algo.getOffset()];
       } else if (algo instanceof AlgoText) {
         extras.expressionText = algo.getOutput().text;
         extras.scalars = [...algo.getOffset()];
@@ -606,7 +623,7 @@ export function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], s
 }
 
 /** Serialize to JSON string */
-export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
+export function serialize(kernel: Kernel, coord?: CoordinateSystem, uiWidgets?: readonly SerializedUIWidget[]): string {
   const construction = kernel.getConstruction();
   const elements = construction.getElements();
 
@@ -771,6 +788,7 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem): string {
     independentElements,
     algorithms,
   };
+  if (uiWidgets && uiWidgets.length > 0) data.uiWidgets = [...uiWidgets];
 
   if (coord) {
     data.view = {
@@ -830,7 +848,7 @@ function migrateYDownToUp(data: ConstructionJSON): void {
   }
 }
 
-export function deserialize(kernel: Kernel, json: string): { coord?: CoordinateSystem } {
+export function deserialize(kernel: Kernel, json: string): { coord?: CoordinateSystem; uiWidgets?: SerializedUIWidget[] } {
   // 先完成解析与结构校验，再清空当前画布——避免坏文件把已有构造毁掉。
   const data = JSON.parse(json) as ConstructionJSON;
   if (!data || !Array.isArray(data.independentElements) || !Array.isArray(data.algorithms)) {
@@ -1005,7 +1023,7 @@ export function deserialize(kernel: Kernel, json: string): { coord?: CoordinateS
     coord = new CoordinateSystem(v.width, v.height, v.xZero, v.yZero, v.xScale, v.yScale);
   }
 
-  return { coord };
+  return { coord, uiWidgets: (data as ConstructionJSON).uiWidgets };
 }
 
 function restoreStyle(instance: GeoElement, style: Record<string, unknown> | undefined): void {
@@ -1047,8 +1065,25 @@ export function rebuildAlgorithm(
     construction.addElement(out);
     return;
   }
+  // 动态文本：label = "..." + expr 重建（AlgoDependentText）
+  if (a.type === 'AlgoDependentText' && a.expressionText !== undefined) {
+    const label = a.outputLabels[0] || '';
+    const elements = parseAlgebraInput(kernel, `${label} = ${a.expressionText}`);
+    for (const el of elements) {
+      construction.addElement(el);
+      if (el instanceof AlgoElement) {
+        for (const out of el.getGeoElements()) {
+          if (!construction.getElements().includes(out)) construction.addElement(out);
+          (a.outputIndices ?? []).forEach((ci, oi) => {
+            if (oi === 0) index.set(ci, out);
+          });
+        }
+      }
+    }
+    return;
+  }
   // Expression-based reconstruction for function/numeric dependency algorithms
-  if (a.expressionText && (a.type === 'AlgoDependentFunction' || a.type === 'AlgoDependentNumeric' || a.type === 'AlgoDependentInequality' || a.type === 'AlgoDependentQuadric3D')) {
+  if (a.expressionText && (a.type === 'AlgoDependentFunction' || a.type === 'AlgoDependentNumeric' || a.type === 'AlgoDependentInequality' || a.type === 'AlgoDependentQuadric3D' || a.type === 'AlgoDependentText')) {
     const label = a.outputLabels[0] || '';
     let algInput: string;
     if (a.type === 'AlgoDependentInequality') {

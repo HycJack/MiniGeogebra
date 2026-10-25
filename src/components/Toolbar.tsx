@@ -238,6 +238,7 @@ const TOOL_GROUPS: ToolGroup[] = [
       { mode: 'slider', label: 'insertSlider', icon: svgIcon(modeSlider) },
       { mode: 'button', label: 'insertButton', icon: svgIcon(modeButton) },
       { mode: 'checkbox', label: 'insertCheckbox', icon: svgIcon(modeCheckbox) },
+      { mode: 'inputbox', label: 'insertInputbox', icon: svgIcon(modeText) },
     ] }],
   },
   {

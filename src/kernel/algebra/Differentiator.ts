@@ -48,6 +48,8 @@ const simplify = (node: ExpressionNode): ExpressionNode => {
     return negate(operand);
   }
 
+  if (node.kind === 'string') return node;
+
   const left = simplify(node.left);
   const right = simplify(node.right);
 

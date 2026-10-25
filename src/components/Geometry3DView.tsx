@@ -46,6 +46,7 @@ import { AlgoJoinPoints3D, AlgoMidpoint3D, AlgoPlaneThreePoints3D } from '../ker
 import { AlgoSphere3D, AlgoCylinder3D, AlgoCone3D, AlgoPrism3D, AlgoPyramid3D } from '../kernel/algo/AlgoPolyhedron3D';
 import { AlgoElement } from '../kernel/algo/AlgoElement';
 import { useLanguage } from '../i18n/LanguageContext';
+import CanvasValueInput from './CanvasValueInput';
 import NavigationCube from './NavigationCube';
 import Geometry3DToolbar from './Geometry3DToolbar';
 
@@ -978,6 +979,8 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
   const rotationFrameRef = useRef<number>(0);
   // 提示条需要实时反映步骤数，ref 变化不触发渲染，用 state 计数
   const [pickCount3d, setPickCount3d] = useState(0);
+  // 数值输入请求（cylinder/cone/prism 半径/角度/高度，去 prompt 化，对标 2D CanvasValueInput）
+  const [valueRequest3d, setValueRequest3d] = useState<{ title: string; defaultValue: string; onSubmit: (raw: string | null) => void } | null>(null);
 
   /** 切换工具时清空已收集的构造点。 */
   const selectTool3D = (tool: Tool3D): void => {
@@ -1283,6 +1286,21 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
   const build3DObject = (tool: Tool3D, pts: GeoPoint3D[]): void => {
     const c = kernel.getConstruction();
     let algo: AlgoElement | null = null;
+    // 数值输入类工具（cylinder/cone/prism）异步建：buildWith 在回调里就位后统一 finish
+    let buildWith: (() => AlgoElement | null) | null = null;
+    const finish3d = () => {
+      algo = buildWith?.() ?? algo;
+      if (!algo) return;
+      c.addElement(algo);
+      algo.getGeoElements().forEach(out => {
+        c.addElement(out);
+        kernel.notifyUpdate(out);
+      });
+      // undo 入栈：本次新建的点 + 算法 + 输出（吸附复用的已有点不进命令）
+      addCommand?.({ type: 'add', elements: [...picksCreatedRef.current, algo, ...algo.getGeoElements()] });
+      picksCreatedRef.current.clear();
+      draw();
+    };
     const finish = () => {
       if (!algo) return;
       c.addElement(algo);
@@ -1315,24 +1333,40 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
         break;
       case 'cylinder':
       case 'cone': {
-        const raw = window.prompt(t(TOOL3D_CONFIG[tool].finalPrompt!), '1');
-        if (raw === null) return;
-        const value = Number(raw);
-        if (!Number.isFinite(value)) return;
-        const axis = new GeoLine3D(kernel, pts[0].getCoords3(), pts[1].getCoords3().sub(pts[0].getCoords3()).normalize());
-        c.addElement(axis);
-        algo = tool === 'cylinder'
-          ? new AlgoCylinder3D(kernel, axis, value)
-          : new AlgoCone3D(kernel, axis, (value * Math.PI) / 180);
-        break;
+        setValueRequest3d({
+          title: t(TOOL3D_CONFIG[tool].finalPrompt!),
+          defaultValue: '1',
+          onSubmit: (raw) => {
+            setValueRequest3d(null);
+            if (raw === null) return;
+            const value = Number(raw);
+            if (!Number.isFinite(value)) return;
+            buildWith = () => {
+              const axis = new GeoLine3D(kernel, pts[0].getCoords3(), pts[1].getCoords3().sub(pts[0].getCoords3()).normalize());
+              c.addElement(axis);
+              return tool === 'cylinder'
+                ? new AlgoCylinder3D(kernel, axis, value)
+                : new AlgoCone3D(kernel, axis, (value * Math.PI) / 180);
+            };
+            finish3d();
+          },
+        });
+        return;
       }
       case 'prism': {
-        const raw = window.prompt(t(TOOL3D_CONFIG[tool].finalPrompt!), '3');
-        if (raw === null) return;
-        const height = Number(raw);
-        if (!Number.isFinite(height)) return;
-        algo = new AlgoPrism3D(kernel, pts.slice(0, 3), height);
-        break;
+        setValueRequest3d({
+          title: t(TOOL3D_CONFIG[tool].finalPrompt!),
+          defaultValue: '3',
+          onSubmit: (raw) => {
+            setValueRequest3d(null);
+            if (raw === null) return;
+            const height = Number(raw);
+            if (!Number.isFinite(height)) return;
+            buildWith = () => new AlgoPrism3D(kernel, pts.slice(0, 3), height);
+            finish3d();
+          },
+        });
+        return;
       }
       case 'pyramid':
         algo = new AlgoPyramid3D(kernel, pts.slice(0, 3), pts[3]);
@@ -1624,6 +1658,16 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
             ? t('tool3dStepHint').replace('{current}', '1').replace('{total}', String(TOOL3D_CONFIG[tool3d].points)) + ' · ' + t('tool3dEsc')
             : t('view3dHint')}
       </div>
+
+      {/* 数值输入浮层（cylinder/cone/prism，去 prompt 化） */}
+      {valueRequest3d && (
+        <CanvasValueInput
+          request={{ kind: 'number', title: valueRequest3d.title, defaultValue: valueRequest3d.defaultValue, screenX: 40, screenY: 80, onSubmit: valueRequest3d.onSubmit }}
+          onClose={() => { /* 取消路径由 onSubmit(null) 表达 */ }}
+          ignorePointerDownRef={containerRef}
+          t={t}
+        />
+      )}
     </div>
   );
 };

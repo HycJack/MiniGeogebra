@@ -1,5 +1,6 @@
 export type ExpressionNode =
   | { kind: 'number'; value: number }
+  | { kind: 'string'; value: string }
   | { kind: 'variable'; name: string }
   | { kind: 'call'; name: string; args: ExpressionNode[] }
   | { kind: 'binary'; op: '+' | '-' | '*' | '/' | '^' | '>' | '<' | '>=' | '<=' | '==' | '!='; left: ExpressionNode; right: ExpressionNode }
