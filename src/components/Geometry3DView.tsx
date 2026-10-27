@@ -482,12 +482,14 @@ function buildScene(
   for (const el of elements) {
     if (!(el instanceof GeoQuadric3D) || !el.isDefined()) continue;
     const st = styleOf(el, selSet.has(el));
+    const sel = selSet.has(el);
     if (el.getKind() === 'ellipsoid') {
       const c = el.getBase();
       const [ra, rb, rc] = el.getRadii();
       // 实体：经纬三角网格半透明填充（轮廓线保留）
       const fill = el.fillColor ?? el.defaultFillColor;
       if (fill) pushQuadMeshFills(fills, sphereGrid({ x: c.getX(), y: c.getY(), z: c.getZ() }, ra, rb, rc, 14, 28), fill);
+      // 线框仅在选中时画（选中反馈高亮）；默认纯实体
       const ellipse = (axes: [number, number], plane: 'xy' | 'xz' | 'yz') => {
         const pts: V3[] = [];
         const steps = 48;
@@ -503,9 +505,11 @@ function buildScene(
         }
         pushPolyline(lines, pts, st, pxPerUnit);
       };
-      ellipse([ra, rb], 'xy');
-      ellipse([ra, rc], 'xz');
-      ellipse([rb, rc], 'yz');
+      if (sel) {
+        ellipse([ra, rb], 'xy');
+        ellipse([ra, rc], 'xz');
+        ellipse([rb, rc], 'yz');
+      }
     } else if (el.getKind() === 'sphere') {
       const c = el.getBase();
       const r = el.getParam();
@@ -524,7 +528,9 @@ function buildScene(
         }
         pushPolyline(lines, pts, st, pxPerUnit);
       };
-      circle('x'); circle('y'); circle('z');
+      if (sel) {
+        circle('x'); circle('y'); circle('z');
+      }
     } else if (el.getKind() === 'general') {
       // 一般二次曲面：未回填解析参时画三个坐标面 traces（径向符号变号近似）
       const m = el.getMatrix();
@@ -642,8 +648,11 @@ function buildScene(
         }
         return pts;
       };
-      pushPolyline(lines, ringPts(t0, radiusAt(t0)), st, pxPerUnit);
-      pushPolyline(lines, ringPts(t1, radiusAt(t1)), st, pxPerUnit);
+      // 线框（端面圆 + 母线）仅在选中时画（选中反馈）；默认纯实体
+      if (sel) {
+        pushPolyline(lines, ringPts(t0, radiusAt(t0)), st, pxPerUnit);
+        pushPolyline(lines, ringPts(t1, radiusAt(t1)), st, pxPerUnit);
+      }
       // 实体：侧面经纬网格半透明填充（锥顶行半径 0 的退化三角形无害）
       const sideFill = el.fillColor ?? el.defaultFillColor;
       if (sideFill) {

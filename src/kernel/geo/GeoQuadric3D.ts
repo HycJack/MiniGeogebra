@@ -67,9 +67,9 @@ export class GeoQuadric3D extends GeoElement {
 
   getClassName(): string { return 'GeoQuadric3D'; }
 
-  get defaultStrokeColor(): string { return '#ec4899'; }
+  get defaultStrokeColor(): string { return 'rgba(37, 99, 235, 0.55)'; }
   get defaultLineWidth(): number { return 1; }
-  get defaultFillColor(): string { return 'rgba(236, 72, 153, 0.14)'; }
+  get defaultFillColor(): string { return 'rgba(59, 130, 246, 0.20)'; }
 
   setSphere(center: Coords4, radius: number): void {
     this.kind = 'sphere';
