@@ -158,3 +158,40 @@ export class AlgoAngleTwoLines extends AlgoElement {
 
   getOutput(): GeoNumeric { return this.outputValue; }
 }
+
+/**
+ * 两点角（对标 CmdAngle.process2 的 Angle(P, Q)）：位置向量 (P−O) 与 (Q−O)
+ * 的夹角，[0, π]。任一点与原点重合时输出 undefined（零向量无方向）。
+ */
+export class AlgoAngleTwoPoints extends AlgoElement {
+  private outputValue: GeoNumeric;
+
+  constructor(kernel: IKernel, private p1: GeoPoint, private p2: GeoPoint) {
+    super(kernel);
+    this.outputValue = new GeoNumeric(kernel, 0);
+    this.outputValue.isAngle = true;
+    this.setInputOutput();
+  }
+
+  setInputOutput(): void {
+    this.input = [this.p1, this.p2];
+    this.setOutput([this.outputValue]);
+  }
+
+  compute(): void {
+    const n1 = Math.hypot(this.p1.getX(), this.p1.getY());
+    const n2 = Math.hypot(this.p2.getX(), this.p2.getY());
+    if (n1 < 1e-12 || n2 < 1e-12) {
+      this.outputValue.setUndefined();
+      return;
+    }
+    const dot = this.p1.getX() * this.p2.getX() + this.p1.getY() * this.p2.getY();
+    let cos = dot / (n1 * n2);
+    if (cos > 1) cos = 1;
+    if (cos < -1) cos = -1;
+    this.outputValue.setValue(Math.acos(cos));
+    this.outputValue.setDefined();
+  }
+
+  getOutput(): GeoNumeric { return this.outputValue; }
+}

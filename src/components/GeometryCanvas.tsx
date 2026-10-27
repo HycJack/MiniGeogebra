@@ -33,6 +33,8 @@ import { GeoBoolean } from '../kernel/geo/GeoBoolean';
 import { AlgoPointOnConic } from '../kernel/algo/AlgoPointOnConic';
 import { AlgoPointOnLine } from '../kernel/algo/AlgoPointOnLine';
 import { AlgoPointOnSegment } from '../kernel/algo/AlgoPointOnSegment';
+import { AlgoDependentFunction } from '../kernel/algo/AlgoDependentFunction';
+import { captureMoveState, restoreMoveState, moveStateChanged, type MoveSnapshot } from '../kernel/core/MoveSnapshot';
 import { GeoNumeric } from '../kernel/geo/GeoNumeric';
 import { CoordinateSystem } from '../kernel/core/CoordinateSystem';
 import { IRenderer, TextItem } from '../kernel/view/IRenderer';
@@ -67,30 +69,10 @@ import CanvasOverlay from './CanvasOverlay';
 import type { UIElement } from './CanvasOverlay';
 import Geometry3DView from './Geometry3DView';
 
-/** 捕获所有独立点的坐标和数值型参数的值，用于 undo/redo 快照。 */
-const captureState = (kernel: Kernel) => {
-  const coords = new Map<string, { x: number; y: number; z: number }>();
-  const numerics = new Map<string, number>();
-  kernel.getConstruction().getElements().forEach(el => {
-    if ((el instanceof GeoPoint || el instanceof GeoPoint3D) && el.isIndependent()) {
-      // 含 3D 自由点：3D 视图的拖拽复用同一 move 快照体系
-      coords.set(el.id, { x: el.getX(), y: el.getY(), z: el.getZ() });
-    } else if (el instanceof GeoNumeric) {
-      numerics.set(el.id, el.getValue());
-    }
-  });
-  return { coords, numerics };
-};
-
-interface StateSnapshot {
-  coords: Map<string, { x: number; y: number; z: number }>;
-  numerics: Map<string, number>;
-}
-
 type Command =
   | { type: 'add'; elements: ConstructionElement[] }
   | { type: 'delete'; elements: ConstructionElement[] }
-  | { type: 'move'; oldState: StateSnapshot; newState: StateSnapshot }
+  | { type: 'move'; oldState: MoveSnapshot; newState: MoveSnapshot }
   | { type: 'style'; element: GeoElement; before: Record<string, unknown>; after: Record<string, unknown> }
   | { type: 'numeric'; element: GeoNumeric; oldValue: number; newValue: number }
   | { type: 'boolean'; element: GeoBoolean; oldValue: boolean; newValue: boolean }
@@ -181,6 +163,9 @@ export const GeometryCanvas: React.FC = () => {
   const [draggingUIElement, setDraggingUIElement] = useState<string | null>(null);
   const boxModifierDown = useRef(false);
   const toolState = useRef<any>({});
+  // 抓取偏移（对标官方 initOffsetFrom）：拖自由点时记录点与光标的差，
+  // move 时按差移动——否则点边缘按下（热区 10px）第一帧就跳到光标处
+  const dragGrabOffsetRef = useRef<{ x: number; y: number } | null>(null);
   const [snapEnabled, setSnapEnabled] = useState(true);
   // 吸附细节由 Options.pointCapturing 三态接管（automatic/snap_grid/off）；
   // 对已有点的吸附始终开启（ snapping 到网格由 capturing 决定）。
@@ -188,7 +173,7 @@ export const GeometryCanvas: React.FC = () => {
   const [panelTab, setPanelTab] = useState<'algebra' | 'properties'>('algebra');
   const undoStack = useRef<Command[]>([]);
   const redoStack = useRef<Command[]>([]);
-  const [dragStartState, setDragStartState] = useState<StateSnapshot | null>(null);
+  const [dragStartState, setDragStartState] = useState<MoveSnapshot | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
   // ── 函数 hover 状态：屏幕位置 + 曲线上的吸附点（用于 tooltip + marker）──
@@ -438,7 +423,7 @@ const handleExport = useCallback(() => {
   const _renderToSvg = useCallback((renderer: IRenderer, bounds: { minX: number; maxX: number; minY: number; maxY: number }) => {
     const vw = (bounds.maxX - bounds.minX) * coord.xScale, vh = (bounds.maxY - bounds.minY) * coord.xScale;
     drawGrid(renderer, vw, vh, coord, showGrid, showAxes, kernel.getOptions().rounding);
-    const elements = kernel.getConstruction().getElements().filter(el => el.isEffectivelyVisible());
+    const elements = kernel.getConstruction().getElements().filter((el): el is GeoElement => el instanceof GeoElement && el.isEffectivelyVisible());
     elements.forEach(el => { if (el instanceof GeoPolygon) drawPolygon(renderer, el, false, coord.xScale); });
     elements.forEach(el => {
       if (el instanceof GeoConicPart) drawConicPart(renderer, el, false, coord.xScale);
@@ -574,16 +559,11 @@ const handleExport = useCallback(() => {
   }, [kernel]);
 
   // ─── 恢复状态（undo/redo） ────────────────────────────────────────
-  const restoreState = useCallback((state: StateSnapshot) => {
+  const restoreState = useCallback((state: MoveSnapshot) => {
     // 批处理 + 全场重算后丢弃增量队列：setCoords/setValue 每次都会入队，
     // 不清理的话批末/微任务会把刚全场重算过的依赖链再增量跑一遍
     kernel.withBatchedUpdates(() => {
-      state.coords.forEach((c, id) => {
-      const el = kernel.getConstruction().getElementById(id);
-      if (el instanceof GeoPoint) el.setCoords(c.x, c.y, c.z);
-      else if (el instanceof GeoPoint3D) el.setCoords(c.x, c.y, c.z);
-    });
-      state.numerics.forEach((val, id) => { const el = kernel.getConstruction().getElementById(id); if (el instanceof GeoNumeric) el.setValue(val); });
+      restoreMoveState(kernel, state);
       kernel.getConstruction().updateAllAlgorithms();
       kernel.clearPendingUpdates();
     });
@@ -714,7 +694,7 @@ const handleExport = useCallback(() => {
     // 幽灵点：点类工具 hover 命中路径对象时传入（与 handlers 的命中过滤一致）
     const ghostPath = (mode === 'point' || mode === 'point_on_object')
       ? hitScreenObject(
-          kernel.getConstruction().getElements().filter(el => el.isEffectivelyVisible() && (navStep === null || el.constIndex <= navStep)),
+          kernel.getConstruction().getElements().filter((el): el is GeoElement => el instanceof GeoElement && el.isEffectivelyVisible() && (navStep === null || el.constIndex <= navStep)),
           mousePos.x, mousePos.y, coord.xScale,
         )
       : null;
@@ -820,7 +800,7 @@ const handleExport = useCallback(() => {
     if (mode === 'zoom_out') { zoom(1 / 1.25); return; }
     // 标签拖拽优先于对象命中（GeoGebra：labels > objects）；隐藏对象与导航未到的对象不可命中
     if ((mode === 'move' || mode === 'select') && e.button === 0) {
-      const labelHit = hitLabel(kernel.getConstruction().getElements().filter(el => el.isEffectivelyVisible() && (navStep === null || el.constIndex <= navStep)), x, y, coord.xScale, coord.visibleWorldBounds());
+      const labelHit = hitLabel(kernel.getConstruction().getElements().filter((el): el is GeoElement => el instanceof GeoElement && el.isEffectivelyVisible() && (navStep === null || el.constIndex <= navStep)), x, y, coord.xScale, coord.visibleWorldBounds());
       if (labelHit) {
         setDraggingLabel(labelHit);
         setLabelDragStart({ sx: screenX, sy: screenY, ox: labelHit.labelOffsetX, oy: labelHit.labelOffsetY });
@@ -832,7 +812,7 @@ const handleExport = useCallback(() => {
     // GeoGebra Move 语义：空白拖拽 = 平移视图（Alt = 框选；Ctrl+空白交给 handlers 清选区）
     if (mode === 'move' && e.button === 0 && !e.altKey) {
       // 隐藏对象/导航未到的对象不拦平移：点在"看不见的点"上应表现为空白拖拽
-      const els = kernel.getConstruction().getElements().filter(el => el.isEffectivelyVisible() && (navStep === null || el.constIndex <= navStep));
+      const els = kernel.getConstruction().getElements().filter((el): el is GeoElement => el instanceof GeoElement && el.isEffectivelyVisible() && (navStep === null || el.constIndex <= navStep));
       const ptHit = hitScreenPoint(els, x, y, SNAP_POINT_RADIUS / coord.xScale);
       const objHit = ptHit ? undefined : hitScreenObject(els, x, y, coord.xScale);
       if (!ptHit && !objHit && !e.ctrlKey && !e.metaKey) {
@@ -845,7 +825,7 @@ const handleExport = useCallback(() => {
     }
     const elementsBefore = kernel.getConstruction().getElements().length;
     const uiIdsBefore = new Set(uiElementsRef.current.map(u => u.id));
-    const currentDragStartState = captureState(kernel); setDragStartState(currentDragStartState);
+    const currentDragStartState = captureMoveState(kernel); setDragStartState(currentDragStartState);
     setLastMousePos({ x, y });
     const ts = toolState.current;
     boxModifierDown.current = e.ctrlKey || e.metaKey; ts.boxModifierDown = e.ctrlKey || e.metaKey; ts.shiftKey = e.shiftKey; ts.altKey = e.altKey;
@@ -853,7 +833,7 @@ const handleExport = useCallback(() => {
       kernel, construction: kernel.getConstruction(), coord,
       elements: kernel.getConstruction().getElements().filter(el => navStep === null || el.constIndex <= navStep),
       selectedElements, mode, mousePos: { x, y }, hoveredPoint: null, polygonPoints, polygonCreatedPoints: polygonCreatedPointsRef.current, uiElements,
-      setMode, setSelectedElements, setRenderRev, setPolygonPoints, addCommand, captureState,
+      setMode, setSelectedElements, setRenderRev, setPolygonPoints, addCommand, captureState: captureMoveState,
       recordNumericChange: notifyNumericChange, recordRename: handleLabelSubmit, recordStyleChange, deleteElements: deleteWithDependents, t,
       setBoxSelecting: setIsBoxSelecting, setBoxStartScreen, setBoxEndScreen, requestValue,
       // handlers 端按 ref 语义读取 ctx.toolState.current（测试同样以 { current: ts } 传参）；
@@ -881,7 +861,7 @@ const handleExport = useCallback(() => {
       setRenderRev(r => r + 1);
       return;
     }
-    const elements = kernel.getConstruction().getElements().filter(el => el.isEffectivelyVisible() && (navStep === null || el.constIndex <= navStep));
+    const elements = kernel.getConstruction().getElements().filter((el): el is GeoElement => el instanceof GeoElement && el.isEffectivelyVisible() && (navStep === null || el.constIndex <= navStep));
     const hovered = elements.slice().reverse().find(el => el instanceof GeoPoint && Math.hypot(el.getX() - x, el.getY() - y) < 10 / coord.xScale) as GeoPoint | undefined;
     setHoveredPoint(hovered || null);
     // 函数曲线 hover 数值提示：用 rAF 节流避免过频采样
@@ -926,7 +906,13 @@ const handleExport = useCallback(() => {
       }
     }
     if (draggedElement && !(draggedElement as GeoElement).isFixed) {
-      if (draggedElement instanceof GeoPoint && draggedElement.isIndependent()) draggedElement.setCoords(x, y);
+      if (draggedElement instanceof GeoPoint && draggedElement.isIndependent()) {
+        // 首帧记录抓取偏移（此刻点尚未移动，差值 = 按下时的偏移）
+        if (!dragGrabOffsetRef.current) {
+          dragGrabOffsetRef.current = { x: draggedElement.getX() - x, y: draggedElement.getY() - y };
+        }
+        draggedElement.setCoords(x + dragGrabOffsetRef.current.x, y + dragGrabOffsetRef.current.y);
+      }
       else if (draggedElement instanceof GeoPoint && draggedElement.parentAlgo) {
         const algo = draggedElement.parentAlgo;
         if ((algo as any).updateParameter) {
@@ -941,22 +927,25 @@ const handleExport = useCallback(() => {
       else if (
         draggedElement instanceof GeoPolygon || draggedElement instanceof GeoConic ||
         draggedElement instanceof GeoSegment || draggedElement instanceof GeoLine ||
-        draggedElement instanceof GeoRay || draggedElement instanceof GeoVector
+        draggedElement instanceof GeoRay || draggedElement instanceof GeoVector ||
+        draggedElement instanceof GeoFunction
       ) {
         const dx = x - lastMousePos.x, dy = y - lastMousePos.y;
         if (draggedElement instanceof GeoPolygon || draggedElement instanceof GeoConic) {
           (draggedElement as GeoPolygon | GeoConic).translate(new GeoVec3D(dx, dy, 0));
+        } else if (draggedElement instanceof GeoFunction && draggedElement.parentAlgo?.getClassName() === 'AlgoDependentFunction') {
+          // 官方 moveFunction：平移函数图像 = 表达式替换 x→(x−dx) 后 +dy
+          //（替换复合满足结合律，逐帧增量与一次到位精确一致）。
+          // 必须置于 parentAlgo 通用分支之前——函数的 parentAlgo 输入无自由点，
+          // 通用分支对它是 no-op（此前此分支因外层守卫漏掉 GeoFunction 而不可达）。
+          (draggedElement.parentAlgo as unknown as { translateBy(dx: number, dy: number): void }).translateBy(dx, dy);
+          draggedElement.parentAlgo.update();
+          kernel.recomputeDependents(draggedElement);
         } else if (draggedElement.parentAlgo) {
           // 依赖对象 = 官方 hasMoveableInputPoints 语义：搬其全部自由输入点
           draggedElement.parentAlgo.getInput().forEach(el => { if (el instanceof GeoPoint && el.isIndependent()) el.setCoords(el.getX() + dx, el.getY() + dy); }); draggedElement.parentAlgo.update();
         } else if (draggedElement instanceof GeoVector) {
           (draggedElement as GeoVector).translate(new GeoVec3D(dx, dy, 0));
-        } else if (draggedElement instanceof GeoFunction && draggedElement.parentAlgo?.getClassName() === 'AlgoDependentFunction') {
-          // 官方 moveFunction：平移函数图像 = 表达式替换 x→(x−dx) 后 +dy
-          //（替换复合满足结合律，逐帧增量与一次到位精确一致）
-          (draggedElement.parentAlgo as unknown as { translateBy(dx: number, dy: number): void }).translateBy(dx, dy);
-          draggedElement.parentAlgo.update();
-          kernel.recomputeDependents(draggedElement);
         } else {
           // 独立直线（方程输入创建，无 parentAlgo）：平移方程
           (draggedElement as GeoLine).translate(new GeoVec3D(dx, dy, 0));
@@ -1022,12 +1011,12 @@ const handleExport = useCallback(() => {
       cancelBoxSelect(); return;
     }
     if (draggedElement && dragStartState) {
-      const newState = captureState(kernel); let moved = false;
-      newState.coords.forEach((newC, id) => { const oldC = dragStartState.coords.get(id); if (oldC && (oldC.x !== newC.x || oldC.y !== newC.y || oldC.z !== newC.z)) moved = true; });
-      newState.numerics.forEach((newV, id) => { const oldV = dragStartState.numerics.get(id); if (oldV !== undefined && oldV !== newV) moved = true; });
-      if (moved) addCommand({ type: 'move', oldState: dragStartState, newState });
+      const newState = captureMoveState(kernel);
+      if (moveStateChanged(dragStartState, newState)) {
+        addCommand({ type: 'move', oldState: dragStartState, newState });
+      }
     }
-    setDraggedElement(null); setDragStartState(null);
+    setDraggedElement(null); setDragStartState(null); dragGrabOffsetRef.current = null;
   };
 
   const handleWheel = useCallback((e: WheelEvent) => {
@@ -1287,7 +1276,7 @@ const handleExport = useCallback(() => {
           <canvas ref={traceCanvasRef} className="absolute inset-0 pointer-events-none z-[3]" style={{ touchAction: 'none', display: view === '3d' ? 'none' : undefined }} />
 
           {view === '3d' && (
-            <Geometry3DView kernel={kernel} renderRev={renderRev} selectedElements={selectedElements} setSelectedElements={setSelectedElements} addCommand={addCommand} captureState={captureState} showGrid={showGrid} showAxes={showAxes} setShowGrid={setShowGrid} setShowAxes={setShowAxes} />
+            <Geometry3DView kernel={kernel} renderRev={renderRev} selectedElements={selectedElements} setSelectedElements={setSelectedElements} addCommand={addCommand} captureState={captureMoveState} showGrid={showGrid} showAxes={showAxes} setShowGrid={setShowGrid} setShowAxes={setShowAxes} />
           )}
 
           {view === '2d' && (

@@ -68,9 +68,13 @@ function runMiniScript(kernel: Kernel, script: readonly string[]): void {
         target.setValue(valueText.replace(/^["']|["']$/g, '') === 'true');
         kernel.notifyUpdate(target);
       }
-    } else if (cmd === 'StartAnimation' && args.length === 1) {
-      const target = kernel.getConstruction().getElements().find(
-        el => (el as { label?: string }).label === args[0]);
+    } else if (cmd === 'StartAnimation' && args.length <= 1) {
+      // StartAnimation(slider) 播放指定滑块；StartAnimation() 无参 = 全体播放
+      //（此前 args.length === 1 判断把无参形式变成死分支）
+      const target = args.length === 1
+        ? kernel.getConstruction().getElements().find(
+            el => (el as { label?: string }).label === args[0])
+        : undefined;
       const am = kernel.getAnimationManager();
       if (target && 'setAnimating' in target) {
         (target as unknown as { setAnimating(v: boolean): void }).setAnimating(true);

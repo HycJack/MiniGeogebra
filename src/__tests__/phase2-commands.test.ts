@@ -225,10 +225,21 @@ describe('B11: TaylorSeries', () => {
     const kernel = makeKernel();
     addInput(kernel, 'a = 3');
     addInput(kernel, 'g(x) = a*x^2');
-    const [taylor] = outputsOf(kernel, 'TaylorSeries(g, 2, 1)', GeoFunction);
+    // 官方参数序 TaylorSeries(f, a, n)：a=展开点、n=阶数（此前 Mini 序相反）
+    const [taylor] = outputsOf(kernel, 'TaylorSeries(g, 1, 2)', GeoFunction);
     // g(x)=3x² 在 x=1 的 2 阶泰勒：3 + 6(x−1) + 3(x−1)² = 3x²（精确）
     expect(taylor.evaluateAt(2)).toBeCloseTo(12, 9);
     expect(taylor.evaluateAt(-1)).toBeCloseTo(3, 9);
+  });
+
+  it('3-arg form follows the official argument order (f, a, n)', () => {
+    const kernel = makeKernel();
+    addInput(kernel, 'f(x) = sin(x)');
+    // sin 在 x=1 处的 3 阶泰勒
+    const [taylor] = outputsOf(kernel, 'TaylorSeries(f, 1, 3)', GeoFunction);
+    const expected = (x: number) =>
+      Math.sin(1) + Math.cos(1) * (x - 1) - Math.sin(1) * (x - 1) ** 2 / 2 - Math.cos(1) * (x - 1) ** 3 / 6;
+    expect(taylor.evaluateAt(1.4)).toBeCloseTo(expected(1.4), 6);
   });
 });
 

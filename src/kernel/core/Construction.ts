@@ -2,6 +2,7 @@ import { IKernel } from './Interfaces';
 import { ConstructionElement } from './ConstructionElement';
 import { AlgoElement } from '../algo/AlgoElement';
 import { GeoElement } from '../geo/GeoElement';
+import { GeoNumeric } from '../geo/GeoNumeric';
 import { collectAlgoExtras, rebuildAlgorithm, SerializedAlgorithm } from '../persistence/ConstructionSerializer';
 
 /**
@@ -87,6 +88,7 @@ export class Construction {
       if (aIdx >= 0) this.algoElements.splice(aIdx, 1);
     }
     this.unregisterForwardDeps(element);
+    this.detachConditionDeps(element);
   }
 
   updateAllAlgorithms() {
@@ -272,6 +274,13 @@ export class Construction {
       newAlgo.construction = this;
       newAlgo.constIndex = this.stepCounter + 0.5; // 排在新对象之后、下一元素之前
       this.stepCounter = Math.ceil(newAlgo.constIndex);
+      // newAlgo 必须同时进 elements：序列化的算法表只扫 elements
+      //（ConstructionSerializer 按 getElements().filter(AlgoElement) 收集）。
+      // 此前只进 algoElements，重定义后的定义算法存档丢失——被重定义对象
+      // 既有 parentAlgo 不算独立元素、算法又不在 elements，导出再导入即消失。
+      const geoIdx = this.elements.indexOf(newGeo);
+      if (geoIdx >= 0) this.elements.splice(geoIdx + 1, 0, newAlgo);
+      else this.elements.push(newAlgo);
       this.algoElements.push(newAlgo);
       this.registerForwardDeps(newAlgo);
     }
@@ -307,6 +316,14 @@ export class Construction {
       ...collectAlgoExtras(algo),
     }));
 
+    // 样式保留（对标官方 Construction.replace 的 copyStyleForRedefine）：重定义是
+    // "同一对象换定义"，颜色/线型/标签偏移/固定/轨迹/图层等用户设置不应回退默认
+    const style = captureRedefineStyle(oldGeo);
+    // 条件显隐/动态颜色的依赖重映射（他处条件引用 oldGeo 的改指 newGeo）必须
+    // 发生在任何 removeElement 之前——replaceElement 内部会 removeElement(oldGeo)，
+    // detachConditionDeps 会抢先把旧引用解掉，届时 remap 无从映射
+    this.remapConditionDeps(oldGeo, newGeo);
+
     // 逆序移除依赖算法及其输出；oldGeo 的依赖者随之清空
     for (let i = depAlgos.length - 1; i >= 0; i--) {
       for (const out of depAlgos[i].getGeoElements()) this.removeElement(out);
@@ -314,11 +331,43 @@ export class Construction {
     }
     // 替换 oldGeo → newGeo（已无依赖者，保标签/位置/constIndex；newAlgo 一并登记）
     this.replaceElement(oldGeo, newGeo, newAlgo);
+    applyRedefineStyle(newGeo, style);
     // 依原拓扑序重建依赖算法（表达式类经 parseAlgebraInput、其余经 createAlgo）
     for (const sa of captured) {
       rebuildAlgorithm(this.kernel as Parameters<typeof rebuildAlgorithm>[0], this, index, sa);
     }
     this.updateAllAlgorithms();
+  }
+
+  /** 条件显隐/动态颜色 deps 里的 oldGeo 引用全部改指 newGeo（rebuildReplace 专用）。
+   *  条件依赖声明为 GeoNumeric（数值条件），重定义保持同类型族，窄化安全。 */
+  private remapConditionDeps(oldGeo: GeoElement, newGeo: GeoElement): void {
+    if (!(oldGeo instanceof GeoNumeric) || !(newGeo instanceof GeoNumeric)) return;
+    for (const el of this.elements) {
+      if (!(el instanceof GeoElement) || el === newGeo) continue;
+      if (el.visibleCondition) {
+        el.visibleCondition.deps = el.visibleCondition.deps.map(d => (d === oldGeo ? newGeo : d) as GeoNumeric);
+      }
+      if (el.dynamicColor) {
+        el.dynamicColor.deps = el.dynamicColor.deps.map(d => (d === oldGeo ? newGeo : d) as GeoNumeric);
+      }
+    }
+  }
+
+  /** 元素从构造移除时，解除他处条件显隐/动态颜色对它的引用——
+   *  否则条件持有已删除对象的裸引用，求值永远读到旧值（冻结悬空）。 */
+  private detachConditionDeps(removed: ConstructionElement): void {
+    if (!(removed instanceof GeoNumeric)) return;
+    const isRemoved = (d: GeoNumeric): boolean => d === removed;
+    for (const el of this.elements) {
+      if (!(el instanceof GeoElement)) continue;
+      if (el.visibleCondition?.deps.some(isRemoved)) {
+        el.visibleCondition.deps = el.visibleCondition.deps.filter(d => d !== removed);
+      }
+      if (el.dynamicColor?.deps.some(isRemoved)) {
+        el.dynamicColor.deps = el.dynamicColor.deps.filter(d => d !== removed);
+      }
+    }
   }
 
   /** 移除算法但保留其全部输出（重定义时换掉旧定义算法用；边随 unregister 清理）。 */
@@ -421,4 +470,66 @@ export class Construction {
       index++;
     }
   }
+}
+
+/**
+ * 重定义时的样式快照（对标官方 copyStyleForRedefine）。字段与序列化器 styleOf
+ * 保持一致；条件显隐/动态颜色是实例字段、随对象替换丢失，这里一并搬运——
+ * 条件属于"用户的显示设置"，不随定义式变化（依赖对象的重映射由 remapConditionDeps 做）。
+ */
+interface RedefineStyle {
+  strokeColor: string | null;
+  strokeWidth: number | null;
+  strokeDash: number[] | null;
+  fillColor: string | null;
+  labelVisible: boolean;
+  labelMode: 'always' | 'mouse' | 'never';
+  visible: boolean;
+  labelOffsetX: number;
+  labelOffsetY: number;
+  isFixed: boolean;
+  trace: boolean;
+  layer: number;
+  visibleCondition: GeoElement['visibleCondition'];
+  dynamicColor: GeoElement['dynamicColor'];
+}
+
+function captureRedefineStyle(el: GeoElement): RedefineStyle {
+  return {
+    strokeColor: el.strokeColor,
+    strokeWidth: el.strokeWidth,
+    strokeDash: el.strokeDash ? [...el.strokeDash] : null,
+    fillColor: el.fillColor,
+    labelVisible: el.labelVisible,
+    labelMode: el.labelMode,
+    visible: el.visible,
+    labelOffsetX: el.labelOffsetX,
+    labelOffsetY: el.labelOffsetY,
+    isFixed: el.isFixed,
+    trace: el.trace,
+    layer: el.layer,
+    visibleCondition: el.visibleCondition
+      ? { ast: el.visibleCondition.ast, deps: [...el.visibleCondition.deps] }
+      : null,
+    dynamicColor: el.dynamicColor
+      ? { r: el.dynamicColor.r, g: el.dynamicColor.g, b: el.dynamicColor.b, a: el.dynamicColor.a, deps: [...el.dynamicColor.deps] }
+      : null,
+  };
+}
+
+function applyRedefineStyle(el: GeoElement, style: RedefineStyle): void {
+  el.strokeColor = style.strokeColor;
+  el.strokeWidth = style.strokeWidth;
+  el.strokeDash = style.strokeDash ? [...style.strokeDash] : null;
+  el.fillColor = style.fillColor;
+  el.labelVisible = style.labelVisible;
+  el.labelMode = style.labelMode;
+  el.visible = style.visible;
+  el.labelOffsetX = style.labelOffsetX;
+  el.labelOffsetY = style.labelOffsetY;
+  el.isFixed = style.isFixed;
+  el.trace = style.trace;
+  el.layer = style.layer;
+  el.visibleCondition = style.visibleCondition;
+  el.dynamicColor = style.dynamicColor;
 }

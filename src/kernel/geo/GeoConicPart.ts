@@ -9,6 +9,7 @@ import { IKernel, Path, PathMover } from '../core/Interfaces';
 import { GeoConic } from './GeoConic';
 import { GeoPoint } from './GeoPoint';
 import { GeoVec3D } from '../core/GeoVec3D';
+import { angleInArcWindow, arcSweep } from './GeoArc';
 
 /** 片段类型常量 */
 export const CONIC_PART_ARC = 0;
@@ -94,7 +95,10 @@ export class GeoConicPart extends GeoConic implements Path {
     const d = Math.hypot(PI.getX() - center.x, PI.getY() - center.y);
     if (Math.abs(d - r) > eps) return false;
     const a = Math.atan2(PI.getY() - center.y, PI.getX() - center.x);
-    return isAngleInRange(a, this._startAngle, this._endAngle, this._ccw, eps);
+    // 与渲染（Canvas anticlockwise）同一约定：ccw=true = 递减扫。
+    // 此前这里的窗口按递增解释，与 drawConicPart/WebGL 画出的弧互补，
+    // 命中、Intersect 过滤、PointOn 全部落在"看不见的一半"上。
+    return angleInArcWindow(a, this._startAngle, this._endAngle, this._ccw, eps);
   }
 
   getMinParameter(): number { return this._startAngle; }
@@ -107,41 +111,48 @@ export class GeoConicPart extends GeoConic implements Path {
 
 class ConicPartPathMover implements PathMover {
   private t: number;
-  private step = 0.05;
-  constructor(private part: GeoConicPart) { this.t = part.getStartAngle(); }
+  private step: number;
+  constructor(private part: GeoConicPart) {
+    this.t = part.getStartAngle();
+    // 沿扫向步进：ccw（递减扫）用负步长——此前恒正步进会把 ccw 弧走出扫窗
+    this.step = part.isCounterClockwise() ? -0.05 : 0.05;
+  }
+  /** 当前步进方向（+1 递增 / −1 递减）上的终点角（数值连续，可跨 ±π）。 */
+  private terminal(): number {
+    const s = this.part.getStartAngle();
+    const e = this.part.getEndAngle();
+    const ccw = this.part.isCounterClockwise();
+    const dir = Math.sign(this.step);
+    // 扫窗在递增轴上：ccw=false → [s, e]；ccw=true → [e, s]
+    let end: number;
+    if (!ccw) end = dir > 0 ? e : s;
+    else end = dir > 0 ? s : e;
+    while (dir > 0 && end < this.t - 1e-12) end += 2 * Math.PI;
+    while (dir < 0 && end > this.t + 1e-12) end -= 2 * Math.PI;
+    return end;
+  }
   getCurrentPosition(p: GeoPoint) {
     const c = this.part.getCenter();
     const r = this.part.getRadius();
     p.setCoords(c.x + r * Math.cos(this.t), c.y + r * Math.sin(this.t), 1);
   }
   getNext(p: GeoPoint): boolean {
-    if (this.t >= this.part.getEndAngle()) return false;
-    this.t += this.step;
+    const end = this.terminal();
+    const dir = Math.sign(this.step);
+    const left = (end - this.t) * dir;
+    if (left <= 1e-12) return false;
+    // 最后一步精确落在终点，避免越出扫窗
+    this.t = left <= Math.abs(this.step) ? end : this.t + this.step;
     this.getCurrentPosition(p);
     return true;
   }
-  hasNext(): boolean { return this.t < this.part.getEndAngle(); }
+  hasNext(): boolean {
+    return (this.terminal() - this.t) * Math.sign(this.step) > 1e-12;
+  }
   resetStartParameter(): void { this.t = this.part.getStartAngle(); }
   changeOrientation(): void { this.step *= -1; }
 }
 
 function circleCoeffs(h: number, k: number, r: number): number[] {
   return [1, 0, 1, -2 * h, -2 * k, h * h + k * k - r * r];
-}
-
-function normalizeAngle(a: number, base: number): number {
-  let t = a - base;
-  while (t < 0) t += 2 * Math.PI;
-  while (t >= 2 * Math.PI) t -= 2 * Math.PI;
-  return t;
-}
-
-function isAngleInRange(a: number, start: number, end: number, ccw: boolean, eps: number): boolean {
-  let s = start, e = end;
-  if (ccw && e < s) e += 2 * Math.PI;
-  if (!ccw && s < e) s += 2 * Math.PI;
-  const na = normalizeAngle(a, Math.min(s, e));
-  const ns = normalizeAngle(s, Math.min(s, e));
-  const ne = normalizeAngle(e, Math.min(s, e));
-  return na >= ns - eps && na <= ne + eps;
 }

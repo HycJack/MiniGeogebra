@@ -345,14 +345,14 @@ describe('command argument resolution', () => {
     makePoint(kernel, 1, 1, 'A');
     expect(() => addInput(kernel, 'Segment(Q, Z)')).toThrow(/Unknown point "Q"/);
     expect(() => addInput(kernel, 'Circle(A, ZZ)')).toThrow(/Unknown point "ZZ"/);
-    expect(() => addInput(kernel, 'Slope(nada)')).toThrow(/Unknown line "nada"/);
+    expect(() => addInput(kernel, 'Slope(nada)')).toThrow(/Unknown line or function "nada"/);
   });
 
   it('enforces argument counts per command', () => {
     const kernel = makeKernel();
     makePoint(kernel, 1, 1, 'A');
     expect(() => addInput(kernel, 'Point(1)')).toThrow(/requires 2 arguments/);
-    expect(() => addInput(kernel, 'Midpoint(A)')).toThrow(/requires 2 arguments/);
+    expect(() => addInput(kernel, 'Midpoint(A)')).toThrow(/Midpoint expects two points, a segment or a circle/);
     expect(() => addInput(kernel, 'Slope()')).toThrow(/requires 1 argument/);
     expect(() => addInput(kernel, 'Integral()')).toThrow(/requires 3 arguments/);
     expect(() => addInput(kernel, 'Circle(A)')).toThrow(/requires 2 or 3 arguments/);

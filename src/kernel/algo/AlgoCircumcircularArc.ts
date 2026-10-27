@@ -20,7 +20,7 @@ export class AlgoCircumcircularArc extends AlgoElement {
     const { cx, cy, r } = circumcircle(this.p1, this.p2, this.p3);
     const sa = Math.atan2(this.p1.getY() - cy, this.p1.getX() - cx);
     const ea = Math.atan2(this.p3.getY() - cy, this.p3.getX() - cx);
-    return new GeoConicPart(this.kernel, { x: cx, y: cy }, r, sa, ea, CONIC_PART_ARC, true);
+    return new GeoConicPart(this.kernel, { x: cx, y: cy }, r, sa, ea, CONIC_PART_ARC, orientationCcw(this.p1, this.p2, this.p3));
   }
 
   setInputOutput(): void {
@@ -39,11 +39,26 @@ export class AlgoCircumcircularArc extends AlgoElement {
     const ea = Math.atan2(this.p3.getY() - cy, this.p3.getX() - cx);
     const coeffs = [1, 0, 1, -2 * cx, -2 * cy, cx * cx + cy * cy - r * r];
     (this.outputPart as any).coeffs = coeffs;
-    this.outputPart.setParameters(sa, ea, true);
+    this.outputPart.setParameters(sa, ea, orientationCcw(this.p1, this.p2, this.p3));
     this.outputPart.setDefined();
   }
 
   getOutput(): GeoConicPart { return this.outputPart; }
+}
+
+/** 三点弧的扫向（对标 GeoGebra AlgoConicPartCircumcircleND 的 det>0 分支）：
+ * A,B,C 逆时针（det>0）时 B 在"从 A 递增扫到 C"的弧上（ccw=false）；
+ * 顺时针时 B 在递减方向的弧上（ccw=true）。此前恒 ccw=true，
+ * 画出的弧无视 B 的定向、经常画成不经过 B 的互补弧。
+ */
+export function orientationCcw(p1: GeoPoint, p2: GeoPoint, p3: GeoPoint): boolean {
+  return det3(p1, p2, p3) < 0;
+}
+
+/** 三点有向面积（逆时针为正）。 */
+export function det3(p1: GeoPoint, p2: GeoPoint, p3: GeoPoint): number {
+  return (p2.getX() - p1.getX()) * (p3.getY() - p1.getY()) -
+    (p2.getY() - p1.getY()) * (p3.getX() - p1.getX());
 }
 
 export function circumcircle(p1: GeoPoint, p2: GeoPoint, p3: GeoPoint): { cx: number; cy: number; r: number } {

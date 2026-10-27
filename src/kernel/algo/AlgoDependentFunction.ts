@@ -43,6 +43,9 @@ export class AlgoDependentFunction extends AlgoElement {
   getOutput(): GeoFunction { return this.outputFunction; }
 
   getExpressionText(): string { return this.expressionText; }
+
+  /** 表达式内调用的用户函数依赖（makeFunctionDeps 传递闭包递归用）。 */
+  getFunctionDependencies(): GeoFunction[] { return this.functionDependencies; }
   // ---- moveFunction（对标 GeoGebra EuclidianController.moveFunction）----
   // 平移 = 表达式替换 x → (x − dx) 后整体 +dy；替换复合满足结合律，
   // 逐帧增量平移与一次平移到目标结果精确一致。
@@ -63,8 +66,17 @@ export class AlgoDependentFunction extends AlgoElement {
     const expression = dy === 0
       ? shifted
       : ({ kind: 'binary', op: '+', left: shifted, right: { kind: 'number', value: dy } } as ExpressionNode);
-    // 文本按表达式树序列化（表达式内联替换后的准确形态）
-    const text = `${this.getOutput().variableName}(${this.variableName}) = ${expressionToString(expression)}`;
+    // expressionText 约定为**纯 RHS**：序列化重建时由调用方拼 `${label}(x) = …`，
+    // GeoFunction.getAlgebraDescription 也自行拼前缀——此前这里写入完整定义式，
+    // 拖拽后存档重建出 `f(x) = f(x) = …` 解析失败、代数描述双前缀。
+    const text = expressionToString(expression);
+    this.expression = expression;
+    this.expressionText = text;
+    this.getOutput().setExpressionDef(expression, text);
+  }
+
+  /** 整体替换定义（undo 回滚函数拖拽用）：表达式与纯 RHS 文本一起更新并失效采样。 */
+  replaceDefinition(expression: ExpressionNode, text: string): void {
     this.expression = expression;
     this.expressionText = text;
     this.getOutput().setExpressionDef(expression, text);

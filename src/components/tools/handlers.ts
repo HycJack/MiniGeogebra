@@ -18,9 +18,10 @@ import { GeoPolygon } from '../../kernel/geo/GeoPolygon';
 import { GeoConic } from '../../kernel/geo/GeoConic';
 import { GeoLocus } from '../../kernel/geo/GeoLocus';
 import { GeoFunction } from '../../kernel/geo/GeoFunction';
+import { AlgoPointInRegion } from '../../kernel/algo/AlgoRegion';
 import { GeoVec3D } from '../../kernel/core/GeoVec3D';
 import { WorldPoint, ScreenPoint, ToolContext, ToolResult, ToolMode } from './types';
-import { hitScreenPoint, hitScreenObject, hitCircle, functionParameterAt, lineFromTwoPoints } from './hitTests';
+import { hitScreenPoint, hitScreenObject, hitCircle, hitRegion, functionParameterAt, lineFromTwoPoints } from './hitTests';
 import {
   createLabeledPoint, addPoint, createParameterPointOnPath, createParameterPointOnFunction,
   nextDistanceLabel, nextAngleLabel, nextAreaLabel,
@@ -317,9 +318,23 @@ export const handlePointerDown = (
           setRenderRev(r => r + 1);
         }
       } else if (mode === 'point') {
-        // 空白点击仅"点"工具创建自由点；"对象上的点"工具在空白处无动作
-        //（GeoGebra 语义：该工具只能落在对象上）
-        emptyClickNewPoint();
+        // 官方 EuclidianController 的 region 分支：点工具落在多边形/圆内部时
+        // 建区域约束点（此前一律建自由点，内核 PointIn 明明支持）。经
+        // createdElements 差分自动入 undo。
+        const region = hitRegion(ctx.elements as ConstructionElement[], point.x, point.y);
+        if (region) {
+          const algo = new AlgoPointInRegion(kernel, region);
+          construction.addElement(algo);
+          algo.updateParameter(point.x, point.y);
+          algo.compute();
+          kernel.notifyUpdate(algo.getOutput());
+          setSelectedElements([algo.getOutput()]);
+          setRenderRev(r => r + 1);
+        } else {
+          // 空白点击仅"点"工具创建自由点；"对象上的点"工具在空白处无动作
+          //（GeoGebra 语义：该工具只能落在对象上）
+          emptyClickNewPoint();
+        }
       }
       break;
     }

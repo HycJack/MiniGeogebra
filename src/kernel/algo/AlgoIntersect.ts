@@ -7,6 +7,8 @@ import { GeoConic } from '../geo/GeoConic';
 import { GeoPolygon } from '../geo/GeoPolygon';
 import { GeoPolyLine } from '../geo/GeoPolyLine';
 import { GeoVec3D } from '../core/GeoVec3D';
+import { GeoArc, angleInArcWindow } from '../geo/GeoArc';
+import { GeoConicPart } from '../geo/GeoConicPart';
 import { intersectLineWithConic, intersectConicConic } from '../geo/conicSolve';
 
 interface Solution { x: number; y: number }
@@ -37,6 +39,7 @@ export class AlgoIntersect extends AlgoElement {
     kernel: IKernel,
     private obj1: GeoElement,
     private obj2: GeoElement,
+    private pointIndex?: number, // Intersect(f, g, index)：只输出第 index 个交点（1-based，官方语义）
   ) {
     super(kernel);
     // Determine max number of intersection points
@@ -50,6 +53,9 @@ export class AlgoIntersect extends AlgoElement {
     // 多边形/折线 × 圆锥曲线：每条边至多 2 个交点（对标 GGB AlgoIntersectPolyLineConic）
     else if (poly1 && obj2 instanceof GeoConic) count = 2 * edgeCount(poly1);
     else if (obj1 instanceof GeoConic && poly2) count = 2 * edgeCount(poly2);
+
+    // 指定 index 时只创建单点输出（此前 Intersect(f,g,index) 因 arity [2,2] 不可达）
+    if (pointIndex !== undefined) count = 1;
 
     const usedLabels = new Set<string>();
     for (let i = 0; i < count; i++) {
@@ -96,6 +102,22 @@ export class AlgoIntersect extends AlgoElement {
       solutions = this.solvePolyConic(poly1, this.obj2);
     } else if (this.obj1 instanceof GeoConic && poly2) {
       solutions = this.solvePolyConic(poly2, this.obj1);
+    }
+
+    // 弧/扇形（GeoArc / GeoConicPart extends GeoConic）按整圆求解后，
+    // 必须再按角窗过滤（对标官方 allowOutlyingIntersections=false）——
+    // 此前半圆与直线的交点会落在未画出的另一半上。
+    solutions = this.filterArcWindow(solutions);
+
+    // 指定 index：直接取第 index 个解（1-based），不做标签置换匹配
+    if (this.pointIndex !== undefined) {
+      const idx = this.pointIndex - 1;
+      const pt = idx >= 0 && idx < solutions.length ? solutions[idx] : null;
+      if (pt && this.outputPoints[0]) {
+        this.outputPoints[0].setCoords(pt.x, pt.y, 1);
+        this.outputPoints[0].setDefined();
+      }
+      return;
     }
 
     // 标签连续性（对标 GeoGebra AlgoIntersectAbstract 的置换机制）：
@@ -252,8 +274,23 @@ export class AlgoIntersect extends AlgoElement {
     return 1e-6 * mag;
   }
 
-  private solveLineLine(l1: GeoLine, l2: GeoLine): Solution[] {
-    const det = l1.a * l2.b - l2.a * l1.b;
+  /** 输入含弧/扇形时，过滤掉落在角窗外的解（整圆求解的越界交点）。 */
+  private filterArcWindow(sols: Solution[]): Solution[] {
+    const arcs: (GeoArc | GeoConicPart)[] = [];
+    if (this.obj1 instanceof GeoArc || this.obj1 instanceof GeoConicPart) arcs.push(this.obj1);
+    if (this.obj2 instanceof GeoArc || this.obj2 instanceof GeoConicPart) arcs.push(this.obj2);
+    if (arcs.length === 0 || sols.length === 0) return sols;
+    return sols.filter(s => arcs.every(arc => {
+      const c = arc.getCenter();
+      const r = arc.getRadius();
+      // 解由代入消元得出，理论上在圆上；容差按半径相对放宽
+      if (Math.abs(Math.hypot(s.x - c.x, s.y - c.y) - r) > 1e-6 * Math.max(1, r)) return false;
+      const a = Math.atan2(s.y - c.y, s.x - c.x);
+      return angleInArcWindow(a, arc.getStartAngle(), arc.getEndAngle(), arc.isCounterClockwise(), 1e-7);
+    }));
+  }
+
+  private solveLineLine(l1: GeoLine, l2: GeoLine): Solution[] {    const det = l1.a * l2.b - l2.a * l1.b;
     const mag = Math.max(Math.abs(l1.a), Math.abs(l1.b), Math.abs(l2.a), Math.abs(l2.b), 1);
     if (Math.abs(det) < 1e-12 * mag * mag) return []; // 平行（相对容差）
 

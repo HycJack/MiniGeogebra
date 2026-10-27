@@ -141,9 +141,11 @@ export abstract class GeoElement extends ConstructionElement
     for (const d of cond.deps) scope.set(d.label || '', d.getValue());
     try {
       const v = evaluate(cond.ast, scope);
+      // 对标官方 isShown()：条件对象 undefined/false 即隐藏（此前求值失败按
+      // "可见"处理，与官方相反——依赖未定义时对象应当消失而非常显）
       return Number.isFinite(v) && v !== 0;
     } catch {
-      return true; // 条件求值失败按可见处理，显隐开关仍在用户手里
+      return false;
     }
   }
 

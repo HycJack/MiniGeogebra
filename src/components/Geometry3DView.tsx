@@ -207,10 +207,12 @@ function circlePolyline(renderer: WebGL3DRenderer, cx: number, cy: number, r: nu
 function arcRange(arc: GeoArc): { a0: number; a1: number } {
   let a0 = arc.getStartAngle();
   let a1 = arc.getEndAngle();
+  // 统一扫向约定（Canvas anticlockwise）：ccw=true = 递减扫；ccw=false = 递增扫。
+  // 此前两分支与 2D 渲染相反，3D 视图采样的是互补弧。
   if (arc.isCounterClockwise()) {
-    if (a1 <= a0) a1 += 2 * Math.PI;
-  } else if (a1 >= a0) {
-    a1 -= 2 * Math.PI;
+    if (a1 >= a0) a1 -= 2 * Math.PI;
+  } else if (a1 <= a0) {
+    a1 += 2 * Math.PI;
   }
   return { a0, a1 };
 }

@@ -226,13 +226,15 @@ const sampleLimitedCircle = (
   start: number, end: number, ccw: boolean,
   op: TransOp, arg: any,
 ): { x: number; y: number }[] => {
+  // 统一扫向约定：ccw=true = 递减扫（Canvas anticlockwise），与渲染/命中一致。
+  // 此前 ccw=true 取正向 delta，剪切实体化的折线采的是互补弧。
   let delta = end - start;
   if (ccw) {
-    while (delta < 0) delta += 2 * Math.PI;
-    while (delta >= 2 * Math.PI) delta -= 2 * Math.PI;
-  } else {
     while (delta > 0) delta -= 2 * Math.PI;
     while (delta <= -2 * Math.PI) delta += 2 * Math.PI;
+  } else {
+    while (delta < 0) delta += 2 * Math.PI;
+    while (delta >= 2 * Math.PI) delta -= 2 * Math.PI;
   }
   const count = Math.max(8, Math.ceil(Math.abs(delta) / (2 * Math.PI) * 64) + 1);
   const pts: { x: number; y: number }[] = [];
@@ -249,7 +251,7 @@ const transformLimitedCircle = (input: GeoConicPart | GeoArc, op: TransOp, arg: 
   const mapped = sampleLimitedCircle(
     input.getCenter(), input.getRadius(),
     input.getStartAngle(), input.getEndAngle(),
-    input instanceof GeoConicPart ? input.isCounterClockwise() : input.getEndAngle() >= input.getStartAngle(),
+    input.isCounterClockwise(),
     op, arg,
   ).map(p => new GeoPoint(kernel, new GeoVec3D(p.x, p.y, 1)));
   if (input instanceof GeoConicPart && input.isSector()) {

@@ -31,9 +31,15 @@ export class AlgoDerivative extends AlgoElement {
   constructor(
     kernel: IKernel,
     private source: AlgoDependentFunction,
+    private order = 1,
   ) {
     super(kernel);
-    this.derivativeExpression = differentiate(source.getExpression(), source.getVariableName());
+    // n 阶导数 = 连续求导 n 次（官方 Derivative(f, n)）
+    let expression = source.getExpression();
+    for (let i = 0; i < Math.max(1, order); i++) {
+      expression = differentiate(expression, source.getVariableName());
+    }
+    this.derivativeExpression = expression;
     this.outputFunction = new GeoFunction(
       kernel,
       this.derivativeExpression,

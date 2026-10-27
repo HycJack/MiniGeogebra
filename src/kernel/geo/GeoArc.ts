@@ -8,6 +8,26 @@ import { GeoConic } from './GeoConic';
 import { GeoPoint } from './GeoPoint';
 import { GeoVec3D } from '../core/GeoVec3D';
 
+const TWO_PI = 2 * Math.PI;
+const mod2pi = (t: number): number => ((t % TWO_PI) % TWO_PI + TWO_PI) % TWO_PI;
+
+/**
+ * 弧的扫角（沿扫向的弧度数，∈[0,2π)）。
+ * 统一约定（与 Canvas ctx.arc 的 anticlockwise、WebGL arcLines 一致）：
+ * ccw=true = 从 start **递减**方向扫到 end；ccw=false = 递增方向。
+ * GeoGebra 内部恒正定向（extent=(end−start) mod 2π），对外行为等价——
+ * 生产端负责选好 (start, end, ccw) 使扫窗落在目标弧上。
+ */
+export function arcSweep(start: number, end: number, ccw: boolean): number {
+  return ccw ? mod2pi(start - end) : mod2pi(end - start);
+}
+
+/** 角度 a 是否落在弧的扫窗内（eps 为弧度容差）。 */
+export function angleInArcWindow(a: number, start: number, end: number, ccw: boolean, eps = 1e-9): boolean {
+  const rel = ccw ? mod2pi(start - a) : mod2pi(a - start);
+  return rel <= arcSweep(start, end, ccw) + eps;
+}
+
 export class GeoArc extends GeoConic {
   private _startAngle: number;
   private _endAngle: number;
@@ -73,15 +93,9 @@ export class GeoArc extends GeoConic {
     const d = Math.hypot(PI.getX() - center.x, PI.getY() - center.y);
     if (Math.abs(d - r) > eps) return false;
     const a = Math.atan2(PI.getY() - center.y, PI.getX() - center.x);
-    // 弧 = 从 start 沿扫向到 end 的窗口（与 Canvas ctx.arc、WebGL arcLines、
-    // GeoGebra"恒逆时针从起点扫到终点"同一约定）。此前 min/max 交换把
-    // ea<sa 的弧解释成另一端的小窗，命中判断与渲染不一致。
-    const TWO_PI = 2 * Math.PI;
-    const rel = ((a - this._startAngle) % TWO_PI + TWO_PI) % TWO_PI;
-    const sweep = this._ccw
-      ? ((this._startAngle - this._endAngle) % TWO_PI + TWO_PI) % TWO_PI
-      : ((this._endAngle - this._startAngle) % TWO_PI + TWO_PI) % TWO_PI;
-    return rel <= sweep + eps;
+    // 弧 = 从 start 沿扫向到 end 的窗口（与 Canvas ctx.arc、WebGL arcLines 同一约定；
+    // ccw=true = 递减扫，rel 沿扫向度量——此前 ccw 分支 rel 仍按递增度量，窗口取反）
+    return angleInArcWindow(a, this._startAngle, this._endAngle, this._ccw, eps);
   }
 
   getMinParameter(): number { return this._startAngle; }

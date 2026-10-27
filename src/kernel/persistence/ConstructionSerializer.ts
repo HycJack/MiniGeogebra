@@ -29,6 +29,7 @@ import { AlgoDistance } from '../algo/AlgoDistance';
 import { AlgoAngle } from '../algo/AlgoAngle';
 import { AlgoArea } from '../algo/AlgoArea';
 import { AlgoPerimeter } from '../algo/AlgoPerimeter';
+import { AlgoConicPerimeter } from '../algo/AlgoConicPerimeter';
 import { AlgoTangent } from '../algo/AlgoTangent';
 import { AlgoLocus } from '../algo/AlgoLocus';
 import { AlgoLocus3D } from '../algo/AlgoLocus3D';
@@ -111,6 +112,8 @@ import {
 } from '../algo/AlgoTriangleCenters';
 import { parseAlgebraInput } from '../algebra/EquationRecognizer';
 import { expressionToString } from '../algebra/Differentiator';
+import { parseExpression } from '../algebra/ExpressionParser';
+import type { ExpressionNode } from '../algebra/ExpressionNode';
 import { GeoFunction } from '../geo/GeoFunction';
 import { AnimationType } from '../geo/GeoNumeric';
 import { CoordinateSystem } from '../core/CoordinateSystem';
@@ -198,8 +201,18 @@ export interface ConstructionJSON {
   };
   /** v4.3 起：画布 UI 元素（slider/checkbox/button/inputbox/text 的位置与绑定）。 */
   uiWidgets?: SerializedUIWidget[];
+  /** v4.4 起：条件显隐/动态颜色（按标签收集——条件可挂在算法输出上，
+   *  独立元素/算法两套序列化机制都不适合承载）。 */
+  displayConditions?: SerializedDisplayCondition[];
   independentElements: SerializedElement[];
   algorithms: SerializedAlgorithm[];
+}
+
+/** 条件显隐/动态颜色的落盘形态：表达式文本 + 依赖数值标签（加载时按标签重解析）。 */
+export interface SerializedDisplayCondition {
+  label: string;
+  condition?: string;
+  color?: { r: string; g: string; b: string; a?: string };
 }
 
 export interface SerializedUIWidget {
@@ -277,6 +290,9 @@ export function collectAlgoExtras(algo: AlgoElement): Partial<SerializedAlgorith
         // 额外保存每个槽位的当前根（NaN→null 占位，scalars[2..]），重建时恢复窗口播种
         const slotRoots = algo.getSlotRoots().map(v => (Number.isFinite(v) ? v : null));
         extras.scalars = [rlo, rhi, ...slotRoots];
+      } else if (algo instanceof AlgoConicPerimeter) {
+        // Length 语义标记（扇形 Length=弧长 vs Perimeter=弧长+2r 的差异随存档保留）
+        extras.scalars = [algo.getAsLength() ? 1 : 0];
       } else if (algo instanceof AlgoFunctionExtremumPoint) {
         const [elo, ehi] = algo.getSearchRange();
         // scalars[2] = 当前锁定极值 x（NaN→null）：重建时恢复窗口位置
@@ -420,6 +436,7 @@ export function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], s
     case 'AlgoAngleOriented':        return new AlgoAngleOriented(kernel, asPoint(0), asPoint(1), asPoint(2));
     case 'AlgoArea':                 return new AlgoArea(kernel, inputs[0]);
     case 'AlgoPerimeter':            return new AlgoPerimeter(kernel, inputs[0] as GeoPolygon);
+    case 'AlgoConicPerimeter':       return new AlgoConicPerimeter(kernel, asConic(0), scalars?.[0] === 1);
     case 'AlgoTangent':              return new AlgoTangent(kernel, asConic(0), asPoint(1));
     case 'AlgoLocus':                return new AlgoLocus(kernel, inputs[1] as import('../geo/GeoPoint').GeoPoint, inputs[0] as import('../geo/GeoPoint').GeoPoint);
     case 'AlgoLocus3D':              return new AlgoLocus3D(kernel, inputs[1] as GeoPoint3D, inputs[0] as GeoPoint3D);
@@ -795,6 +812,26 @@ export function serialize(kernel: Kernel, coord?: CoordinateSystem, uiWidgets?: 
   };
   if (uiWidgets && uiWidgets.length > 0) data.uiWidgets = [...uiWidgets];
 
+  // v4.4：条件显隐/动态颜色（对标官方 getShowObjectConditionXML / 颜色函数落盘）。
+  // 依赖按标签记（加载时按标签重解析），AST 按表达式文本落盘。
+  const displayConditions: SerializedDisplayCondition[] = [];
+  for (const el of construction.getElements()) {
+    if (!(el instanceof GeoElement) || !el.label) continue;
+    if (!el.visibleCondition && !el.dynamicColor) continue;
+    const entry: SerializedDisplayCondition = { label: el.label };
+    if (el.visibleCondition) entry.condition = expressionToString(el.visibleCondition.ast);
+    if (el.dynamicColor) {
+      entry.color = {
+        r: expressionToString(el.dynamicColor.r),
+        g: expressionToString(el.dynamicColor.g),
+        b: expressionToString(el.dynamicColor.b),
+        a: el.dynamicColor.a ? expressionToString(el.dynamicColor.a) : undefined,
+      };
+    }
+    displayConditions.push(entry);
+  }
+  if (displayConditions.length > 0) data.displayConditions = displayConditions;
+
   if (coord) {
     data.view = {
       xZero: coord.xZero,
@@ -1011,6 +1048,55 @@ export function deserialize(kernel: Kernel, json: string): { coord?: CoordinateS
 
   // 3) Full recompute so all derived objects are in place
   construction.updateAllAlgorithms();
+
+  // 3.2) 条件显隐/动态颜色恢复（表达式文本 → AST + 按标签解析数值依赖）。
+  // 依赖缺失（目标数值不在构造中）时跳过该条件——与运行期"依赖被删即失效"一致。
+  if (data.displayConditions) {
+    const findNumericByLabel = (label: string): GeoNumeric | undefined =>
+      construction.getElements().find(el => el instanceof GeoNumeric && (el as GeoNumeric).label === label) as GeoNumeric | undefined;
+    const collectDeps = (ast: ReturnType<typeof parseExpression>): GeoNumeric[] => {
+      const deps = new Map<string, GeoNumeric>();
+      const visit = (node: ExpressionNode): void => {
+        if (node.kind === 'call') { node.args.forEach(visit); return; }
+        if (node.kind === 'binary') { visit(node.left); visit(node.right); return; }
+        if (node.kind === 'unary') { visit(node.operand); return; }
+        if (node.kind === 'variable') {
+          const dep = findNumericByLabel(node.name);
+          if (!dep) throw new Error(`unknown variable "${node.name}"`);
+          deps.set(node.name, dep);
+        }
+      };
+      visit(ast);
+      return Array.from(deps.values());
+    };
+    for (const entry of data.displayConditions) {
+      const target = construction.getElements().find(
+        el => el instanceof GeoElement && (el as GeoElement).label === entry.label) as GeoElement | undefined;
+      if (!target) {
+        console.warn(`[ConstructionSerializer] display condition for missing object "${entry.label}", skipped`);
+        continue;
+      }
+      try {
+        if (entry.condition) {
+          const ast = parseExpression(entry.condition);
+          target.visibleCondition = { ast, deps: collectDeps(ast) };
+        }
+        if (entry.color) {
+          const r = parseExpression(entry.color.r);
+          const g = parseExpression(entry.color.g);
+          const b = parseExpression(entry.color.b);
+          const a = entry.color.a ? parseExpression(entry.color.a) : undefined;
+          const depSet = new Map<string, GeoNumeric>();
+          for (const ast of [r, g, b, ...(a ? [a] : [])]) {
+            for (const dep of collectDeps(ast)) depSet.set(dep.label, dep);
+          }
+          target.dynamicColor = { r, g, b, a, deps: Array.from(depSet.values()) };
+        }
+      } catch (e) {
+        console.warn(`[ConstructionSerializer] failed to restore display condition for "${entry.label}", skipped: ${e}`);
+      }
+    }
+  }
 
   // 3.5) Restore view options（v4；统一走 set()，与 UI 修改同一路径）
   if (data.options) {

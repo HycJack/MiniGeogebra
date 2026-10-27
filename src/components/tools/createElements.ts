@@ -13,8 +13,9 @@ import { GeoConic } from '../../kernel/geo/GeoConic';
 import { GeoFunction } from '../../kernel/geo/GeoFunction';
 import { GeoRay } from '../../kernel/geo/GeoRay';
 import { GeoPolyLine } from '../../kernel/geo/GeoPolyLine';
-import { GeoArc } from '../../kernel/geo/GeoArc';
+import { GeoArc, arcSweep } from '../../kernel/geo/GeoArc';
 import { GeoCurve } from '../../kernel/geo/GeoCurve';
+import { GeoConicPart } from '../../kernel/geo/GeoConicPart';
 import { GeoVec3D } from '../../kernel/core/GeoVec3D';
 import { AlgoElement } from '../../kernel/algo/AlgoElement';
 import { AlgoPointOnSegment } from '../../kernel/algo/AlgoPointOnSegment';
@@ -62,7 +63,7 @@ export function nextAreaLabel(construction: Construction): string {
 /** 在路径（线段/直线/圆/折线）上根据屏幕位置创建一个带参数的约束点。 */
 export function createParameterPointOnPath(
   kernel: Kernel,
-  path: GeoSegment | GeoLine | GeoRay | GeoConic | GeoPolyLine | GeoArc | GeoCurve,
+  path: GeoSegment | GeoLine | GeoRay | GeoConic | GeoPolyLine | GeoArc | GeoConicPart | GeoCurve,
   screenX: number, screenY: number
 ): { param: GeoNumeric; point: GeoPoint; algo: AlgoElement } | null {
   const param = new GeoNumeric(kernel, 0);
@@ -75,10 +76,20 @@ export function createParameterPointOnPath(
   } else if (path instanceof GeoLine) {
     param.intervalMin = -10; param.intervalMax = 10;
     algo = new AlgoPointOnLine(kernel, path, param);
-  } else if (path instanceof GeoArc) {
-    // 圆弧参数 = 起止角区间（GeoArc extends GeoConic，必须先于 Conic 分支，否则弧分支死代码）
-    param.intervalMin = path.getStartAngle();
-    param.intervalMax = path.getEndAngle();
+  } else if (path instanceof GeoArc || path instanceof GeoConicPart) {
+    // 圆弧/扇形段参数 = 起止角区间（GeoArc、GeoConicPart 都 extends GeoConic，
+    // 必须先于其它分支，否则落入直线族算法扫窗丢失）。
+    // 参数沿扫向取值：ccw（递减扫）时参数 ∈ [start−sweep, start]。
+    const start = path.getStartAngle();
+    const ccw = path.isCounterClockwise();
+    const sweep = arcSweep(start, path.getEndAngle(), ccw);
+    if (ccw) {
+      param.intervalMin = start - sweep;
+      param.intervalMax = start;
+    } else {
+      param.intervalMin = start;
+      param.intervalMax = start + sweep;
+    }
     param.animationIncrement = 0;
     algo = new AlgoPointOnArc(kernel, path, param);
   } else if (path instanceof GeoRay) {

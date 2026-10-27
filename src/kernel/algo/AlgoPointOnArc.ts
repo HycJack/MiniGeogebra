@@ -8,12 +8,16 @@ import { GeoElement } from '../geo/GeoElement';
 import { GeoNumeric } from '../geo/GeoNumeric';
 import { GeoPoint } from '../geo/GeoPoint';
 import { GeoArc } from '../geo/GeoArc';
+import { GeoConicPart } from '../geo/GeoConicPart';
 import { GeoVec3D } from '../core/GeoVec3D';
+
+/** 弧类载体：GeoArc 与 GeoConicPart 的圆几何/角窗接口同构。 */
+export type ArcCarrier = GeoArc | GeoConicPart;
 
 export class AlgoPointOnArc extends AlgoElement {
   private outputPoint: GeoPoint;
 
-  constructor(kernel: IKernel, private arc: GeoArc, private param: GeoNumeric) {
+  constructor(kernel: IKernel, private arc: ArcCarrier, private param: GeoNumeric) {
     super(kernel);
     this.outputPoint = new GeoPoint(kernel, new GeoVec3D(0, 0, 1));
     this.outputPoint.label = kernel.getConstruction().getNextPointLabel();

@@ -2,7 +2,7 @@ import { IKernel } from '../core/Interfaces';
 import { AlgoElement } from './AlgoElement';
 import { GeoPoint } from '../geo/GeoPoint';
 import { GeoConicPart, CONIC_PART_SECTOR } from '../geo/GeoConicPart';
-import { circumcircle } from './AlgoCircumcircularArc';
+import { circumcircle, orientationCcw } from './AlgoCircumcircularArc';
 
 export class AlgoCircumcircularSector extends AlgoElement {
   private outputPart: GeoConicPart;
@@ -16,7 +16,7 @@ export class AlgoCircumcircularSector extends AlgoElement {
 
   private build(): GeoConicPart {
     const { cx, cy, r } = circumcircle(this.p1, this.p2, this.p3);
-    return new GeoConicPart(this.kernel, { x: cx, y: cy }, r, 0, 0, CONIC_PART_SECTOR, true);
+    return new GeoConicPart(this.kernel, { x: cx, y: cy }, r, 0, 0, CONIC_PART_SECTOR, orientationCcw(this.p1, this.p2, this.p3));
   }
 
   setInputOutput(): void {
@@ -34,7 +34,7 @@ export class AlgoCircumcircularSector extends AlgoElement {
     const sa = Math.atan2(this.p1.getY() - cy, this.p1.getX() - cx);
     const ea = Math.atan2(this.p3.getY() - cy, this.p3.getX() - cx);
     (this.outputPart as any).coeffs = [1, 0, 1, -2 * cx, -2 * cy, cx * cx + cy * cy - r * r];
-    this.outputPart.setParameters(sa, ea, true);
+    this.outputPart.setParameters(sa, ea, orientationCcw(this.p1, this.p2, this.p3));
     this.outputPart.setDefined();
   }
 

@@ -25,6 +25,34 @@ import { GeoElement } from '../../kernel/geo/GeoElement';
 import { GeoFunction } from '../../kernel/geo/GeoFunction';
 import { GeoCurve } from '../../kernel/geo/GeoCurve';
 import { GeoText } from '../../kernel/geo/GeoText';
+import { GeoLocus } from '../../kernel/geo/GeoLocus';
+import { GeoInequality } from '../../kernel/geo/GeoInequality';
+import { angleInArcWindow } from '../../kernel/geo/GeoArc';
+
+/** 点到轨迹采样折线的最短距离（跳过断段区间）。 */
+export function locusDistanceTo(locus: GeoLocus, x: number, y: number): number {
+  const samples = locus.getSamples();
+  const segments = locus.getSegments();
+  let best = Infinity;
+  const span = (a: { x: number; y: number }, b: { x: number; y: number }): number => {
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len2 = dx * dx + dy * dy;
+    const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((x - a.x) * dx + (y - a.y) * dy) / len2));
+    return Math.hypot(x - (a.x + t * dx), y - (a.y + t * dy));
+  };
+  for (const seg of segments) {
+    for (let i = seg.start; i < seg.end; i++) {
+      const a = samples[i], b = samples[i + 1];
+      if (!a || !b) continue;
+      best = Math.min(best, span(a, b));
+    }
+  }
+  // 无断段记录时按整体折线（Locator 兼容旧 Locus 构造）
+  if (segments.length === 0) {
+    for (let i = 0; i + 1 < samples.length; i++) best = Math.min(best, span(samples[i], samples[i + 1]));
+  }
+  return best;
+}
 import { WorldPoint } from './types';
 import { getLabelAnchor, labelDrawable, type LabelBounds } from '../labels';
 
@@ -194,7 +222,18 @@ export function hitScreenObject(els: readonly ConstructionElement[], x: number, 
     if (el instanceof GeoConicPart || el instanceof GeoArc) {
       const r = (el as GeoConic).getRadius();
       const center = (el as GeoConic).getCenter();
-      const d = Math.abs(Math.hypot(x - center.x, y - center.y) - r);
+      const dist = Math.hypot(x - center.x, y - center.y);
+      const d = Math.abs(dist - r);
+      // 角窗命中（此前只测整圆环带，点半圆的另一半也会命中、
+      // 且环带会截胡叠在上面但不属于弧的线段）。角容差按像素换算。
+      const ang = Math.atan2(y - center.y, x - center.x);
+      const angEps = 5 / scale / Math.max(r, 1e-9);
+      const inWindow = angleInArcWindow(
+        ang, el.getStartAngle(), el.getEndAngle(), el.isCounterClockwise(), angEps,
+      );
+      if (!inWindow) continue;
+      // 扇形：填充区域整体可命中（对标官方 DrawConicPart 的 ON_FILLING）
+      if (el instanceof GeoConicPart && el.isSector() && dist <= r + 5 / scale) return el;
       if (d < 5 / scale) return el;
     } else if (el instanceof GeoVector) {
       const v = el as GeoVector;
@@ -223,6 +262,14 @@ export function hitScreenObject(els: readonly ConstructionElement[], x: number, 
       if (isPointOnFunction(el, x, y, 5 / scale)) return el;
     } else if (el instanceof GeoCurve) {
       if (isPointOnCurve(el, x, y, 5 / scale)) return el;
+    } else if (el instanceof GeoLocus) {
+      // 轨迹命中（此前零命中：画布上选不中、删不掉，只能去侧栏）——
+      // 按采样折线的段距离判定，segments 断段区间之外的跳跃段不参与
+      const eps = 5 / scale;
+      if (locusDistanceTo(el, x, y) < eps) return el;
+    } else if (el instanceof GeoInequality) {
+      // 不等式区域命中（此前只画不选）：内部点直接命中，对标官方 region 分支
+      if (el.isDefined() && el.isInRegionXY(x, y)) return el;
     } else if (el instanceof GeoPolygon) {
       if ((el as any).isInRegionXY(x, y)) return el;
     } else if (el instanceof GeoText) {
@@ -240,9 +287,11 @@ export function hitScreenObject(els: readonly ConstructionElement[], x: number, 
   return undefined;
 }
 
-// ---- 单一类型精准命中（用于工具构造阶段，只关心非点对象） ----
+// ---- 单一类型精准命中（用于工具构造阶段，只关心非点对象）。遍历按图层序
+//（hitOrder：layer 高者先），与主入口一致——此前尾向遍历忽略 layer，
+// mirror_circle 等工具会选中低层的重叠对象。 ----
 export function hitSegment(els: readonly ConstructionElement[], x: number, y: number, eps: number): GeoSegment | undefined {
-  for (let i = els.length - 1; i >= 0; i--) {
+  for (const i of hitOrder(els)) {
     const el = els[i];
     if (el instanceof GeoSegment && (el as any).isOnPath({ getX: () => x, getY: () => y }, eps)) {
       return el as GeoSegment;
@@ -252,7 +301,7 @@ export function hitSegment(els: readonly ConstructionElement[], x: number, y: nu
 }
 
 export function hitLine(els: readonly ConstructionElement[], x: number, y: number, eps: number): GeoLine | undefined {
-  for (let i = els.length - 1; i >= 0; i--) {
+  for (const i of hitOrder(els)) {
     const el = els[i];
     if (el instanceof GeoLine && !(el instanceof GeoSegment)) {
       const len = Math.hypot(el.a, el.b);
@@ -265,7 +314,7 @@ export function hitLine(els: readonly ConstructionElement[], x: number, y: numbe
 }
 
 export function hitCircle(els: readonly ConstructionElement[], x: number, y: number, eps: number): GeoConic | undefined {
-  for (let i = els.length - 1; i >= 0; i--) {
+  for (const i of hitOrder(els)) {
     const el = els[i];
     if (el instanceof GeoConic) {
       const r = el.getRadius();
@@ -278,11 +327,22 @@ export function hitCircle(els: readonly ConstructionElement[], x: number, y: num
 }
 
 export function hitPolygon(els: readonly ConstructionElement[], x: number, y: number): GeoPolygon | undefined {
-  for (let i = els.length - 1; i >= 0; i--) {
+  for (const i of hitOrder(els)) {
     const el = els[i];
     if (el instanceof GeoPolygon && (el as any).isInRegionXY(x, y)) {
       return el as GeoPolygon;
     }
+  }
+  return undefined;
+}
+
+/** 区域命中（点工具建区域点用）：多边形/圆锥内部（对标官方 chooseGeo 的 region 分支）。 */
+export function hitRegion(els: readonly ConstructionElement[], x: number, y: number): GeoElement | undefined {
+  for (const i of hitOrder(els)) {
+    const el = els[i];
+    if (el instanceof GeoPolygon && (el as GeoPolygon).isInRegionXY(x, y)) return el;
+    if (el instanceof GeoConic && !(el instanceof GeoArc) && !(el instanceof GeoConicPart) &&
+        el.isDefined() && el.isInRegionXY(x, y)) return el;
   }
   return undefined;
 }

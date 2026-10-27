@@ -8,7 +8,9 @@ export class AlgoCircularSector extends AlgoElement {
 
   constructor(kernel: IKernel, private center: GeoPoint, private pStart: GeoPoint, private pEnd: GeoPoint) {
     super(kernel);
-    this.outputPart = GeoConicPart.fromPoints(kernel, center, pStart, pEnd, CONIC_PART_SECTOR, true);
+    // 扫向 = 从 pStart 递增（逆时针）扫到 pEnd（GeoGebra Sector(M,A,B) 语义）；
+    // 此前 ccw=true 在 Canvas 渲染语义下画的是互补扇形（90° 画成 270°）
+    this.outputPart = GeoConicPart.fromPoints(kernel, center, pStart, pEnd, CONIC_PART_SECTOR, false);
     this.outputPart.label = kernel.getConstruction().getNextLineLabel();
     this.setInputOutput();
   }
@@ -30,7 +32,7 @@ export class AlgoCircularSector extends AlgoElement {
     const ea = Math.atan2(this.pEnd.getY() - cy, this.pEnd.getX() - cx);
     const coeffs = [1, 0, 1, -2 * cx, -2 * cy, cx * cx + cy * cy - r * r];
     (this.outputPart as any).coeffs = coeffs;
-    this.outputPart.setParameters(sa, ea, true);
+    this.outputPart.setParameters(sa, ea, false);
     this.outputPart.setDefined();
   }
 
