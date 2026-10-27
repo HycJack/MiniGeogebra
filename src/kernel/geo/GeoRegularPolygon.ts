@@ -63,7 +63,7 @@ export class GeoRegularPolygon extends GeoPolygon {
   /** 代数描述：正 N 边形。 */
   getAlgebraDescription(): string {
     if (!this.isDefined()) return `${this.label}（未定义）`;
-    return `${this.label} = 正${this._nSides}边形（r=${this._radius.toFixed(2)}, 周长 ${this.getPerimeter().toFixed(2)}, 面积 ${this.getArea().toFixed(2)})`;
+    return `${this.label} = 正${this._nSides}边形（r=${this.fmt(this._radius)}, 周长 ${this.fmt(this.getPerimeter())}, 面积 ${this.fmt(this.getArea())})`;
   }
 
   /** 正多边形面积：S = n·r²·tan(π/n)。 */

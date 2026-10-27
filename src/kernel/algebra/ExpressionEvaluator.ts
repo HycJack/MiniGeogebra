@@ -74,38 +74,38 @@ export function evaluate(node: ExpressionNode, scope: Scope, userFunctions?: Map
  * 动态文本求值（对标 AlgoDependentText）：字符串 + 数值/字符串混合表达式 → 文本。
  * '+' 语义：任一侧为字符串 → 连接；数值侧按 rounding 选项格式化（简单 2 位）。
  */
-export function evaluateToText(node: ExpressionNode, scope: Scope, userFunctions?: Map<string, UserFunctionView>): string {
+export function evaluateToText(node: ExpressionNode, scope: Scope, userFunctions?: Map<string, UserFunctionView>, format: (v: number) => string = formatNum): string {
   switch (node.kind) {
     case 'string': return node.value;
-    case 'number': return formatNum(node.value);
+    case 'number': return format(node.value);
     case 'variable': {
       const v = scope.get(node.name);
-      return v === undefined ? '?' : formatNum(v);
+      return v === undefined ? '?' : format(v);
     }
     case 'call': {
       const args = node.args.map(a => evaluateToText(a, scope, userFunctions));
       const fn = userFunctions?.get(node.name);
       if (fn) {
         const numeric = evaluate(node, scope, userFunctions);
-        return Number.isFinite(numeric) ? formatNum(numeric) : '?';
+        return Number.isFinite(numeric) ? format(numeric) : '?';
       }
       void args;
       const numeric = evaluate(node, scope, userFunctions);
-      return Number.isFinite(numeric) ? formatNum(numeric) : '?';
+      return Number.isFinite(numeric) ? format(numeric) : '?';
     }
     case 'unary': {
       const numeric = evaluate(node, scope, userFunctions);
-      return Number.isFinite(numeric) ? formatNum(numeric) : '?';
+      return Number.isFinite(numeric) ? format(numeric) : '?';
     }
     case 'binary': {
       if (node.op === '+') {
         const hasString = containsString(node.left, scope) || containsString(node.right, scope);
         if (hasString) {
-          return evaluateToText(node.left, scope, userFunctions) + evaluateToText(node.right, scope, userFunctions);
+          return evaluateToText(node.left, scope, userFunctions, format) + evaluateToText(node.right, scope, userFunctions, format);
         }
       }
       const numeric = evaluate(node, scope, userFunctions);
-      return Number.isFinite(numeric) ? formatNum(numeric) : '?';
+      return Number.isFinite(numeric) ? format(numeric) : '?';
     }
   }
 }

@@ -5,6 +5,7 @@
 
 import { IKernel } from '../core/Interfaces';
 import { GeoConic } from './GeoConic';
+import { formatAngle } from '../core/Options';
 import { GeoPoint } from './GeoPoint';
 import { GeoVec3D } from '../core/GeoVec3D';
 
@@ -82,9 +83,10 @@ export class GeoArc extends GeoConic {
     const { x: h, y: k } = this.getCenter();
     const r = this.getRadius();
     if (r <= 0) return `${this.label}（未定义）`;
-    const s = (this._startAngle * 180 / Math.PI).toFixed(0).replace(/\.0$/, '');
-    const e = (this._endAngle * 180 / Math.PI).toFixed(0).replace(/\.0$/, '');
-    return `${this.label} : 弧 (角度 ${s}°→${e}°, r=${r.toFixed(2)})`;
+    // 角度按 angleUnit 显示（弧度模式不带 °，此前无视该选项），数值走 rounding
+    const s = formatAngle(this._startAngle, this.kernel.getOptions());
+    const e = formatAngle(this._endAngle, this.kernel.getOptions());
+    return `${this.label} : 弧 (角度 ${s}→${e}, r=${this.fmt(r)})`;
   }
 
   isOnPath(PI: GeoPoint, eps = 1e-6): boolean {

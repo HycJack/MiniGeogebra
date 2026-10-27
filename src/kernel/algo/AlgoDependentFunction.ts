@@ -6,6 +6,7 @@ import { GeoNumeric } from '../geo/GeoNumeric';
 import { buildUserFnMap } from './AlgoDependentNumeric';
 import { Scope, ExpressionNode } from '../algebra/ExpressionNode';
 import { expressionToString } from '../algebra/Differentiator';
+import { renameVariableInAst, astUsesVariable } from '../algebra/renameVariable';
 import { evaluate } from '../algebra/ExpressionEvaluator';
 
 export class AlgoDependentFunction extends AlgoElement {
@@ -46,6 +47,18 @@ export class AlgoDependentFunction extends AlgoElement {
 
   /** 表达式内调用的用户函数依赖（makeFunctionDeps 传递闭包递归用）。 */
   getFunctionDependencies(): GeoFunction[] { return this.functionDependencies; }
+
+  /** 重命名级联：把表达式 AST 与纯 RHS 文本中的旧数值名替换为新名（官方
+   *  kernel 统一重写 dependent 定义）。依赖是对象引用、无需改 input。 */
+  renameDependency(from: string, to: string): void {
+    if (from === to || to === this.variableName) return;
+    if (!astUsesVariable(this.expression, from)) return;
+    const expression = renameVariableInAst(this.expression, from, to);
+    const text = expressionToString(expression);
+    this.expression = expression;
+    this.expressionText = text;
+    this.getOutput().setExpressionDef(expression, text);
+  }
   // ---- moveFunction（对标 GeoGebra EuclidianController.moveFunction）----
   // 平移 = 表达式替换 x → (x − dx) 后整体 +dy；替换复合满足结合律，
   // 逐帧增量平移与一次平移到目标结果精确一致。

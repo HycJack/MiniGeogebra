@@ -3,6 +3,8 @@ import { GeoElement } from './GeoElement';
 import { GeoVec3D } from '../core/GeoVec3D';
 import { evaluate } from '../algebra/ExpressionEvaluator';
 import { ExpressionNode, Scope } from '../algebra/ExpressionNode';
+import { renameVariableInAst, astUsesVariable } from '../algebra/renameVariable';
+import { expressionToString } from '../algebra/Differentiator';
 
 export type InequalityOp = '<' | '<=' | '>' | '>=';
 
@@ -12,10 +14,10 @@ export class GeoInequality extends GeoElement {
 
   constructor(
     kernel: IKernel,
-    public readonly lhs: ExpressionNode,
-    public readonly rhs: ExpressionNode,
+    public lhs: ExpressionNode,
+    public rhs: ExpressionNode,
     public readonly op: InequalityOp,
-    public readonly expressionText: string,
+    public expressionText: string,
   ) {
     super(kernel, new GeoVec3D(0, 0, 0));
   }
@@ -49,6 +51,16 @@ export class GeoInequality extends GeoElement {
       case '>': return g > 0;
       case '>=': return g >= 0;
     }
+  }
+
+  /** 重命名级联：lhs/rhs AST 与文本中的旧数值名替换为新名。 */
+  renameVariable(from: string, to: string): void {
+    if (from === to) return;
+    if (!astUsesVariable(this.lhs, from) && !astUsesVariable(this.rhs, from)) return;
+    this.lhs = renameVariableInAst(this.lhs, from, to);
+    this.rhs = renameVariableInAst(this.rhs, from, to);
+    // 保留 "lhs op rhs" 原形态（此前序列化重建按 lhs−rhs 会丢不等号）
+    this.expressionText = `${expressionToString(this.lhs)} ${this.op} ${expressionToString(this.rhs)}`;
   }
 
   /** 边界 g=0 是否属于区域（非严格不等式）。 */

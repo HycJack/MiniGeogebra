@@ -17,7 +17,7 @@ export class GeoPolyLine extends GeoElement implements Path {
     if (!this.isDefined() || this.vertices.length < 2) return `${this.label}（未定义）`;
     const labels = this.vertices.map(v => v.label || '?').join(', ');
     const len = this.getLength();
-    return `${this.label} = 折线 [${labels}]（长度 ${len.toFixed(2)}）`;
+    return `${this.label} = 折线 [${labels}]（长度 ${this.fmt(len)}）`;
   }
 
   getLength(): number {

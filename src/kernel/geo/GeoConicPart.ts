@@ -10,6 +10,7 @@ import { GeoConic } from './GeoConic';
 import { GeoPoint } from './GeoPoint';
 import { GeoVec3D } from '../core/GeoVec3D';
 import { angleInArcWindow, arcSweep } from './GeoArc';
+import { formatAngle } from '../core/Options';
 
 /** 片段类型常量 */
 export const CONIC_PART_ARC = 0;
@@ -83,10 +84,10 @@ export class GeoConicPart extends GeoConic implements Path {
     const { x: h, y: k } = this.getCenter();
     const r = this.getRadius();
     if (r <= 0) return `${this.label}（未定义）`;
-    const s = (this._startAngle * 180 / Math.PI).toFixed(0);
-    const e = (this._endAngle * 180 / Math.PI).toFixed(0);
+    const s = formatAngle(this._startAngle, this.kernel.getOptions());
+    const e = formatAngle(this._endAngle, this.kernel.getOptions());
     const typeName = this._partType === CONIC_PART_SECTOR ? '扇形' : this._partType === CONIC_PART_SEGMENT ? '弓形' : '弧';
-    return `${this.label} : ${typeName} (角度 ${s}°→${e}°, r=${r.toFixed(2)})`;
+    return `${this.label} : ${typeName} (角度 ${s}→${e}, r=${this.fmt(r)})`;
   }
 
   isOnPath(PI: GeoPoint, eps = 1e-6): boolean {

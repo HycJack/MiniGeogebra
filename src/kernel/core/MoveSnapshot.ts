@@ -17,6 +17,7 @@ import { GeoConic } from '../geo/GeoConic';
 import { GeoArc } from '../geo/GeoArc';
 import { GeoConicPart } from '../geo/GeoConicPart';
 import { GeoVector } from '../geo/GeoVector';
+import { GeoText } from '../geo/GeoText';
 import { GeoFunction } from '../geo/GeoFunction';
 import { AlgoDependentFunction } from '../algo/AlgoDependentFunction';
 import { parseExpression } from '../algebra/ExpressionParser';
@@ -28,11 +29,19 @@ export interface FreeFormSnapshot {
   data: number[];
 }
 
+export interface TextSnapshot {
+  /** 自由文本的绝对位置；锚定文本为相对锚点偏移（x=dx, y=dy） */
+  anchored: boolean;
+  x: number;
+  y: number;
+}
+
 export interface MoveSnapshot {
   coords: Map<string, { x: number; y: number; z: number }>;
   numerics: Map<string, number>;
   functions: Map<string, string>;
   freeForms: Map<string, FreeFormSnapshot>;
+  texts: Map<string, TextSnapshot>;
 }
 
 export function captureMoveState(kernel: Kernel): MoveSnapshot {
@@ -40,6 +49,7 @@ export function captureMoveState(kernel: Kernel): MoveSnapshot {
   const numerics = new Map<string, number>();
   const functions = new Map<string, string>();
   const freeForms = new Map<string, FreeFormSnapshot>();
+  const texts = new Map<string, TextSnapshot>();
   kernel.getConstruction().getElements().forEach(el => {
     if ((el instanceof GeoPoint || el instanceof GeoPoint3D) && el.isIndependent()) {
       coords.set(el.id, { x: el.getX(), y: el.getY(), z: el.getZ() });
@@ -53,9 +63,16 @@ export function captureMoveState(kernel: Kernel): MoveSnapshot {
       freeForms.set(el.id, { kind: 'conic', data: [...el.coeffs] });
     } else if (el instanceof GeoVector && !el.parentAlgo) {
       freeForms.set(el.id, { kind: 'vector', data: [el.startX, el.startY, el.endX, el.endY] });
+    } else if (el instanceof GeoText) {
+      // 文本（官方 MoveMode.TEXT）：自由文本快照绝对位置，锚定文本快照偏移
+      const algo = el.parentAlgo;
+      const anchored = algo?.getClassName() === 'AlgoDependentText' && !!(algo as { anchor?: unknown }).anchor;
+      texts.set(el.id, anchored
+        ? { anchored: true, x: (algo as unknown as { dx: number }).dx, y: (algo as unknown as { dy: number }).dy }
+        : { anchored: false, x: el.x, y: el.y });
     }
   });
-  return { coords, numerics, functions, freeForms };
+  return { coords, numerics, functions, freeForms, texts };
 }
 
 /** 两份快照是否有差异（拖拽 mouseup 的 moved 判定）。 */
@@ -74,6 +91,10 @@ export function moveStateChanged(a: MoveSnapshot, b: MoveSnapshot): boolean {
   for (const [id, ff] of b.freeForms) {
     const old = a.freeForms.get(id);
     if (old && (old.kind !== ff.kind || old.data.some((v, i) => v !== ff.data[i]))) return true;
+  }
+  for (const [id, t] of b.texts) {
+    const old = a.texts.get(id);
+    if (old && (old.anchored !== t.anchored || old.x !== t.x || old.y !== t.y)) return true;
   }
   return false;
 }
@@ -116,6 +137,21 @@ export function restoreMoveState(kernel: Kernel, state: MoveSnapshot): boolean {
     } else if (ff.kind === 'vector' && el instanceof GeoVector && !el.parentAlgo) {
       [el.startX, el.startY, el.endX, el.endY] = ff.data;
       el.update();
+      touched = true;
+    }
+  });
+  state.texts.forEach((t, id) => {
+    const el = kernel.getConstruction().getElementById(id);
+    if (!(el instanceof GeoText)) return;
+    if (t.anchored) {
+      const algo = el.parentAlgo;
+      if (algo?.getClassName() === 'AlgoDependentText') {
+        (algo as unknown as { setOffset(dx: number, dy: number): void }).setOffset(t.x, t.y);
+        algo.update();
+        touched = true;
+      }
+    } else {
+      el.setPosition(t.x, t.y);
       touched = true;
     }
   });

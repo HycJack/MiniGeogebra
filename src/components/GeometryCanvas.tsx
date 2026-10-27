@@ -34,7 +34,10 @@ import { AlgoPointOnConic } from '../kernel/algo/AlgoPointOnConic';
 import { AlgoPointOnLine } from '../kernel/algo/AlgoPointOnLine';
 import { AlgoPointOnSegment } from '../kernel/algo/AlgoPointOnSegment';
 import { AlgoDependentFunction } from '../kernel/algo/AlgoDependentFunction';
+import { AlgoDependentNumeric } from '../kernel/algo/AlgoDependentNumeric';
+import { AlgoDependentInequality } from '../kernel/algo/AlgoDependentInequality';
 import { captureMoveState, restoreMoveState, moveStateChanged, type MoveSnapshot } from '../kernel/core/MoveSnapshot';
+import { renameVariableInAst, astUsesVariable } from '../kernel/algebra/renameVariable';
 import { GeoNumeric } from '../kernel/geo/GeoNumeric';
 import { CoordinateSystem } from '../kernel/core/CoordinateSystem';
 import { IRenderer, TextItem } from '../kernel/view/IRenderer';
@@ -228,6 +231,8 @@ export const GeometryCanvas: React.FC = () => {
         el.linkedLabels = el.linkedLabels.map(l => (l === oldLabel ? newLabel : l));
       }
     });
+    rewriteExpressions(oldLabel, newLabel);
+    kernel.getConstruction().updateAllAlgorithms();
     addCommand({ type: 'rename', element, oldLabel, newLabel });
   }, [addCommand, kernel, t]);
 
@@ -579,6 +584,32 @@ const handleExport = useCallback(() => {
     });
   }, [kernel]);
 
+  // 重命名的表达式级联（官方 kernel 统一重写 dependent 定义）：依赖数值的表达式
+  // AST（派生数值/函数/不等式 + 条件显隐/动态颜色）按新名改写——否则 `b = a + 1`
+  // 里 a 改名后 AST 仍是旧名、scope 按新 label 取值 → NaN 断链。依赖对象引用不变。
+  const rewriteExpressions = useCallback((fromLabel: string, toLabel: string) => {
+    kernel.getConstruction().getElements().forEach(el => {
+      if (el instanceof AlgoDependentFunction || el instanceof AlgoDependentNumeric) {
+        (el as AlgoDependentFunction | AlgoDependentNumeric).renameDependency(fromLabel, toLabel);
+      } else if (el instanceof AlgoDependentInequality) {
+        (el.getOutput() as GeoInequality).renameVariable(fromLabel, toLabel);
+      } else if (el instanceof GeoElement) {
+        if (el.visibleCondition && astUsesVariable(el.visibleCondition.ast, fromLabel)) {
+          el.visibleCondition = { ...el.visibleCondition, ast: renameVariableInAst(el.visibleCondition.ast, fromLabel, toLabel) };
+        }
+        if (el.dynamicColor) {
+          const d = el.dynamicColor;
+          const patch: Partial<typeof d> = {};
+          if (astUsesVariable(d.r, fromLabel)) patch.r = renameVariableInAst(d.r, fromLabel, toLabel);
+          if (astUsesVariable(d.g, fromLabel)) patch.g = renameVariableInAst(d.g, fromLabel, toLabel);
+          if (astUsesVariable(d.b, fromLabel)) patch.b = renameVariableInAst(d.b, fromLabel, toLabel);
+          if (d.a && astUsesVariable(d.a, fromLabel)) patch.a = renameVariableInAst(d.a, fromLabel, toLabel);
+          if (Object.keys(patch).length > 0) el.dynamicColor = { ...d, ...patch } as typeof d;
+        }
+      }
+    });
+  }, [kernel]);
+
   const undo = useCallback(() => {
     if (undoStack.current.length === 0) return;
     const cmd = undoStack.current.pop()!; redoStack.current.push(cmd);
@@ -587,10 +618,10 @@ const handleExport = useCallback(() => {
     else if (cmd.type === 'move') restoreState(cmd.oldState);
     else if (cmd.type === 'numeric') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el instanceof GeoNumeric) el.setValue(cmd.oldValue); }
     else if (cmd.type === 'boolean') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el instanceof GeoBoolean) el.setValue(cmd.oldValue); }
-    else if (cmd.type === 'rename') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el) el.label = cmd.oldLabel; rewriteLinkedLabels(cmd.newLabel, cmd.oldLabel); }
+    else if (cmd.type === 'rename') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el) el.label = cmd.oldLabel; rewriteLinkedLabels(cmd.newLabel, cmd.oldLabel); rewriteExpressions(cmd.newLabel, cmd.oldLabel); }
     else if (cmd.type === 'style') applyStyleDirectly(cmd.element, cmd.before);
     kernel.getConstruction().updateAllAlgorithms(); setRenderRev(r => r + 1);
-  }, [kernel, restoreState, applyStyleDirectly, rewriteLinkedLabels, setUIElementsTracked]);
+  }, [kernel, restoreState, applyStyleDirectly, rewriteLinkedLabels, rewriteExpressions, setUIElementsTracked]);
 
   const redo = useCallback(() => {
     if (redoStack.current.length === 0) return;
@@ -602,10 +633,10 @@ const handleExport = useCallback(() => {
     else if (cmd.type === 'move') restoreState(cmd.newState);
     else if (cmd.type === 'numeric') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el instanceof GeoNumeric) el.setValue(cmd.newValue); }
     else if (cmd.type === 'boolean') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el instanceof GeoBoolean) el.setValue(cmd.newValue); }
-    else if (cmd.type === 'rename') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el) el.label = cmd.newLabel; rewriteLinkedLabels(cmd.oldLabel, cmd.newLabel); }
+    else if (cmd.type === 'rename') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el) el.label = cmd.newLabel; rewriteLinkedLabels(cmd.oldLabel, cmd.newLabel); rewriteExpressions(cmd.oldLabel, cmd.newLabel); }
     else if (cmd.type === 'style') applyStyleDirectly(cmd.element, cmd.after);
     kernel.getConstruction().updateAllAlgorithms(); setRenderRev(r => r + 1);
-  }, [kernel, restoreState, applyStyleDirectly, rewriteLinkedLabels, setUIElementsTracked]);
+  }, [kernel, restoreState, applyStyleDirectly, rewriteLinkedLabels, rewriteExpressions, setUIElementsTracked]);
 
   // ─── 键盘快捷键 ───────────────────────────────────────────────────
   useEffect(() => {
@@ -928,11 +959,23 @@ const handleExport = useCallback(() => {
         draggedElement instanceof GeoPolygon || draggedElement instanceof GeoConic ||
         draggedElement instanceof GeoSegment || draggedElement instanceof GeoLine ||
         draggedElement instanceof GeoRay || draggedElement instanceof GeoVector ||
-        draggedElement instanceof GeoFunction
+        draggedElement instanceof GeoFunction || draggedElement instanceof GeoText
       ) {
         const dx = x - lastMousePos.x, dy = y - lastMousePos.y;
         if (draggedElement instanceof GeoPolygon || draggedElement instanceof GeoConic) {
           (draggedElement as GeoPolygon | GeoConic).translate(new GeoVec3D(dx, dy, 0));
+        } else if (draggedElement instanceof GeoText) {
+          // 官方 MoveMode.TEXT：锚定文本拖拽改相对锚点偏移，自由文本改绝对位置
+          const algo = draggedElement.parentAlgo;
+          if (algo?.getClassName() === 'AlgoDependentText' && (algo as unknown as { anchor?: unknown }).anchor) {
+            const setOff = algo as unknown as { getOffset(): [number, number]; setOffset(dx: number, dy: number): void };
+            const [ox, oy] = setOff.getOffset();
+            setOff.setOffset(ox + dx, oy + dy);
+            algo.update();
+            kernel.recomputeDependents(draggedElement);
+          } else {
+            draggedElement.setPosition(draggedElement.x + dx, draggedElement.y + dy);
+          }
         } else if (draggedElement instanceof GeoFunction && draggedElement.parentAlgo?.getClassName() === 'AlgoDependentFunction') {
           // 官方 moveFunction：平移函数图像 = 表达式替换 x→(x−dx) 后 +dy
           //（替换复合满足结合律，逐帧增量与一次到位精确一致）。

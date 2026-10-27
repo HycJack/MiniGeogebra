@@ -84,6 +84,7 @@ import { AlgoInvert } from '../algo/AlgoShearStretch';
 import { AlgoArea } from '../algo/AlgoArea';
 import { AlgoPerimeter } from '../algo/AlgoPerimeter';
 import { AlgoConicPerimeter } from '../algo/AlgoConicPerimeter';
+import { AlgoPolyLine } from '../algo/AlgoPolyLine';
 import { GeoSegment } from '../geo/GeoSegment';
 import { GeoRay } from '../geo/GeoRay';
 import { GeoArc, arcSweep } from '../geo/GeoArc';
@@ -161,7 +162,6 @@ const COMMAND_ARITY: Record<string, [number, number]> = {
   Integral: [3, 3],
   // ---- 圆锥曲线解析属性 ----
   Focus: [1, 1],
-  Vertex: [1, 1],
   Eccentricity: [1, 1],
   Asymptote: [1, 1],
   Directrix: [1, 1],
@@ -259,6 +259,8 @@ const COMMAND_ARITY: Record<string, [number, number]> = {
   Length: [1, 1],
   Perimeter: [1, 1],
   Circumference: [1, 1],
+  Polyline: [2, 16],
+  Vertex: [1, 2],
   Reflect: [2, 2],                 // Mirror 的官方英文别名（点/线镜像双形态）
 };
 
@@ -923,6 +925,14 @@ let redefineSeq = 0;
         numeric.label = leftText;
         return [numeric];
       }
+      // 常量表达式 RHS（官方合法：`a = 1 + 1`、`r = 1/3`）——此前 fall through
+      // 报"Definitions must use..."，纯数字字面量之外的自由数值定义全部失败
+      const constValue = evaluate(expression, new Map());
+      if (Number.isFinite(constValue)) {
+        const numeric = new GeoNumeric(kernel, constValue);
+        numeric.label = leftText;
+        return [numeric];
+      }
     }
 
     // 无标签 2D 隐式方程：`y=0`/`x=3` → 直线；`x^2+y^2=25`、`x=y^2` → 圆锥曲线。
@@ -1486,6 +1496,14 @@ const dispatchCommand = (
         }
       }
       const algo = new AlgoSegmentTwoPoints(kernel, resolvePointArg(ctx, args[0]), resolvePointArg(ctx, args[1]));
+      assignNextLabel(algo.getOutput(), () => construction.getNextLineLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+
+    case 'Polyline': {
+      // Polyline(P1, ..., Pn) 折线（官方 CmdPolyLine；算法/工具早已存在，仅缺命令注册）
+      const points = args.map(a => resolvePointArg(ctx, a));
+      const algo = new AlgoPolyLine(kernel, points);
       assignNextLabel(algo.getOutput(), () => construction.getNextLineLabel(existingLabels));
       return [algo, algo.getOutput()];
     }
@@ -2223,8 +2241,33 @@ const dispatchCommand = (
       return [numeric];
     }
 
+    case 'Vertex': {
+      // Vertex(polygon) 顶点列表 / Vertex(polygon, n) 第 n 个顶点（官方 CmdVertex
+      // 多边形形式，此前仅圆锥分支可达）
+      const polygon = ctx.findPolygon(args[0].trim());
+      if (polygon) {
+        if (args.length === 2) {
+          const n = Math.round(ctx.resolveNumber(args[1]));
+          if (!Number.isInteger(n) || n < 1 || n > polygon.vertices.length) {
+            throw new Error(`Vertex index must be between 1 and ${polygon.vertices.length}`);
+          }
+          const v = polygon.vertices[n - 1];
+          return [v];
+        }
+        const list = new GeoList(kernel, [...polygon.vertices]);
+        assignNextLabel(list, () => `list${existingLabels.size}`);
+        existingLabels.add(list.label);
+        return [list];
+      }
+      const conic = ctx.findConic(args[0].trim());
+      if (!conic) throw new Error(`Unknown polygon or conic "${args[0].trim()}"`);
+      const algo = new AlgoConicVertex(kernel, conic);
+      // 圆/抛物线只填部分输出（与共用圆锥分支同模式）
+      const definedOutputs = algo.getGeoElements().filter(el => el.isDefined());
+      assignOutputLabels(ctx, definedOutputs);
+      return [algo, ...definedOutputs];
+    }
     case 'Focus':
-    case 'Vertex':
     case 'Asymptote':
     case 'Directrix':
     case 'Axes':
@@ -2242,7 +2285,7 @@ const dispatchCommand = (
         Eccentricity: AlgoConicEccentricity,
         Parameter: AlgoConicParameter,
         Radius: AlgoConicRadius,
-      }[name] as typeof AlgoConicFocus)(kernel, conic);
+      }[name] as unknown as typeof AlgoConicFocus)(kernel, conic);
       // 圆/抛物线只填部分输出（如圆的第二个焦点保持 undefined），
       // 未定义的输出不进构造、不分配标签
       const definedOutputs = algo.getGeoElements().filter(el => el.isDefined());

@@ -56,6 +56,6 @@ export class GeoBooleanRegion extends GeoElement {
 
   getAlgebraDescription(): string {
     if (!this.isDefined()) return `${this.label}（未定义）`;
-    return `${this.label}（${this.contours.length} 个轮廓，面积 ${this.getArea().toFixed(2)}）`;
+    return `${this.label}（${this.contours.length} 个轮廓，面积 ${this.fmt(this.getArea())}）`;
   }
 }

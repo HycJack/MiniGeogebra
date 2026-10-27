@@ -5,6 +5,8 @@ import { GeoNumeric } from '../geo/GeoNumeric';
 import { Scope } from '../algebra/ExpressionNode';
 import { ExpressionNode } from '../algebra/ExpressionNode';
 import { evaluate, UserFunctionView } from '../algebra/ExpressionEvaluator';
+import { renameVariableInAst, astUsesVariable } from '../algebra/renameVariable';
+import { expressionToString } from '../algebra/Differentiator';
 import { GeoFunction } from '../geo/GeoFunction';
 
 export class AlgoDependentNumeric extends AlgoElement {
@@ -42,6 +44,15 @@ export class AlgoDependentNumeric extends AlgoElement {
   getOutput(): GeoNumeric { return this.outputNumeric; }
 
   getExpressionText(): string { return this.expressionText; }
+
+  /** 重命名级联：表达式 AST 与文本中的旧数值名替换为新名（文本按新 AST
+   *  重新序列化，与 translateBy 同一约定——序列化重建的一致性优先于词法形态）。 */
+  renameDependency(from: string, to: string): void {
+    if (from === to) return;
+    if (!astUsesVariable(this.expression, from)) return;
+    this.expression = renameVariableInAst(this.expression, from, to);
+    if (this.expressionText) this.expressionText = expressionToString(this.expression);
+  }
 }
 
 /** GeoFunction[] → 求值器用户函数表（按标签索引）。 */

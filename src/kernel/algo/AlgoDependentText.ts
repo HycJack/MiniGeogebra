@@ -8,6 +8,7 @@ import { AlgoElement } from './AlgoElement';
 import { GeoElement } from '../geo/GeoElement';
 import { GeoText } from '../geo/GeoText';
 import { GeoNumeric } from '../geo/GeoNumeric';
+import { formatNumber } from '../core/Options';
 import { GeoPoint } from '../geo/GeoPoint';
 import { ExpressionNode, Scope } from '../algebra/ExpressionNode';
 import { evaluateToText } from '../algebra/ExpressionEvaluator';
@@ -41,6 +42,13 @@ export class AlgoDependentText extends AlgoElement {
 
   getExpressionText(): string { return this.expressionText; }
 
+  /** 拖拽偏移（对标官方 MoveMode.TEXT）：锚定文本改相对锚点的偏移，
+   *  compute 随锚点重算位置；自由文本输出 position 不受影响。 */
+  setOffset(dx: number, dy: number): void {
+    this.dx = dx;
+    this.dy = dy;
+  }
+
   getOffset(): [number, number] { return [this.dx, this.dy]; }
 
   compute(): void {
@@ -49,7 +57,9 @@ export class AlgoDependentText extends AlgoElement {
     }
     const scope: Scope = new Map();
     this.dependencies.forEach((d, i) => scope.set(d.label || `dep${i}`, d.getValue()));
-    this.outputText.text = evaluateToText(this.expression, scope);
+    // 数值格式化走内核 rounding 选项（此前硬编码 toFixed(2)，rounding=5 时文本仍 2 位）
+    this.outputText.text = evaluateToText(this.expression, scope, undefined,
+      (v) => formatNumber(v, this.kernel.getOptions()));
     this.outputText.setDefined();
   }
 }

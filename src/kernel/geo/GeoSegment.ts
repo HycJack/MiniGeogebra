@@ -29,7 +29,7 @@ export class GeoSegment extends GeoLine implements LimitedPath {
       this.endPoint.getX() - this.startPoint.getX(),
       this.endPoint.getY() - this.startPoint.getY()
     );
-    return `${this.label} = 线段 ${this.startPoint.label || '?'}${this.endPoint.label || '?'}（长度 ${len.toFixed(2)}）`;
+    return `${this.label} = 线段 ${this.startPoint.label || '?'}${this.endPoint.label || '?'}（长度 ${this.fmt(len)}）`;
   }
 
   isOnPath(PI: GeoPoint, eps = 1e-6): boolean {
