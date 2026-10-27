@@ -185,6 +185,41 @@ function pushPolyline(lines: Line3[], pts: V3[], style: LineStyle, pxPerUnit: nu
   }
 }
 
+/**
+ * 曲面实体化（对标 GeoGebra 二次曲面的半透明实体 + 轮廓线渲染）：
+ * 把 (stacks+1)×slices 参数网格的每格拆成两个三角形推入 fills。
+ * 极点行/半径 0 行的退化三角形面积为 0，GPU 光栅化无像素、无需特判。
+ * 双面渲染（CULL_FACE 已禁用），前后表面叠加呈半透明体积感。
+ */
+function pushQuadMeshFills(fills: Fill3[], grid: V3[][], color: string): void {
+  for (let i = 0; i + 1 < grid.length; i++) {
+    const row0 = grid[i], row1 = grid[i + 1];
+    const n = Math.min(row0.length, row1.length);
+    for (let j = 0; j < n; j++) {
+      const j2 = (j + 1) % n;
+      const a = row0[j], b = row0[j2], c = row1[j2], d = row1[j];
+      fills.push({ verts: [a, b, c], color });
+      fills.push({ verts: [a, c, d], color });
+    }
+  }
+}
+
+/** 球/椭球经纬参数网格：φ∈[0,π] 分 stacks、θ 环向 slices；半轴 (ra, rb, rc)。 */
+function sphereGrid(center: { x: number; y: number; z: number }, ra: number, rb: number, rc: number, stacks: number, slices: number): V3[][] {
+  const rows: V3[][] = [];
+  for (let i = 0; i <= stacks; i++) {
+    const phi = (Math.PI * i) / stacks;
+    const sp = Math.sin(phi), cp = Math.cos(phi);
+    const row: V3[] = [];
+    for (let j = 0; j < slices; j++) {
+      const th = (2 * Math.PI * j) / slices;
+      row.push({ x: center.x + ra * sp * Math.cos(th), y: center.y + rb * sp * Math.sin(th), z: center.z + rc * cp });
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
 function circlePolyline(renderer: WebGL3DRenderer, cx: number, cy: number, r: number, a0: number, a1: number): V3[] {
   if (r <= 0) return [];
   const p0 = renderer.projectToScreen(to3(cx, cy));
@@ -450,6 +485,9 @@ function buildScene(
     if (el.getKind() === 'ellipsoid') {
       const c = el.getBase();
       const [ra, rb, rc] = el.getRadii();
+      // 实体：经纬三角网格半透明填充（轮廓线保留）
+      const fill = el.fillColor ?? el.defaultFillColor;
+      if (fill) pushQuadMeshFills(fills, sphereGrid({ x: c.getX(), y: c.getY(), z: c.getZ() }, ra, rb, rc, 14, 28), fill);
       const ellipse = (axes: [number, number], plane: 'xy' | 'xz' | 'yz') => {
         const pts: V3[] = [];
         const steps = 48;
@@ -471,6 +509,9 @@ function buildScene(
     } else if (el.getKind() === 'sphere') {
       const c = el.getBase();
       const r = el.getParam();
+      // 实体：经纬三角网格半透明填充
+      const fill = el.fillColor ?? el.defaultFillColor;
+      if (fill) pushQuadMeshFills(fills, sphereGrid({ x: c.getX(), y: c.getY(), z: c.getZ() }, r, r, r, 14, 28), fill);
       const circle = (axis: 'x' | 'y' | 'z') => {
         const pts: V3[] = [];
         const steps = 48;
@@ -603,6 +644,21 @@ function buildScene(
       };
       pushPolyline(lines, ringPts(t0, radiusAt(t0)), st, pxPerUnit);
       pushPolyline(lines, ringPts(t1, radiusAt(t1)), st, pxPerUnit);
+      // 实体：侧面经纬网格半透明填充（锥顶行半径 0 的退化三角形无害）
+      const sideFill = el.fillColor ?? el.defaultFillColor;
+      if (sideFill) {
+        const sideStacks = 8;
+        const grid: V3[][] = [];
+        for (let i = 0; i <= sideStacks; i++) {
+          const t = t0 + ((t1 - t0) * i) / sideStacks;
+          const rad = radiusAt(t);
+          const row: V3[] = [];
+          const steps = 28;
+          for (let j = 0; j < steps; j++) row.push(onRing(t, (2 * Math.PI * j) / steps, rad));
+          grid.push(row);
+        }
+        pushQuadMeshFills(fills, grid, sideFill);
+      }
       // 母线（4 条）：连接两端同角
       for (let k = 0; k < 4; k++) {
         const ang = (2 * Math.PI * k) / 4;
