@@ -292,3 +292,27 @@ export class AlgoAreCongruent extends AlgoRelationBase {
     return Math.abs(l1 - l2) < 1e-8 * Math.max(1, l1, l2);
   }
 }
+
+/**
+ * AreEqual(a, b)（官方 AlgoEqual）：数值或点的相等判断，输出 1/0。
+ * 数值用相对容差（对标 DoubleUtil.isEqual：|a−b| ≤ 1e-8·max(1,|a|,|b|)）；
+ * 点按坐标分量同容差。
+ */
+export class AlgoAreEqual extends AlgoRelationBase {
+  constructor(kernel: IKernel, private a: GeoNumeric | GeoPoint, private b: GeoNumeric | GeoPoint) {
+    super(kernel, [a, b]);
+  }
+
+  protected evaluate(): boolean {
+    const sameKind = (this.a instanceof GeoNumeric) === (this.b instanceof GeoNumeric);
+    if (!sameKind) return false;
+    const tol = (x: number, y: number): boolean =>
+      Math.abs(x - y) <= 1e-8 * Math.max(1, Math.abs(x), Math.abs(y));
+    if (this.a instanceof GeoNumeric && this.b instanceof GeoNumeric) {
+      return this.a.isDefined() && this.b.isDefined() && tol(this.a.getValue(), this.b.getValue());
+    }
+    const pa = this.a as GeoPoint, pb = this.b as GeoPoint;
+    return pa.isDefined() && pb.isDefined()
+      && tol(pa.getX(), pb.getX()) && tol(pa.getY(), pb.getY());
+  }
+}

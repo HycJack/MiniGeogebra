@@ -27,7 +27,9 @@ export class AlgoSlope extends AlgoElement {
     }
     const { a, b } = this.line;
     if (Math.abs(b) < 1e-12) {
-      this.outputValue.setValue(Infinity);
+      // 垂直线斜率无定义（官方 GeoLine.getSlope 返回 NaN → undefined 传播；
+      // 此前输出已定义的 Infinity 流入下游表达式）
+      this.outputValue.setUndefined();
       return;
     }
     this.outputValue.setValue(-a / b);

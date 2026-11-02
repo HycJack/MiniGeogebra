@@ -57,12 +57,13 @@ export class AlgoIntersect extends AlgoElement {
     // 指定 index 时只创建单点输出（此前 Intersect(f,g,index) 因 arity [2,2] 不可达）
     if (pointIndex !== undefined) count = 1;
 
-    const usedLabels = new Set<string>();
+    // 标签惰性分配（官方 labelWanted，GeoElement.java:2363-2365）：undefined
+    // 交点（平行线等，J5 起常驻）不再占字符表字母，首次 defined 由
+    // Construction.assignWantedLabels 按构造序补发。此前立即烧字母，
+    // 连续多个无交构造会把后续点标签整体推后。
     for (let i = 0; i < count; i++) {
       const p = new GeoPoint(kernel, new GeoVec3D(0, 0, 1));
-      const label = kernel.getConstruction().getNextPointLabel(usedLabels);
-      usedLabels.add(label);
-      p.label = label;
+      p.labelWanted = true;
       this.outputPoints.push(p);
     }
 
@@ -360,5 +361,10 @@ export class AlgoIntersect extends AlgoElement {
 
   getOutputPoints(): GeoPoint[] {
     return this.outputPoints;
+  }
+
+  /** Intersect(f,g,index) 的 index（序列化 roundtrip 用；未指定为 undefined）。 */
+  getPointIndex(): number | undefined {
+    return this.pointIndex;
   }
 }

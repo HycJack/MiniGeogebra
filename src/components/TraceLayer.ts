@@ -14,7 +14,13 @@ import { GeoSegment } from '../kernel/geo/GeoSegment';
 import { GeoVector } from '../kernel/geo/GeoVector';
 import { GeoPolygon } from '../kernel/geo/GeoPolygon';
 import { GeoConic } from '../kernel/geo/GeoConic';
+import { GeoArc, arcSweep } from '../kernel/geo/GeoArc';
+import { GeoConicPart } from '../kernel/geo/GeoConicPart';
 import { GeoLine } from '../kernel/geo/GeoLine';
+import { GeoRay } from '../kernel/geo/GeoRay';
+import { GeoPolyLine } from '../kernel/geo/GeoPolyLine';
+import { GeoLocus } from '../kernel/geo/GeoLocus';
+import { GeoText } from '../kernel/geo/GeoText';
 import { GeoFunction } from '../kernel/geo/GeoFunction';
 import { GeoCurve } from '../kernel/geo/GeoCurve';
 import { CoordinateSystem } from '../kernel/core/CoordinateSystem';
@@ -44,12 +50,30 @@ export function elementTraceSignature(el: GeoElement, coord?: CoordinateSystem):
   if (el instanceof GeoPolygon) {
     return `g:${el.vertices.map(v => `${p(v.getX())},${p(v.getY())}`).join(';')}`;
   }
+  // 弧/扇形先于整圆锥判定：此前 isCircle() 快路径让弧画成整圆残影、
+  // 且圆心半径不变仅扫角变化时签名不变（零残影）
+  if (el instanceof GeoArc || el instanceof GeoConicPart) {
+    const c = el.getCenter();
+    return `a:${p(c.x)},${p(c.y)},${p(el.getRadius())},${p(el.getStartAngle())},${p(el.getEndAngle())},${el.isCounterClockwise() ? 1 : 0}`;
+  }
   if (el instanceof GeoConic && el.isCircle()) {
     const c = el.getCenter();
     return `c:${p(c.x)},${p(c.y)},${p(el.getRadius())}`;
   }
   if (el instanceof GeoLine) {
     return `l:${p(el.a)},${p(el.b)},${p(el.c)}`;
+  }
+  if (el instanceof GeoRay) {
+    return `r:${p(el.getStartPoint().getX())},${p(el.getStartPoint().getY())},${p(el.getSecondPoint().getX())},${p(el.getSecondPoint().getY())}`;
+  }
+  if (el instanceof GeoPolyLine) {
+    return `y:${el.vertices.map(v => `${p(v.getX())},${p(v.getY())}`).join(';')}`;
+  }
+  if (el instanceof GeoLocus) {
+    return `z:${el.getSamples().map(s => `${p(s.x)},${p(s.y)}`).join(';')}`;
+  }
+  if (el instanceof GeoText) {
+    return `t:${p(el.x)},${p(el.y)}`;
   }
   if (el instanceof GeoConic) {
     // 非圆二次曲线：系数即位置（整体乘常数不影响形状，取比值签名）
@@ -58,7 +82,7 @@ export function elementTraceSignature(el: GeoElement, coord?: CoordinateSystem):
     return `q:${[A, B, C, D, E, F].map(v => p(v / base)).join(',')}`;
   }
   if (el instanceof GeoFunction) {
-    const sig = sampleFnSignature(el);
+    const sig = sampleFnSignature(el, coord);
     return sig ? `f:${sig}` : null;
   }
   if (el instanceof GeoCurve) {
@@ -111,6 +135,22 @@ export function elementTraceStamps(el: GeoElement, coord: CoordinateSystem): Tra
     const flat = el.vertices.flatMap(v => [sx(v.getX()), sy(v.getY())]);
     return flat.length >= 6 ? [{ kind: 'polygon', data: flat, color }] : null;
   }
+  // 弧/扇形：沿实际扫向采样折线（此前走整圆快路径画错残影）
+  if (el instanceof GeoArc || el instanceof GeoConicPart) {
+    const c = el.getCenter();
+    const r = el.getRadius();
+    if (r <= 0 || !Number.isFinite(r)) return null;
+    const extent = arcSweep(el.getStartAngle(), el.getEndAngle(), el.isCounterClockwise());
+    const steps = Math.max(8, Math.ceil(64 * (extent / (2 * Math.PI))));
+    const data: number[] = [];
+    for (let i = 0; i <= steps; i++) {
+      const rel = (extent * i) / steps;
+      // ccw=true = 从 start 递减扫
+      const a = el.isCounterClockwise() ? el.getStartAngle() - rel : el.getStartAngle() + rel;
+      data.push(sx(c.x + r * Math.cos(a)), sy(c.y + r * Math.sin(a)));
+    }
+    return data.length >= 4 ? [{ kind: 'polyline', data, color }] : null;
+  }
   if (el instanceof GeoConic && el.isCircle()) {
     const c = el.getCenter();
     return [{ kind: 'circle', data: [sx(c.x), sy(c.y), el.getRadius() * coord.xScale], color }];
@@ -119,6 +159,34 @@ export function elementTraceStamps(el: GeoElement, coord: CoordinateSystem): Tra
     const pts = el.samplePoints(90).filter(pt => Number.isFinite(pt.x) && Number.isFinite(pt.y));
     if (pts.length < 2) return null;
     return [{ kind: 'polyline', data: pts.flatMap(pt => [sx(pt.x), sy(pt.y)]), color }];
+  }
+  if (el instanceof GeoRay) {
+    // 射线：从起点沿方向延伸到视口外（世界坐标直接算端点）
+    const sp = el.getStartPoint();
+    const dp = el.getSecondPoint();
+    const dx = dp.getX() - sp.getX(), dy = dp.getY() - sp.getY();
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-12) return null;
+    const b = coord.visibleWorldBounds();
+    const half = (b.maxX - b.minX) + (b.maxY - b.minY);
+    return [{
+      kind: 'line',
+      data: [sx(sp.getX()), sy(sp.getY()), sx(sp.getX() + (dx / len) * half), sy(sp.getY() + (dy / len) * half)],
+      color,
+    }];
+  }
+  if (el instanceof GeoPolyLine) {
+    const flat = el.vertices.flatMap(v => [sx(v.getX()), sy(v.getY())]);
+    return flat.length >= 4 ? [{ kind: 'polyline', data: flat, color }] : null;
+  }
+  if (el instanceof GeoLocus) {
+    const flat = el.getSamples()
+      .filter(s => Number.isFinite(s.x) && Number.isFinite(s.y))
+      .flatMap(s => [sx(s.x), sy(s.y)]);
+    return flat.length >= 4 ? [{ kind: 'polyline', data: flat, color }] : null;
+  }
+  if (el instanceof GeoText) {
+    return [{ kind: 'point', data: [sx(el.x), sy(el.y)], color }];
   }
   if (el instanceof GeoLine) {
     // 无限直线：截距点 + 方向按可视区宽度延伸（屏幕坐标）
@@ -136,7 +204,9 @@ export function elementTraceStamps(el: GeoElement, coord: CoordinateSystem): Tra
   }
   if (el instanceof GeoFunction) {
     const b = coord.visibleWorldBounds();
-    const samples = el.updateSamples(b.minX, b.maxX, 240);
+    // 与签名的采样数一致（120）：此前签名 120 / stamp 240 两个分辨率互击
+    // updateSamples 缓存，每帧全量重采两次
+    const samples = el.updateSamples(b.minX, b.maxX, 120);
     const data: number[] = [];
     for (const smp of samples) {
       if (!Number.isFinite(smp.y)) continue;

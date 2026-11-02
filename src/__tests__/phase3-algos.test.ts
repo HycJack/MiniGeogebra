@@ -257,13 +257,13 @@ describe('AlgoSlope', () => {
     expect(algo.getOutput().getValue()).toBeCloseTo(2, 6);
   });
 
-  it('returns Infinity for horizontal line (b=0)', () => {
+  it('returns undefined for vertical line (b=0) — 官方 getSlope 返回 NaN', () => {
     const k = makeKernel();
     // vertical line x=1 => a=1, b=0, c=-1
     const line = makeLine(k, 1, 0, -1);
     const algo = new AlgoSlope(k, line);
     algo.compute();
-    expect(algo.getOutput().getValue()).toBe(Infinity);
+    expect(algo.getOutput().isDefined()).toBe(false);
   });
 
   it('slope of horizontal line y=3 (a=0, b=1, c=-3) is 0', () => {

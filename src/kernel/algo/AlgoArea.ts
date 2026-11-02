@@ -6,7 +6,7 @@ import { GeoConic } from '../geo/GeoConic';
 import { GeoConicPart, CONIC_PART_ARC, CONIC_PART_SEGMENT } from '../geo/GeoConicPart';
 import { GeoNumeric } from '../geo/GeoNumeric';
 import { analyzeConic } from '../geo/conicSolve';
-import { arcSweep } from '../geo/GeoArc';
+import { GeoArc, arcSweep } from '../geo/GeoArc';
 
 /**
  * 面积测量：多边形面积（鞋带公式）或圆的面积。
@@ -59,6 +59,10 @@ export class AlgoArea extends AlgoElement {
       area = type === CONIC_PART_SEGMENT
         ? r * r * (extent - Math.sin(extent)) / 2
         : r * r * extent / 2;
+    } else if (this.target instanceof GeoArc) {
+      // 弧无面积（GeoArc 被占位圆系数骗进下方 'circle' 分支算 πr² 的漏网）
+      this.outputValue.setUndefined();
+      return;
     } else if (this.target instanceof GeoConic) {
       const c = this.target;
       const type = c.getConicType();

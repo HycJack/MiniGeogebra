@@ -27,7 +27,8 @@ describe('expression parser and evaluator', () => {
   });
 
   it('returns NaN for undefined arithmetic and unknown variables', () => {
-    expect(evaluate(parseExpression('1/0'), new Map())).toBeNaN();
+    // 官方语义（MyDouble.java:284-292）：1/0=+∞ 是合法 defined 值，仅 NaN 视为 undefined
+    expect(evaluate(parseExpression('1/0'), new Map())).toBe(Infinity);
     expect(evaluate(parseExpression('sqrt(-4)'), new Map())).toBeNaN();
     expect(evaluate(parseExpression('x'), new Map())).toBeNaN();
   });

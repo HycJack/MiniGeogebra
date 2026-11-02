@@ -795,25 +795,45 @@ describe('Slider 命令（对标 CmdSlider）', () => {
     return elements;
   };
 
-  it('Slider() 创建匿名滑块（默认区间 [0,10]，值 5）', () => {
+  it('Slider() 创建匿名滑块（官方默认 −5..5、步长 0.1、画布滑条可见）', () => {
     const kernel = makeKernel();
     const result = addInput(kernel, 'Slider()');
     const n = result.find(el => el instanceof GeoNumeric) as GeoNumeric;
     expect(n).toBeDefined();
-    expect(n.intervalMin).toBe(0);
-    expect(n.intervalMax).toBe(10);
-    expect(n.getValue()).toBe(5);
+    expect(n.intervalMin).toBe(-5);
+    expect(n.intervalMax).toBe(5);
+    expect(n.animationIncrement).toBe(0.1);
+    expect(n.sliderVisible).toBe(true);
     expect(n.label).toBeTruthy();
   });
 
-  it('Slider(0, 100, 5, 20) 带区间/步长/初值', () => {
+  it('Slider(0, 100, 5, 20) 第 4 参为动画速度（官方 CmdSlider 语义），值为区间中点', () => {
     const kernel = makeKernel();
     const result = addInput(kernel, 'Slider(0, 100, 5, 20)');
     const n = result.find(el => el instanceof GeoNumeric) as GeoNumeric;
     expect(n.intervalMin).toBe(0);
     expect(n.intervalMax).toBe(100);
     expect(n.animationIncrement).toBe(5);
-    expect(n.getValue()).toBe(20);
+    expect(n.animationSpeed).toBe(20);
+    expect(n.getValue()).toBe(50);
+    expect(n.sliderVisible).toBe(true);
+  });
+
+  it('Slider(0, 10, 1, 1, 300, false, false) 垂直滑条 + 自定义宽度', () => {
+    const kernel = makeKernel();
+    const result = addInput(kernel, 'Slider(0, 10, 1, 1, 300, false, false)');
+    const n = result.find(el => el instanceof GeoNumeric) as GeoNumeric;
+    expect(n.sliderWidthPx).toBe(300);
+    expect(n.sliderHorizontal).toBe(false);
+    expect(n.sliderVisible).toBe(true);
+  });
+
+  it('Slider(0, 10, 1, 1, 200, false, true, true) 第 8 参 = 创建即动画', () => {
+    const kernel = makeKernel();
+    addInput(kernel, 'Slider(0, 10, 1, 1, 200, false, true, true)');
+    const n = kernel.getConstruction().getElements().find(el => el instanceof GeoNumeric && (el as GeoNumeric).sliderVisible) as GeoNumeric;
+    expect(n.isAnimating()).toBe(true);
+    expect(kernel.getAnimationManager().getAnimatedGeos().length).toBe(1);
   });
 
   it('Slider(a) 返回已有数值自身（不新建对象），退化区间才补默认值', () => {
@@ -836,13 +856,13 @@ describe('Slider 命令（对标 CmdSlider）', () => {
 
   it('Slider 产出的滑块可驱动依赖对象', () => {
     const kernel = makeKernel();
-    addInput(kernel, 'Slider(0, 10, 1, 2)');
+    addInput(kernel, 'Slider(0, 10, 1)');
     addInput(kernel, 'f(x) = a*x');
-    // 找到 Slider 创建的数值（标签 a）
+    // 找到 Slider 创建的数值（标签 a），初值 = 区间中点
     const t1 = kernel.getConstruction().getElements().find(el => el instanceof GeoNumeric && (el as GeoNumeric).label === 'a') as GeoNumeric;
-    expect(t1.getValue()).toBe(2);
+    expect(t1.getValue()).toBe(5);
     const fn = kernel.getConstruction().getElements().find(el => (el as any).evaluateAt) as any;
-    expect(fn.evaluateAt(3)).toBeCloseTo(6, 9);
+    expect(fn.evaluateAt(3)).toBeCloseTo(15, 9);
     // 拖滑块（改值）→ f 跟随
     t1.setValue(5);
     kernel.getConstruction().updateAllAlgorithms();

@@ -1,6 +1,6 @@
 import { IKernel } from '../core/Interfaces';
 import { AlgoElement } from './AlgoElement';
-import type { AlgoDependentFunction } from './AlgoDependentFunction';
+import { GeoElement } from '../geo/GeoElement';
 import { GeoFunction } from '../geo/GeoFunction';
 import { GeoNumeric } from '../geo/GeoNumeric';
 import { ExpressionNode, Scope } from '../algebra/ExpressionNode';
@@ -18,45 +18,59 @@ export interface FunctionDefinition {
 }
 
 /**
- * Derivative(f) 的构造算法。
+ * Derivative(f[, n]) 的构造算法。
  *
- * 输入是原始函数的数值依赖（而非原函数对象本身）：导数的 AST 结构在构造时固定，
- * 原函数的依赖数值变化只会改变它的求值作用域，不会改变导数表达式本身，
- * 因此把同一批依赖登记为 input，增量更新链路就能正确地把滑块变动传播到导函数上。
+ * 源函数对象**本身注册为输入**（对标官方 NoCASDerivativeCache 随源更新）：
+ * 此前只登记源函数的数值依赖，f 的表达式被整体替换（拖拽 moveFunction、
+ * FitPoly 重拟合、重定义）时导数 AST 是构造期冻结的快照——拖拽/undo 后
+ * 导函数滞留旧值，且 f 的 forwardDeps 里没有本算法，重定义也不重建。
+ * 现在 compute 时检测 fn.expression 引用变化即重新符号微分。
  */
-export class AlgoDerivative extends AlgoElement {
+export class AlgoDerivative extends AlgoElement implements FunctionDefinition {
   private outputFunction: GeoFunction;
-  private derivativeExpression: ExpressionNode;
+  private sourceFn: GeoFunction;
+  private order: number;
+  private lastSourceExpression: ExpressionNode | null = null;
 
-  constructor(
-    kernel: IKernel,
-    private source: AlgoDependentFunction,
-    private order = 1,
-  ) {
+  constructor(kernel: IKernel, sourceFn: GeoFunction, order = 1) {
     super(kernel);
-    // n 阶导数 = 连续求导 n 次（官方 Derivative(f, n)）
-    let expression = source.getExpression();
-    for (let i = 0; i < Math.max(1, order); i++) {
-      expression = differentiate(expression, source.getVariableName());
-    }
-    this.derivativeExpression = expression;
-    this.outputFunction = new GeoFunction(
-      kernel,
-      this.derivativeExpression,
-      source.getVariableName(),
-      expressionToString(this.derivativeExpression),
-    );
+    this.sourceFn = sourceFn;
+    this.order = Math.max(1, order);
+    // 占位定义，compute() 首跑前 ensureDerivative() 会填真身
+    this.outputFunction = new GeoFunction(kernel, sourceFn.expression, sourceFn.variableName, '');
     this.setInputOutput();
   }
 
   setInputOutput(): void {
-    this.input = this.source.getDependencies();
+    // 源函数 + 其数值依赖都注册：滑块走 scope 求值，表达式替换走重微分
+    this.input = [this.sourceFn, ...this.numericDeps()];
     this.setOutput([this.outputFunction]);
   }
 
+  /** 源函数的数值依赖（自由函数为空；嵌套 Derivative 取内层依赖）。 */
+  private numericDeps(): GeoNumeric[] {
+    const pa = this.sourceFn.parentAlgo;
+    const deps = pa && typeof (pa as unknown as { getDependencies?: () => GeoNumeric[] }).getDependencies === 'function'
+      ? (pa as unknown as { getDependencies: () => GeoNumeric[] }).getDependencies()
+      : [];
+    return deps.filter(d => d instanceof GeoNumeric);
+  }
+
+  /** 源表达式被替换（拖拽/拟合/重定义）时重新微分并就地更新输出。 */
+  private ensureDerivative(): void {
+    if (this.lastSourceExpression === this.sourceFn.expression) return;
+    let expression = this.sourceFn.expression;
+    for (let i = 0; i < this.order; i++) {
+      expression = differentiate(expression, this.sourceFn.variableName);
+    }
+    this.outputFunction.setExpressionDef(expression, expressionToString(expression));
+    this.lastSourceExpression = this.sourceFn.expression;
+  }
+
   compute(): void {
+    this.ensureDerivative();
     const scope: Scope = new Map();
-    this.source.getDependencies().forEach((dependency, index) => {
+    this.numericDeps().forEach((dependency, index) => {
       scope.set(dependency.label || `dep${index}`, dependency.getValue());
     });
     this.outputFunction.setScope(scope);
@@ -65,9 +79,16 @@ export class AlgoDerivative extends AlgoElement {
 
   getOutput(): GeoFunction { return this.outputFunction; }
 
-  getExpression(): ExpressionNode { return this.derivativeExpression; }
+  getExpression(): ExpressionNode { return this.outputFunction.expression; }
 
-  getVariableName(): string { return this.source.getVariableName(); }
+  getVariableName(): string { return this.sourceFn.variableName; }
 
-  getDependencies(): GeoNumeric[] { return this.source.getDependencies(); }
+  getDependencies(): GeoNumeric[] { return this.numericDeps(); }
+
+  /** 序列化用：源函数与阶数。 */
+  getSourceFunction(): GeoFunction { return this.sourceFn; }
+  getOrder(): number { return this.order; }
+
+  /** 嵌套 Derivative 的源（AlgoDerivative 输出）仍指回本算法。 */
+  getSourceElement(): GeoElement { return this.sourceFn; }
 }

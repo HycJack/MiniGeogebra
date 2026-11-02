@@ -161,3 +161,79 @@ export class AlgoDistancePointPlane3D extends AlgoElement {
     this.outputNumeric.setDefined();
   }
 }
+
+/** 两平面交线（平行时 undefined）——官方 CmdIntersect3D 的 plane×plane 分支。 */
+export class AlgoIntersectPlanes3D extends AlgoElement {
+  private outputLine: GeoLine3D;
+
+  constructor(kernel: IKernel, private p1: GeoPlane3D, private p2: GeoPlane3D) {
+    super(kernel);
+    this.outputLine = new GeoLine3D(kernel);
+    this.setInputOutput();
+  }
+
+  setInputOutput(): void {
+    this.input = [this.p1, this.p2];
+    this.setOutput([this.outputLine]);
+  }
+
+  getOutput(): GeoLine3D { return this.outputLine; }
+
+  compute(): void {
+    this.outputLine.setUndefined();
+    if (!this.p1.isDefined() || !this.p2.isDefined()) return;
+    // 交线方向 = n1×n2；点 = 解 n1·X=d1、n2·X=d2、dir·X=0（取过原点法向平面的交）
+    const n1 = this.p1.getNormal().toPoint();
+    const n2 = this.p2.getNormal().toPoint();
+    const dir = n1.cross(n2);
+    if (dir.norm() < 1e-12) return; // 平行或重合
+    const d1 = this.p1.getDistance();
+    const d2 = this.p2.getDistance();
+    // 点 = (d1·(n2×dir) + d2·(dir×n1)) / |dir|²（克拉默式：三个互正交方向的分解）
+    const t1 = n2.cross(dir);
+    const t2 = dir.cross(n1);
+    const point = t1.scale(d1).add(t2.scale(d2)).scale(1 / dir.normSquared());
+    this.outputLine.setGeometry(point.toPoint(), dir.asDirection());
+    this.outputLine.setDefined();
+  }
+}
+
+/** 两 3D 直线交点（平行/异面时 undefined）——官方 CmdIntersect3D 的 line×line 分支。 */
+export class AlgoIntersectLines3D extends AlgoElement {
+  private outputPoint: GeoPoint3D;
+
+  constructor(kernel: IKernel, private l1: GeoLine3D, private l2: GeoLine3D) {
+    super(kernel);
+    this.outputPoint = new GeoPoint3D(kernel);
+    this.setInputOutput();
+  }
+
+  setInputOutput(): void {
+    this.input = [this.l1, this.l2];
+    this.setOutput([this.outputPoint]);
+  }
+
+  getOutput(): GeoPoint3D { return this.outputPoint; }
+
+  compute(): void {
+    this.outputPoint.setUndefined();
+    if (!this.l1.isDefined() || !this.l2.isDefined()) return;
+    const o1 = this.l1.getOrigin().toPoint();
+    const d1 = this.l1.getDirection();
+    const o2 = this.l2.getOrigin().toPoint();
+    const d2 = this.l2.getDirection();
+    const w = o2.sub(o1);
+    const cross = d1.cross(d2);
+    const cross2 = cross.normSquared();
+    if (cross2 < 1e-24) return; // 平行（重合也不建交点，与官方一致）
+    // 联立 o1+s·d1 = o2+t·d2：s = (w×d2)·cross / |cross|²、t = (w×d1)·cross / |cross|²
+    const s = w.cross(d2).dot(cross) / cross2;
+    const t = w.cross(d1).dot(cross) / cross2;
+    const p1 = o1.add(d1.scale(s));
+    const p2 = o2.add(d2.scale(t));
+    // 异面（两最近点距离超出相对容差）→ undefined
+    if (p1.sub(p2).norm() > 1e-7 * Math.max(1, w.norm())) return;
+    this.outputPoint.setCoords(p1.x, p1.y, p1.z);
+    this.outputPoint.setDefined();
+  }
+}

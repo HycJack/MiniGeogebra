@@ -29,6 +29,20 @@ export class GeoNumeric extends GeoElement implements Animatable {
     /** 角度量输出（AlgoAngle/AlgoAngleOriented 标记）：代数描述按 angleUnit 显示。 */
     public isAngle = false;
 
+    // ---- 滑条显示（对标官方 GeoNumeric/DrawSlider：滑条是画布上的真实
+    //      drawable，位置为屏幕绝对坐标，不随视图平移缩放移动）----
+    /** 滑条是否以滑条形式显示在画布上（工具/Slider 命令置 true）。 */
+    public sliderVisible = false;
+    /** 滑条起点（屏幕像素，视口空间；官方 absolute screen loc）。 */
+    public sliderX = 0;
+    public sliderY = 0;
+    /** 滑条轨道长度（屏幕像素；官方 DEFAULT_SLIDER_WIDTH_PIXEL = 200）。 */
+    public sliderWidthPx = 200;
+    /** 方向（官方 isSliderHorizontal；垂直轨道向上延伸）。 */
+    public sliderHorizontal = true;
+    /** 滑块半径（官方 DEFAULT_SLIDER_BLOB_SIZE = 5）。 */
+    public sliderBlobSize = 5;
+
     constructor(kernel: IKernel, value: number) {
         super(kernel, new GeoVec3D(0, 0, 0));
         this.value = value;
@@ -44,11 +58,32 @@ export class GeoNumeric extends GeoElement implements Animatable {
         this.update();
     }
 
+    /** 轨道参数 t∈[0,1] → 值（含 increment 吸附；官方 moveNumeric 的投影语义）。 */
+    valueAtParam(t: number): number {
+        const clamped = Math.max(0, Math.min(1, t));
+        const width = this.intervalMax - this.intervalMin;
+        let v = this.intervalMin + clamped * width;
+        if (this.animationIncrement > 0) {
+            v = this.intervalMin + Math.round((v - this.intervalMin) / this.animationIncrement) * this.animationIncrement;
+        }
+        return Math.max(this.intervalMin, Math.min(this.intervalMax, v));
+    }
+
+    /** 当前值 → 轨道参数 t∈[0,1]。 */
+    paramOfValue(): number {
+        const width = this.intervalMax - this.intervalMin;
+        if (!(width > 0)) return 0;
+        return (this.value - this.intervalMin) / width;
+    }
+
     isAnimatable(): boolean {
         // 对标 GeoNumeric.isAnimatable：只有独立数值（滑块）可动画。
         // 此前恒 true——派生数值（a = 2b、距离/角度度量）右键也能"播放"，
-        // doAnimationStep 改值与 parentAlgo 重算互相覆写打架
-        return this.isIndependent() && Number.isFinite(this.intervalMin) && Number.isFinite(this.intervalMax);
+        // doAnimationStep 改值与 parentAlgo 重算互相覆写打架；
+        // 无效区间（宽 ≤ 0）开动画只会 60fps 空转，一并排除
+        return this.isIndependent()
+            && Number.isFinite(this.intervalMin) && Number.isFinite(this.intervalMax)
+            && this.intervalMax > this.intervalMin;
     }
 
     setAnimationType(type: AnimationType) {
@@ -89,11 +124,17 @@ export class GeoNumeric extends GeoElement implements Animatable {
             case AnimationType.RANDOM:
                 // 对标 GeoGebra 的随机动画：重掷频率 = speed·宽度/(10·增量)——
                 // 累积步长达到一个增量才重掷一次，而非每帧重掷（30Hz 闪烁，
-                // 骰子/抽签类演示不可用）
+                // 骰子/抽签类演示不可用）。增量为 0（连续滑块）退化为按宽度/20
+                // 的累积阈值，否则 `increment <= 0 ||` 短路使每帧重掷复活
                 this.randomAccum += Math.abs(step);
-                if (this.animationIncrement <= 0 || this.randomAccum >= this.animationIncrement) {
-                    this.randomAccum = 0;
-                    this.animationValue = this.intervalMin + Math.random() * intervalWidth;
+                {
+                    const reRollThreshold = this.animationIncrement > 0
+                        ? this.animationIncrement
+                        : intervalWidth / 20;
+                    if (this.randomAccum >= reRollThreshold) {
+                        this.randomAccum = 0;
+                        this.animationValue = this.intervalMin + Math.random() * intervalWidth;
+                    }
                 }
                 break;
             case AnimationType.INCREASING:
@@ -113,6 +154,9 @@ export class GeoNumeric extends GeoElement implements Animatable {
     }
 
     /** 代数描述：数值按 rounding 显示；角度量按 angleUnit 显示。 */
+    /** 当前值按 rounding 格式化（画布滑条 `a = 值` 标签用；fmt 为类内保护方法）。 */
+    formatValue(): string { return this.fmt(this.value); }
+
     getAlgebraDescription(): string {
         if (!this.isDefined()) return `${this.label}（未定义）`;
         const value = this.isAngle

@@ -5,7 +5,7 @@ import { GeoLine } from '../geo/GeoLine';
 import { GeoConic } from '../geo/GeoConic';
 import { GeoVec3D } from '../core/GeoVec3D';
 import {
-  conicValue, dualLine, intersectLineWithConic, isConicDegenerate,
+  conicValue, dualLine, intersectLineWithConic, isConicDegenerate, analyzeConic,
 } from '../geo/conicSolve';
 
 /**
@@ -43,9 +43,12 @@ export class AlgoTangent extends AlgoElement {
     for (let i = 0; i < 2; i++) {
       const l = new GeoLine(kernel, 0, 0, 0);
       l.label = kernel.getConstruction().getNextLineLabel(usedLabelsL);
+      // getNext*Label 不自行登记——漏 add 会让两条切线/两个切点同名
+      usedLabelsL.add(l.label);
       this.outputLines.push(l);
       const p = new GeoPoint(kernel, new GeoVec3D(0, 0, 1));
       p.label = kernel.getConstruction().getNextPointLabel(usedLabelsP);
+      usedLabelsP.add(p.label);
       this.outputPoints.push(p);
     }
     this.setInputOutput();
@@ -122,4 +125,79 @@ export class AlgoTangent extends AlgoElement {
   getOutputPoints(): GeoPoint[] {
     return this.outputPoints;
   }
+}
+
+/**
+ * Tangent(line, conic)：与给定直线平行的圆锥曲线切线（官方 CmdTangent 分支）。
+ * 支持中心型曲线（圆/椭圆/双曲线，含旋转）；抛物线/退化曲线输出 undefined。
+ *
+ * 原理：方向平行的切线法向 n ∥ l 法向。中心型曲线在自身主轴系下半轴
+ * (A, B)，单位法向在主轴系分量 (nu, nv) 的支撑线距离 h = √(A²·nu² + B²·nv²)，
+ * 两条切线为 n·(x − C) = ±h。
+ */
+export class AlgoTangentLineConic extends AlgoElement {
+  private readonly outputLines: GeoLine[] = [];
+
+  constructor(kernel: IKernel, private line: GeoLine, private conic: GeoConic) {
+    super(kernel);
+    for (let i = 0; i < 2; i++) {
+      const l = new GeoLine(kernel, 0, 0, 0);
+      l.label = kernel.getConstruction().getNextLineLabel(new Set());
+      this.outputLines.push(l);
+    }
+    this.setInputOutput();
+  }
+
+  setInputOutput(): void {
+    this.input = [this.line, this.conic];
+    this.setOutput([...this.outputLines]);
+  }
+
+  compute(): void {
+    this.outputLines.forEach(l => l.setUndefined());
+    if (!this.line.isDefined() || !this.conic.isDefined()) return;
+    const canonical = analyzeConic(this.conic.coeffs);
+    if (!canonical || !canonical.center) return;
+    if (canonical.type !== 'circle' && canonical.type !== 'ellipse' && canonical.type !== 'hyperbola') return;
+
+    // 主轴系半轴：s1 沿 λ1 方向（theta），s2 沿 λ2 方向（theta+π/2）。
+    // analyzeConic 对圆不填 a/b（null），圆用半径；椭圆 a 沿 λ2、双曲线实轴
+    // 沿 majorAngle（theta 或 theta+π/2）——按特征方向重排。
+    let s1: number, s2: number;
+    if (canonical.type === 'circle') {
+      const r = Math.sqrt(-canonical.fPrime / canonical.lambda1);
+      s1 = r; s2 = r;
+    } else if (canonical.type === 'ellipse') {
+      if (!canonical.a || !canonical.b) return;
+      s1 = canonical.b; s2 = canonical.a;
+    } else {
+      if (!canonical.a || !canonical.b) return;
+      if (canonical.majorAngle !== null && Math.abs(canonical.majorAngle - canonical.theta) < 1e-9) {
+        s1 = canonical.a; s2 = canonical.b;
+      } else {
+        s1 = canonical.b; s2 = canonical.a;
+      }
+    }
+    if (!(s1 > 0) || !(s2 > 0)) return;
+
+    const len = Math.hypot(this.line.a, this.line.b);
+    if (len < 1e-15) return;
+    // 单位法向 → 主轴系分量
+    const nu0 = this.line.a / len, nv0 = this.line.b / len;
+    const ct = Math.cos(canonical.theta), st = Math.sin(canonical.theta);
+    const nu = nu0 * ct + nv0 * st;
+    const nv = -nu0 * st + nv0 * ct;
+    const h = Math.sqrt(s1 * s1 * nu * nu + s2 * s2 * nv * nv);
+    const cx = canonical.center.x, cy = canonical.center.y;
+    // n·(x − C) = ±h → nu0·x + nv0·y + (−nu0·Cx − nv0·Cy ∓ h) = 0
+    for (let i = 0; i < 2; i++) {
+      const s = i === 0 ? h : -h;
+      this.outputLines[i].a = nu0;
+      this.outputLines[i].b = nv0;
+      this.outputLines[i].c = -nu0 * cx - nv0 * cy - s;
+      this.outputLines[i].setDefined();
+    }
+  }
+
+  getOutputLines(): GeoLine[] { return this.outputLines; }
 }

@@ -178,7 +178,13 @@ const formatNumber = (value: number): string => {
   if (!Number.isFinite(value)) return String(value);
   if (Number.isInteger(value)) return String(value);
   // 去掉浮点尾部噪声（2.0000000000000004 → "2"），只保留 10 位小数。
-  return value.toFixed(10).replace(/0+$/, '').replace(/\.$/, '');
+  // 大/小量级必须走科学计数法：toFixed 对 ≥1e21 会产出 "1e+21" 再被去尾零
+  // 篡改成 "1e+2"（静默缩小 19 个量级），对 <1e-10 全变 "0"——两者都破坏往返。
+  if (Math.abs(value) >= 1e15 || Math.abs(value) < 1e-9) {
+    return value.toExponential(9).replace(/\.?0+e/, 'e');
+  }
+  const fixed = value.toFixed(10);
+  return fixed.replace(/0+$/, '').replace(/\.$/, '');
 };
 
 /**

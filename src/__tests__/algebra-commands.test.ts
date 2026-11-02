@@ -113,12 +113,15 @@ describe('extended commands: intersections and circles', () => {
     expect(ofType(kernel, AlgoIntersect)).toHaveLength(1);
   });
 
-  it('Intersection reports when two parallel lines do not cross', () => {
+  it('Intersection of parallel lines creates an undefined point（官方语义：拖到相交即出现）', () => {
     const kernel = makeKernel();
     addInput(kernel, 'Line((0, 0), (4, 0))');
     addInput(kernel, 'Line((0, 1), (4, 1))');
 
-    expect(() => addInput(kernel, 'Intersection(f, g)')).toThrow(/do not intersect/);
+    const elements = addInput(kernel, 'Intersection(f, g)');
+    const points = elements.filter((el): el is GeoPoint => el instanceof GeoPoint);
+    expect(points.length).toBe(1);
+    expect(points[0].isDefined()).toBe(false);
   });
 
   it('Circle(A, r) builds a circle from a centre and a numeric radius', () => {
@@ -293,7 +296,8 @@ describe('function analysis commands', () => {
     addInput(kernel, 'f(x) = 3x^2');
     const elements = addInput(kernel, 'Integral(f, 0, 1)');
 
-    const numeric = elements[0] as GeoNumeric;
+    // 输出现在是活算法（AlgoIntegralDefinite），数值取其输出
+    const numeric = elements.find(el => el instanceof GeoNumeric) as GeoNumeric;
     expect(numeric.getValue()).toBeCloseTo(1, 6);
     // 滑块驱动的被积函数也要带上作用域
     addInput(kernel, 'a = 2');
@@ -301,14 +305,16 @@ describe('function analysis commands', () => {
     const g = byLabel(kernel, GeoNumeric, 'a');
     g.setValue(2);
     kernel.getConstruction().updateAllAlgorithms();
-    const second = addInput(kernel, 'Integral(g, 0, 3)')[0] as GeoNumeric;
+    const second = addInput(kernel, 'Integral(g, 0, 3)').find(el => el instanceof GeoNumeric) as GeoNumeric;
     expect(second.getValue()).toBeCloseTo(9, 6);
+    expect(second.parentAlgo?.getClassName()).toBe('AlgoIntegralDefinite');
   });
 
   it('Integral handles a reversed interval and an undefined range', () => {
     const kernel = makeKernel();
     addInput(kernel, 'f(x) = 3x^2');
-    expect((addInput(kernel, 'Integral(f, 1, 0)')[0] as GeoNumeric).getValue()).toBeCloseTo(-1, 6);
+    const reversed = addInput(kernel, 'Integral(f, 1, 0)').find(el => el instanceof GeoNumeric) as GeoNumeric;
+    expect(reversed.getValue()).toBeCloseTo(-1, 6);
 
     // 1/x 在 0 处发散（p=1）：对标 GeoGebra 报未定义 —— 命令层以错误形式给出
     const kernel2 = makeKernel();

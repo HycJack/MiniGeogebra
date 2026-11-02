@@ -37,6 +37,12 @@ export class AlgoDependentNumeric extends AlgoElement {
     const scope: Scope = new Map();
     this.dependencies.forEach((dependency, index) => scope.set(dependency.label || `dep${index}`, dependency.getValue()));
     const value = evaluate(this.expression, scope, buildUserFnMap(this.functionDependencies));
+    // NaN（如 sqrt(-1)）按官方语义输出 undefined 并沿依赖图传播；
+    // ±∞ 是合法 defined 值（官方 1/0=+∞ 仍可参与运算，MyDouble.java:284-292），不能误杀
+    if (Number.isNaN(value)) {
+      this.outputNumeric.setUndefined();
+      return;
+    }
     this.outputNumeric.setValue(value, false);
     this.outputNumeric.setDefined();
   }

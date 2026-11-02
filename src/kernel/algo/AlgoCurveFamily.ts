@@ -22,6 +22,31 @@ const circleCoeffs = (h: number, k: number, r: number): number[] =>
   [1, 0, 1, -2 * h, -2 * k, h * h + k * k - r * r];
 
 /**
+ * 随源函数表达式失效的导数缓存（对标官方 NoCASDerivativeCache）。
+ * fn.expression 被整体替换（拖拽 moveFunction、FitPoly 重拟合、重定义）时
+ * 引用变化 → 下次 get() 重新符号微分；构造期冻结 AST 的做法会让切线/曲率/
+ * 密切圆在 f 变化后永远停留在旧斜率。
+ */
+class FunctionDerivativeCache {
+  private source: ExpressionNode | null = null;
+  private cache = new Map<number, ExpressionNode>();
+  constructor(private fn: GeoFunction) {}
+  get(order: number): ExpressionNode {
+    if (this.source !== this.fn.expression) {
+      this.source = this.fn.expression;
+      this.cache.clear();
+    }
+    let d = this.cache.get(order);
+    if (!d) {
+      d = this.fn.expression;
+      for (let i = 0; i < order; i++) d = differentiate(d, this.fn.variableName);
+      this.cache.set(order, d);
+    }
+    return d;
+  }
+}
+
+/**
  * Curve(x(t), y(t), t, a, b) 的算法壳：输入是表达式引用到的滑块，
  * 滑块变动时把新 scope 推给输出曲线。
  */
@@ -105,13 +130,13 @@ export class AlgoPointOnCurve extends AlgoElement {
 /** 函数 y=f(x) 在 x=a 处的切线。a 是固定数或滑块（滑块会联动）。 */
 export class AlgoTangentFunctionNumber extends AlgoElement {
   private outputLine: GeoLine;
-  private fPrime: ExpressionNode;
+  private fPrimeCache: FunctionDerivativeCache;
   private at: number | GeoNumeric | GeoPoint;
 
   constructor(kernel: IKernel, private fn: GeoFunction, at: number | GeoNumeric | GeoPoint) {
     super(kernel);
     this.at = at;
-    this.fPrime = differentiate(fn.expression, fn.variableName);
+    this.fPrimeCache = new FunctionDerivativeCache(fn);
     this.outputLine = new GeoLine(kernel, 1, 0, 0);
     this.setInputOutput();
   }
@@ -133,7 +158,7 @@ export class AlgoTangentFunctionNumber extends AlgoElement {
       : this.at.getValue();
     const y = this.fn.evaluateAt(a);
     const scope = this.buildScope(a);
-    const m = evaluateInto(this.fPrime, scope);
+    const m = evaluateInto(this.fPrimeCache.get(1), scope);
     if (!Number.isFinite(y) || !Number.isFinite(m)) return;
     // 切线 y − y0 = m(x − a) → m·x − y + (y0 − m·a) = 0
     this.outputLine.a = m;
@@ -194,16 +219,14 @@ export class AlgoTangentCurve extends AlgoElement {
  */
 export class AlgoCurvature extends AlgoElement {
   private outputNumeric: GeoNumeric;
-  private fPrime: ExpressionNode | null = null;
-  private fDoublePrime: ExpressionNode | null = null;
+  private fDerivCache: FunctionDerivativeCache | null = null;
   private at: number | GeoNumeric;
 
   constructor(kernel: IKernel, private path: GeoFunction | GeoCurve, at: number | GeoNumeric) {
     super(kernel);
     this.at = at;
     if (path instanceof GeoFunction) {
-      this.fPrime = differentiate(path.expression, path.variableName);
-      this.fDoublePrime = differentiate(this.fPrime, path.variableName);
+      this.fDerivCache = new FunctionDerivativeCache(path);
     }
     this.outputNumeric = new GeoNumeric(kernel, 0);
     this.setInputOutput();
@@ -224,8 +247,8 @@ export class AlgoCurvature extends AlgoElement {
 
     if (this.path instanceof GeoFunction) {
       const scope: Scope = new Map([[this.path.variableName, a]]);
-      const m = evaluateInto(this.fPrime!, scope);
-      const m2 = evaluateInto(this.fDoublePrime!, scope);
+      const m = evaluateInto(this.fDerivCache!.get(1), scope);
+      const m2 = evaluateInto(this.fDerivCache!.get(2), scope);
       if (Number.isFinite(m) && Number.isFinite(m2)) {
         k = m2 / Math.pow(1 + m * m, 1.5);
       }
@@ -263,16 +286,14 @@ export class AlgoCurvature extends AlgoElement {
 /** 密切圆：圆心 = 曲线点 + n̂/k，半径 = 1/|k|。 */
 export class AlgoOsculatingCircle extends AlgoElement {
   private outputConic: GeoConic;
-  private fPrime: ExpressionNode | null = null;
-  private fDoublePrime: ExpressionNode | null = null;
+  private fDerivCache: FunctionDerivativeCache | null = null;
   private at: number | GeoNumeric;
 
   constructor(kernel: IKernel, private path: GeoFunction | GeoCurve, at: number | GeoNumeric) {
     super(kernel);
     this.at = at;
     if (path instanceof GeoFunction) {
-      this.fPrime = differentiate(path.expression, path.variableName);
-      this.fDoublePrime = differentiate(this.fPrime, path.variableName);
+      this.fDerivCache = new FunctionDerivativeCache(path);
     }
     this.outputConic = new GeoConic(kernel, [1, 0, 1, 0, 0, -1]);
     this.setInputOutput();
@@ -297,8 +318,8 @@ export class AlgoOsculatingCircle extends AlgoElement {
     if (this.path instanceof GeoFunction) {
       const y = this.path.evaluateAt(a);
       const scope: Scope = new Map([[this.path.variableName, a]]);
-      const m = evaluateInto(this.fPrime!, scope);
-      const m2 = evaluateInto(this.fDoublePrime!, scope);
+      const m = evaluateInto(this.fDerivCache!.get(1), scope);
+      const m2 = evaluateInto(this.fDerivCache!.get(2), scope);
       if (Number.isFinite(y) && Number.isFinite(m) && Number.isFinite(m2) && m2 !== 0) {
         point = { x: a, y };
         k = m2 / Math.pow(1 + m * m, 1.5);

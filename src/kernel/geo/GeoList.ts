@@ -30,7 +30,11 @@ export class GeoList extends GeoElement {
   }
 
   isDefined(): boolean {
-    return this.children.length > 0 && this.children.every(c => c.isDefined());
+    // 官方 GeoList.java:110,652-654 语义：isDefined 是存储标志——空列表 {} 是
+    // defined 对象；含 undefined 元素时列表本身仍 defined（元素级显示 "?"），
+    // 命令对 undefined 元素逐个处理。此前"任一子元素 undefined 就判死整容器"
+    // 会让 Root(f) 空根、{f(2), 1} 一类把下游取元素链全部断掉。
+    return true;
   }
 
   getAlgebraDescription(): string {

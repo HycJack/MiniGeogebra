@@ -15,6 +15,12 @@ export class Kernel implements IKernel {
   private pendingUpdates = new Set<ConstructionElement>();
   private flushScheduled = false;
   private inBatch = false;
+  // flush 循环执行期间为 true：flush 收集的是传递闭包并按构造序重算，
+  // 期间逐级同步级联只会把同一条链算两遍。
+  private inFlush = false;
+  // 同步级联执行期间为 true：级联内部派生输出再次 notifyUpdate 时不重复级联
+  // （传递闭包已在入口一次收集，嵌套级联会沿链指数放大）。
+  private inCascade = false;
 
   constructor() {
     this.construction = new Construction(this);
@@ -42,6 +48,10 @@ export class Kernel implements IKernel {
    * 元素变化通知。新语义：
    * - 若是“独立”元素（如用户拖动的自由点），把它加入待更新集合并安排一次微任务 flush；
    *   flush 时只对真正依赖它的算法做增量重算（按 constIndex 拓扑序），不再全场更新。
+   * - 若是派生元素被直接 setCoords（如拖动约束点、translate 派生曲线），立即同步级联
+   *   重算依赖者——官方 updateRepaint 无论独立与否都全量级联（GeoElement.java:3325-3345），
+   *   此前依赖调用方手动补 recomputeDependents，是"拖拽不传播下游"类缺陷的共性根因。
+   * - flush 期间不级联（传递闭包已在 flush 入口收集并按序执行，逐级级联会重复计算）。
    * - 最终调用 updateCallback 通知视图刷新（由视图层做 RAF/revision 节流）。
    */
   notifyUpdate(element: ConstructionElement): void {
@@ -50,6 +60,14 @@ export class Kernel implements IKernel {
       if (!this.flushScheduled && !this.inBatch) {
         this.flushScheduled = true;
         Promise.resolve().then(() => this.flushPendingUpdates());
+      }
+    } else if (!this.inFlush && !this.inCascade) {
+      this.inCascade = true;
+      try {
+        this.recomputeDependents(element);
+        this.construction.assignWantedLabels();
+      } finally {
+        this.inCascade = false;
       }
     }
     if (this.updateCallback && !this.inBatch) {
@@ -97,6 +115,7 @@ export class Kernel implements IKernel {
     const algos = this.construction.getForwardDependentAlgorithms(changedElement);
     algos.sort((a, b) => a.constIndex - b.constIndex);
     for (const algo of algos) algo.update();
+    this.construction.assignWantedLabels();
   }
 
   /**
@@ -124,14 +143,20 @@ export class Kernel implements IKernel {
     const sorted = Array.from(affected).sort(
       (a, b) => a.constIndex - b.constIndex
     );
-    for (const algo of sorted) {
-      // 单个算法抛错不拖垮整批：pendingUpdates 已清空，若直接中断剩余算法
-      // 将永远不会被重算（直到下一次独立元素变动）
-      try {
-        algo.update();
-      } catch (err) {
-        console.error(`[kernel] update failed in ${algo.getClassName()}`, err);
+    this.inFlush = true;
+    try {
+      for (const algo of sorted) {
+        // 单个算法抛错不拖垮整批：pendingUpdates 已清空，若直接中断剩余算法
+        // 将永远不会被重算（直到下一次独立元素变动）
+        try {
+          algo.update();
+        } catch (err) {
+          console.error(`[kernel] update failed in ${algo.getClassName()}`, err);
+        }
       }
+      this.construction.assignWantedLabels();
+    } finally {
+      this.inFlush = false;
     }
   }
 

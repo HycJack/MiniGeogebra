@@ -2,7 +2,10 @@
  * FitPoly(P1, …, Pn, degree) —— 最小二乘多项式拟合（对标 GeoGebra CmdFitPoly）。
  *
  * 输入点全部注册为活依赖：移动任意点会自动重新拟合（GeoGebra 语义）。
- * 求解法方程 (VᵀV)c = Vᵀy（V[i][j] = x_i^j），部分主元高斯消元；
+ * 求解：先把 x 归一化到 t ∈ [−1,1]（中心化 + 半径缩放）再立法方程
+ * (VᵀV)c = Vᵀy、部分主元高斯消元——幂基直接在原始 x 上病态
+ * （x~1e4 起三次拟合残差放大 10 倍、四次完全灾难化，官方走 QR），
+ * 归一化后把 t 基系数经二项式展开换回 x 基输出。
  * 数据点少于 degree+1 时自动降阶（保证方程组满秩）。
  * 输出 GeoFunction 的系数随依赖变化就地重建。
  */
@@ -43,16 +46,24 @@ export class AlgoFitPoly extends AlgoElement {
     const degree = Math.min(this.degree, m - 1);
     const size = degree + 1;
 
+    // 归一化：t = (x − μ) / s，s 取最大绝对偏差（退化时回退 1）
+    let mu = 0;
+    for (const p of this.points) mu += p.getX();
+    mu /= m;
+    let s = 0;
+    for (const p of this.points) s = Math.max(s, Math.abs(p.getX() - mu));
+    if (!(s > 0) || !Number.isFinite(s)) s = 1;
+
     const ata: number[][] = Array.from({ length: size }, () => new Array(size).fill(0));
     const atb: number[] = new Array(size).fill(0);
     for (const p of this.points) {
-      const x = p.getX();
+      const t = (p.getX() - mu) / s;
       const y = p.getY();
       let power = 1;
       const row: number[] = [];
       for (let j = 0; j < size; j++) {
         row.push(power);
-        power *= x;
+        power *= t;
       }
       for (let i = 0; i < size; i++) {
         for (let j = 0; j < size; j++) ata[i][j] += row[i] * row[j];
@@ -60,14 +71,29 @@ export class AlgoFitPoly extends AlgoElement {
       }
     }
 
-    const coeffs = solveLinear(ata, atb);
-    if (!coeffs || coeffs.some(c => !Number.isFinite(c))) {
+    const tCoeffs = solveLinear(ata, atb);
+    if (!tCoeffs || tCoeffs.some(c => !Number.isFinite(c))) {
       this.outputFunction.setUndefined();
       return;
+    }
+    // t 基 → x 基：d_k·t^k = d_k·(x−μ)^k / s^k，按二项式展开合并
+    const coeffs = new Array(size).fill(0);
+    for (let k = 0; k < size; k++) {
+      const scale = tCoeffs[k] / Math.pow(s, k);
+      for (let j = 0; j <= k; j++) {
+        coeffs[j] += scale * binomial(k, j) * Math.pow(-mu, k - j);
+      }
     }
     this.outputFunction.setPolynomial(coeffs, 'x');
     this.outputFunction.setDefined();
   }
+}
+
+/** 二项式系数 C(k, j)。 */
+function binomial(k: number, j: number): number {
+  let r = 1;
+  for (let i = 0; i < j; i++) r = r * (k - i) / (i + 1);
+  return r;
 }
 
 /** 部分主元高斯消元解线性方程组；奇异返回 null。 */

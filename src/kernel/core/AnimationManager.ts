@@ -77,6 +77,9 @@ export class AnimationManager {
         const now = performance.now();
         let dt = now - this.lastTime;
         this.lastTime = now;
+        // 切后台回来 dt 巨大：钳到 100ms，否则单帧步长按 2fps 标定会跳过
+        // 差不多整个区间宽度的十分之一
+        dt = Math.min(dt, 100);
 
         // 用真实帧率标定步长：把测得帧率钳到 30 会让 60/120Hz 屏幕上动画成倍偏快
         // （每帧步长 1/30 秒但每秒来 60/120 帧）。只保留下限，防止切后台后
@@ -106,13 +109,9 @@ export class AnimationManager {
                     }
                 }
             });
-            // 非独立元素（依赖数值被动画时）不进 pendingUpdates，批末 flush 覆盖不到，
-            // 需显式沿正向图重算下游
-            for (const geo of snapshot) {
-                if (!geo.isIndependent()) {
-                    this.kernel.getConstruction().updateDependentAlgorithms(geo);
-                }
-            }
+            // 依赖链重算由 setValue 的 notifyUpdate → 批末 flush 统一覆盖：
+            // 约束点的驱动滑块是独立数值，flush 沿正向图到达全部下游——
+            // 此前再对非独立 geo 显式 updateDependentAlgorithms 是每帧双算
         } finally {
             // Play-once 动画可能移除最后一个对象；此时不要继续空转。
             // 异常防护：无论本帧是否抛错都要排程下一帧，否则动画静默死亡且 isRunning 恒真。

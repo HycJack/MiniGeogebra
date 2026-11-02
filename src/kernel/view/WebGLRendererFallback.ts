@@ -259,9 +259,12 @@ export class WebGLRendererFallback implements IRenderer {
     // 此前 dir=+1 扫 |ea−sa|，ea<sa 时落在错误端点（弧不终止于定义点）。
     const TWO_PI = 2 * Math.PI;
     if (a.r <= 1e-9) return [];
-    const sweep = a.ccw
+    let sweep = a.ccw
       ? ((a.sa - a.ea) % TWO_PI + TWO_PI) % TWO_PI
       : ((a.ea - a.sa) % TWO_PI + TWO_PI) % TWO_PI;
+    // 整圆（sa=0, ea=2π 等满幅差）：归一化把扫幅折成 0——Canvas ctx.arc
+    // 画整圆，这里必须同样兜回 2π，否则点/滑块等整圆静默消失
+    if (sweep < 1e-6 && Math.abs(a.ea - a.sa) >= TWO_PI - 1e-6) sweep = TWO_PI;
     if (sweep < 1e-6) return [];
     const r = a.r;
     // 段数按**像素**弧长预算（r × MV 缩放 ≈ 屏幕半径）：约每 3px 一段，
@@ -290,9 +293,11 @@ export class WebGLRendererFallback implements IRenderer {
     // 扫幅解释与 arcLines 一致（正向绕到 ea / ccw 时反向）
     const TWO_PI = 2 * Math.PI;
     if (a.r <= 1e-9) return [];
-    const sweep = a.ccw
+    let sweep = a.ccw
       ? ((a.sa - a.ea) % TWO_PI + TWO_PI) % TWO_PI
       : ((a.ea - a.sa) % TWO_PI + TWO_PI) % TWO_PI;
+    // 同 arcLines：整圆兜回 2π（点/滑块的 arc(0,2π) 此前全部消失）
+    if (sweep < 1e-6 && Math.abs(a.ea - a.sa) >= TWO_PI - 1e-6) sweep = TWO_PI;
     if (sweep < 1e-6) return [];
     const pts: { x: number; y: number }[] = [{ x: a.cx, y: a.cy }];
     const r = a.r;

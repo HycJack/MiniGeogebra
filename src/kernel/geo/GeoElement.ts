@@ -21,6 +21,9 @@ export abstract class GeoElement extends ConstructionElement
 
   protected isDefined_ = true;
   public label = '';
+  /** 官方 labelWanted（GeoElement.java:2363-2365）：不可见/undefined 的输出
+   *  不占标签字母，首次 defined 时由 Construction.assignWantedLabels 补发。 */
+  public labelWanted = false;
   protected coords: GeoVec3D;
   public parentAlgo: AlgoElement | null = null;
   protected animating: boolean = false;

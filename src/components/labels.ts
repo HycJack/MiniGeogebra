@@ -17,6 +17,10 @@ import { GeoPolygon } from '../kernel/geo/GeoPolygon';
 import { GeoConic } from '../kernel/geo/GeoConic';
 import { GeoArc } from '../kernel/geo/GeoArc';
 import { GeoConicPart } from '../kernel/geo/GeoConicPart';
+import { GeoFunction } from '../kernel/geo/GeoFunction';
+import { GeoCurve } from '../kernel/geo/GeoCurve';
+import { GeoLocus } from '../kernel/geo/GeoLocus';
+import { GeoInequality } from '../kernel/geo/GeoInequality';
 
 export interface LabelAnchor {
   x: number;
@@ -147,6 +151,54 @@ export function getLabelAnchor(el: GeoElement, scale: number, bounds?: LabelBoun
       return { x: c.x + el.getRadius() + o.dx, y: c.y + o.dy, align: 'left', baseline: 'bottom' };
     }
     return { x: c.x + o.dx, y: c.y + o.dy, align: 'left', baseline: 'bottom' };
+  }
+  if (el instanceof GeoFunction) {
+    // 函数标签跟随可视段中点（此前固定视口左上且仅选中时显示，无法命中/拖动）
+    if (!bounds) return null;
+    const visible = el.getSamples().filter(s =>
+      Number.isFinite(s.y) && s.x >= bounds.minX && s.x <= bounds.maxX);
+    if (visible.length === 0) return null;
+    const mid = visible[Math.floor(visible.length / 2)];
+    const o = offset(el, 10);
+    return { x: mid.x + o.dx, y: mid.y + o.dy, align: 'left', baseline: 'bottom' };
+  }
+  if (el instanceof GeoLocus) {
+    // 轨迹标签跟随采样段中点
+    const samples = el.getSamples().filter(s => Number.isFinite(s.x) && Number.isFinite(s.y));
+    if (samples.length === 0) return null;
+    const mid = samples[Math.floor(samples.length / 2)];
+    const o = offset(el, 10);
+    return { x: mid.x + o.dx, y: mid.y + o.dy, align: 'left', baseline: 'bottom' };
+  }
+  if (el instanceof GeoInequality) {
+    // 不等式标签放在区域内首个命中的候选点（中心 → 四象限 → 更外圈）
+    if (!bounds) return null;
+    const cx = (bounds.minX + bounds.maxX) / 2;
+    const cy = (bounds.minY + bounds.maxY) / 2;
+    const rx = (bounds.maxX - bounds.minX) / 4;
+    const ry = (bounds.maxY - bounds.minY) / 4;
+    const candidates = [
+      { x: cx, y: cy },
+      { x: cx - rx, y: cy + ry }, { x: cx + rx, y: cy + ry },
+      { x: cx - rx, y: cy - ry }, { x: cx + rx, y: cy - ry },
+      { x: cx - 2 * rx, y: cy }, { x: cx + 2 * rx, y: cy },
+      { x: cx, y: cy + 2 * ry }, { x: cx, y: cy - 2 * ry },
+    ];
+    const inside = candidates.find(p => {
+      try { return el.isInRegionXY(p.x, p.y); } catch { return false; }
+    }) ?? { x: cx, y: cy };
+    const o = offset(el, 10);
+    return { x: inside.x + o.dx, y: inside.y + o.dy, align: 'left', baseline: 'bottom' };
+  }
+  if (el instanceof GeoCurve) {
+    if (!bounds) return null;
+    const visible = el.getSamples().filter(s =>
+      Number.isFinite(s.x) && Number.isFinite(s.y)
+      && s.x >= bounds.minX && s.x <= bounds.maxX && s.y >= bounds.minY && s.y <= bounds.maxY);
+    if (visible.length === 0) return null;
+    const mid = visible[Math.floor(visible.length / 2)];
+    const o = offset(el, 10);
+    return { x: mid.x + o.dx, y: mid.y + o.dy, align: 'left', baseline: 'bottom' };
   }
   // 函数/曲线/轨迹/文本等：标签由各自的绘制逻辑处理（视口相关），不参与拖动
   return null;

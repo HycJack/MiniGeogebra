@@ -46,6 +46,7 @@ import { AlgoJoinPoints3D, AlgoMidpoint3D, AlgoPlaneThreePoints3D } from '../ker
 import { AlgoSphere3D, AlgoCylinder3D, AlgoCone3D, AlgoPrism3D, AlgoPyramid3D } from '../kernel/algo/AlgoPolyhedron3D';
 import { AlgoElement } from '../kernel/algo/AlgoElement';
 import { useLanguage } from '../i18n/LanguageContext';
+import { registerView3D, consumeView3D } from './view3DState';
 import CanvasValueInput from './CanvasValueInput';
 import NavigationCube from './NavigationCube';
 import Geometry3DToolbar from './Geometry3DToolbar';
@@ -1107,6 +1108,19 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
     const canvas = canvasRef.current;
     if (!canvas) return;
     const renderer = new WebGL3DRenderer(canvas);
+    // v4.6 存档恢复：挂载时消费导入流程存下的 3D 视图快照（相机/投影/网格）
+    const restored = consumeView3D();
+    if (restored) {
+      renderer.yaw = restored.yaw;
+      renderer.pitch = restored.pitch;
+      renderer.dist = restored.dist;
+      renderer.target = { x: restored.target[0], y: restored.target[1], z: restored.target[2] };
+      renderer.setProjectionMode(restored.projection);
+      setProjectionMode(restored.projection);
+      setShowGrid(restored.grid);
+      setShowAxes(restored.axes);
+      setShowClipBox(restored.clipBox);
+    }
     rendererRef.current = renderer;
     fittedRef.current = false;
     syncSize();
@@ -1129,6 +1143,39 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
   useEffect(() => {
     draw();
   }, [draw, renderRev, selectedElements, showGrid, showAxes, planeXY, showClipBox, clipReduction]);
+
+  // v4.6：向导出流程注册实时 3D 视图快照（状态变化重注册以闭包到最新值）
+  useEffect(() => {
+    registerView3D(() => {
+      const r = rendererRef.current;
+      if (!r) return null;
+      return {
+        yaw: r.yaw,
+        pitch: r.pitch,
+        dist: r.dist,
+        target: [r.target.x, r.target.y, r.target.z],
+        projection: projectionMode,
+        grid: showGrid,
+        axes: showAxes,
+        clipBox: showClipBox,
+      };
+    });
+    // 3D 视图已挂载时导入（渲染器初始化 effect 已消费过则此处为 null，无害）
+    const restored = consumeView3D();
+    const r = rendererRef.current;
+    if (restored && r) {
+      r.yaw = restored.yaw;
+      r.pitch = restored.pitch;
+      r.dist = restored.dist;
+      r.target = { x: restored.target[0], y: restored.target[1], z: restored.target[2] };
+      r.setProjectionMode(restored.projection);
+      setProjectionMode(restored.projection);
+      setShowGrid(restored.grid);
+      setShowAxes(restored.axes);
+      setShowClipBox(restored.clipBox);
+    }
+    return () => registerView3D(null);
+  }, [projectionMode, showGrid, showAxes, showClipBox]);
 
   // 投影模式变化
   useEffect(() => {

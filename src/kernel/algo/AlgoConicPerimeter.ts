@@ -18,7 +18,7 @@ import { GeoConic } from '../geo/GeoConic';
 import { GeoConicPart, CONIC_PART_ARC, CONIC_PART_SECTOR } from '../geo/GeoConicPart';
 import { GeoNumeric } from '../geo/GeoNumeric';
 import { analyzeConic } from '../geo/conicSolve';
-import { arcSweep } from '../geo/GeoArc';
+import { GeoArc, arcSweep } from '../geo/GeoArc';
 
 export class AlgoConicPerimeter extends AlgoElement {
   private outputValue: GeoNumeric;
@@ -42,6 +42,28 @@ export class AlgoConicPerimeter extends AlgoElement {
   compute(): void {
     const part = this.target instanceof GeoConicPart ? this.target : null;
     const type = this.target.getConicType();
+
+    // GeoArc（Arc/CircularArc 命令主路径）此前被 getConicType() 的占位圆系数
+    // 骗进 'circle' 分支算成整圆——90° 弧的 Length/Perimeter 都得 2πr。
+    if (this.target instanceof GeoArc) {
+      const arc = this.target;
+      const r = arc.getRadius();
+      if (r <= 0 || !Number.isFinite(r)) {
+        this.outputValue.setUndefined();
+        return;
+      }
+      const extent = arcSweep(arc.getStartAngle(), arc.getEndAngle(), arc.isCounterClockwise());
+      const arcLen = r * extent;
+      if (this.asLength) {
+        // Length(arc) = r·extent（官方 AlgoArcLength）
+        this.outputValue.setValue(arcLen);
+      } else {
+        // Perimeter(arc) = 弧长 + 弦（官方 AlgoCircumferenceConic：curved + straight）
+        this.outputValue.setValue(arcLen + 2 * r * Math.sin(extent / 2));
+      }
+      this.outputValue.setDefined();
+      return;
+    }
 
     // 弧段（GeoConicPart）：extent 由起止角与扫向导出。
     // Length 一律取弧长 r·extent（官方 AlgoArcLength）；

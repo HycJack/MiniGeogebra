@@ -50,3 +50,4 @@ export { AlgoDependentQuadric3D } from './AlgoDependentQuadric3D';
 export { AlgoPointOnLine3D, AlgoPointOnCircle3D, AlgoPointOnConic3D, AlgoPointOnPolyline3D, AlgoPointInPlane3D } from './AlgoPointOn3D';
 export { AlgoPolygonBoolean } from './AlgoPolygonBoolean';
 export { AlgoPerimeter } from './AlgoPerimeter';
+export { AlgoIntegralDefinite, AlgoTaylorSeriesFunction, AlgoSlopeFunction } from './AlgoFunctionAnalysis';

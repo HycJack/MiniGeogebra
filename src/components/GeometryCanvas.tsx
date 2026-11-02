@@ -45,7 +45,8 @@ import { createRenderer } from '../kernel/view/WebGLRendererFallback';
 import { serialize as serializeConstruction, deserialize as deserializeConstruction, downloadJSON } from '../kernel/persistence/ConstructionSerializer';
 import { importOFF } from '../kernel/io/OffParser';
 import { toolHandlers, clearToolState } from './tools/handlers';
-import { drawGrid, drawPoint, drawLine, drawSegment, drawPolygon, drawConic, drawLocus, drawBooleanRegion, drawFunction, renderPreviews, drawVector, drawPolyLine, drawArc, drawConicPart, drawRay, drawHoverMarker, drawCurve, drawInequality, drawText } from './drawHelpers';
+import { drawGrid, drawPoint, drawLine, drawSegment, drawPolygon, drawConic, drawLocus, drawBooleanRegion, drawFunction, renderPreviews, drawVector, drawPolyLine, drawArc, drawConicPart, drawRay, drawHoverMarker, drawCurve, drawInequality, drawText, drawAngleMarker, drawSliderDrawable } from './drawHelpers';
+import { sliderHitAt, sliderValueAtMouse } from './sliderDrawable';
 import { useLanguage } from '../i18n/LanguageContext';
 import { Undo2, Redo2, Globe, ZoomIn, ZoomOut, Home, Maximize, ListOrdered, Trash2, Eye, EyeOff, Tag, MousePointerClick, Play, Pause, Lock, LockOpen, Waypoints, ChevronsUp, ChevronsDown, Copy, Pencil, Eraser } from 'lucide-react';
 import { ToolMode } from './tools/types';
@@ -71,6 +72,7 @@ import SidePanel from './SidePanel';
 import CanvasOverlay from './CanvasOverlay';
 import type { UIElement } from './CanvasOverlay';
 import Geometry3DView from './Geometry3DView';
+import { snapshotView3D, offerView3D } from './view3DState';
 
 type Command =
   | { type: 'add'; elements: ConstructionElement[] }
@@ -79,7 +81,8 @@ type Command =
   | { type: 'style'; element: GeoElement; before: Record<string, unknown>; after: Record<string, unknown> }
   | { type: 'numeric'; element: GeoNumeric; oldValue: number; newValue: number }
   | { type: 'boolean'; element: GeoBoolean; oldValue: boolean; newValue: boolean }
-  | { type: 'rename'; element: ConstructionElement; oldLabel: string; newLabel: string };
+  | { type: 'rename'; element: ConstructionElement; oldLabel: string; newLabel: string }
+  | { type: 'uiMove'; id: string; from: { x: number; y: number }; to: { x: number; y: number } };
 
 /** GeoGebra 默认视图常用的单位比例，初始图形坐标保持在 ±10 以内。 */
 const DEFAULT_SCALE = 50;
@@ -273,6 +276,14 @@ export const GeometryCanvas: React.FC = () => {
     if ('isFixed' in changes) el.isFixed = changes.isFixed as boolean;
     if ('trace' in changes) el.trace = changes.trace as boolean;
     if ('layer' in changes) el.layer = changes.layer as number;
+    if ('sliderX' in changes && el instanceof GeoNumeric) el.sliderX = changes.sliderX as number;
+    if ('sliderY' in changes && el instanceof GeoNumeric) el.sliderY = changes.sliderY as number;
+    if ('intervalMin' in changes && el instanceof GeoNumeric) el.intervalMin = changes.intervalMin as number;
+    if ('intervalMax' in changes && el instanceof GeoNumeric) el.intervalMax = changes.intervalMax as number;
+    if ('animationIncrement' in changes && el instanceof GeoNumeric) el.animationIncrement = Math.max(0, changes.animationIncrement as number);
+    if ('sliderWidthPx' in changes && el instanceof GeoNumeric) el.sliderWidthPx = Math.max(20, changes.sliderWidthPx as number);
+    if ('sliderHorizontal' in changes && el instanceof GeoNumeric) el.sliderHorizontal = changes.sliderHorizontal as boolean;
+    if ('sliderVisible' in changes && el instanceof GeoNumeric) el.sliderVisible = changes.sliderVisible as boolean;
   }, []);
 
   const recordStyleChange = useCallback((element: GeoElement, changes: Record<string, unknown>) => {
@@ -408,9 +419,13 @@ const handleExport = useCallback(() => {
         label: u.label, numericLabel: u.numericLabel, booleanLabel: u.booleanLabel,
         script: u.script,
       }));
-      downloadJSON('minigeogebra-construction.json', serializeConstruction(kernel, coord, widgets));
-    } catch (err) { console.error('[export failed]', err); alert('导出失败'); }
-  }, [kernel, coord]);
+      // v4.6：2D 网格/轴显隐与 3D 视图状态一并落盘（官方 euclidianView3D 块）
+      downloadJSON('minigeogebra-construction.json', serializeConstruction(kernel, coord, widgets, { grid: showGrid, axes: showAxes }, (() => {
+        const s3 = snapshotView3D();
+        return s3 ?? undefined;
+      })()));
+    } catch (err) { console.error('[export failed]', err); alert(t('exportFailed')); }
+  }, [kernel, coord, showGrid, showAxes]);
 
   const downloadFile = useCallback((content: string, filename: string, type?: string) => {
     const blob = new Blob([content], { type: type || 'application/octet-stream' });
@@ -422,7 +437,7 @@ const handleExport = useCallback(() => {
 
   const handleExportSVG = useCallback(() => {
     try { const svgR = new SvgRenderer(); const bounds = coord.visibleWorldBounds(); _renderToSvg(svgR, bounds); downloadFile(svgR.toSvgString(bounds), `minigeogebra-${Date.now()}.svg`, 'image/svg+xml'); }
-    catch (err) { console.error('[svg export failed]', err); alert('SVG 导出失败'); }
+    catch (err) { console.error('[svg export failed]', err); alert(t('exportSvgFailed')); }
   }, [coord, downloadFile]);
 
   const _renderToSvg = useCallback((renderer: IRenderer, bounds: { minX: number; maxX: number; minY: number; maxY: number }) => {
@@ -433,7 +448,7 @@ const handleExport = useCallback(() => {
     elements.forEach(el => {
       if (el instanceof GeoConicPart) drawConicPart(renderer, el, false, coord.xScale);
       else if (el instanceof GeoArc) drawArc(renderer, el, false, coord.xScale);
-      else if (el instanceof GeoConic) drawConic(renderer, el, false, coord.xScale);
+      else if (el instanceof GeoConic) drawConic(renderer, el, false, coord.xScale, bounds);
     });
     elements.forEach(el => { if (el instanceof GeoLocus) drawLocus(renderer, el, false, coord.xScale); });
     elements.forEach(el => { if (el instanceof GeoFunction) drawFunction(renderer, el, false, bounds, coord.xScale, (bounds.maxX - bounds.minX) * coord.xScale); });
@@ -460,16 +475,33 @@ const handleExport = useCallback(() => {
         if (isOff && !/^\s*\{/.test(text)) {
           importOFF(kernel, text);
         } else {
-          const { coord: restored, uiWidgets } = deserializeConstruction(kernel, text);
+          const { coord: restored, uiWidgets, viewFlags, view3D } = deserializeConstruction(kernel, text);
           if (restored) setCoord(restored);
+          // v4.6：恢复 2D 网格/轴显隐与 3D 视图状态（3D 视图挂载时消费）
+          if (viewFlags) { setShowGrid(viewFlags.grid); setShowAxes(viewFlags.axes); }
+          if (view3D) offerView3D(view3D);
           // v4.3：恢复画布 UI 元素（内核绑定对象已由反序列化重建）
           if (uiWidgets?.length) {
-            setUIElementsTracked(prev => {
-              const restoredWidgets = uiWidgets
-                .filter(w => w.type !== 'slider' || prev.every(p => p.numericLabel !== w.numericLabel))
-                .map(w => ({ ...w, value: 0, min: 0, max: 100, step: 1 }) as UIElement);
-              return [...prev, ...restoredWidgets];
+            const effCoord = restored ?? coord;
+            // 滑条不再是 HTML widget：旧存档的 slider widget 迁移为内核
+            // GeoNumeric 的滑条字段（sliderVisible + 屏幕绝对位置）
+            uiWidgets.filter(w => w.type === 'slider' && w.numericLabel).forEach(w => {
+              const num = kernel.getConstruction().getElements().find(
+                el => el instanceof GeoNumeric && (el as GeoNumeric).label === w.numericLabel) as GeoNumeric | undefined;
+              if (num) {
+                num.sliderVisible = true;
+                num.sliderX = w.x * effCoord.xScale + effCoord.xZero;
+                num.sliderY = effCoord.yZero - w.y * effCoord.yScale;
+                num.sliderWidthPx = 200;
+                num.sliderHorizontal = true;
+              }
             });
+            const restoredWidgets = uiWidgets
+              .filter(w => w.type !== 'slider')
+              .filter(w => w.type !== 'checkbox' || uiElementsRef.current.every(p => p.booleanLabel !== w.booleanLabel))
+              .filter(w => w.type !== 'inputbox' || uiElementsRef.current.every(p => p.numericLabel !== w.numericLabel))
+              .map(w => ({ ...w, value: 0 }) as UIElement);
+            setUIElementsTracked(prev => [...prev, ...restoredWidgets]);
           }
         }
         setSelectedElements([]); setPolygonPoints([]); setRenderRev(r => r + 1);
@@ -620,6 +652,7 @@ const handleExport = useCallback(() => {
     else if (cmd.type === 'boolean') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el instanceof GeoBoolean) el.setValue(cmd.oldValue); }
     else if (cmd.type === 'rename') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el) el.label = cmd.oldLabel; rewriteLinkedLabels(cmd.newLabel, cmd.oldLabel); rewriteExpressions(cmd.newLabel, cmd.oldLabel); }
     else if (cmd.type === 'style') applyStyleDirectly(cmd.element, cmd.before);
+    else if (cmd.type === 'uiMove') setUIElementsTracked(prev => prev.map(u => u.id === cmd.id ? { ...u, x: cmd.from.x, y: cmd.from.y } : u));
     kernel.getConstruction().updateAllAlgorithms(); setRenderRev(r => r + 1);
   }, [kernel, restoreState, applyStyleDirectly, rewriteLinkedLabels, rewriteExpressions, setUIElementsTracked]);
 
@@ -635,8 +668,57 @@ const handleExport = useCallback(() => {
     else if (cmd.type === 'boolean') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el instanceof GeoBoolean) el.setValue(cmd.newValue); }
     else if (cmd.type === 'rename') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el) el.label = cmd.newLabel; rewriteLinkedLabels(cmd.oldLabel, cmd.newLabel); rewriteExpressions(cmd.oldLabel, cmd.newLabel); }
     else if (cmd.type === 'style') applyStyleDirectly(cmd.element, cmd.after);
+    else if (cmd.type === 'uiMove') setUIElementsTracked(prev => prev.map(u => u.id === cmd.id ? { ...u, x: cmd.to.x, y: cmd.to.y } : u));
     kernel.getConstruction().updateAllAlgorithms(); setRenderRev(r => r + 1);
   }, [kernel, restoreState, applyStyleDirectly, rewriteLinkedLabels, rewriteExpressions, setUIElementsTracked]);
+
+  // ─── 画布 widget 拖拽（window 级监听）──
+  // widget 是画布的兄弟绝对定位层：mousedown 在 widget 上被 stopPropagation，
+  // canvas 的 onMouseMove/onMouseUp 收不到后续事件——只有 window 监听能跟手，
+  // 且 mouseup 落在 widget 上也能收尾（此前拖一下就粘滞、位置移动也不入 undo）。
+  const uiDragStartRef = useRef<{ id: string; from: { x: number; y: number }; moved: boolean } | null>(null);
+  const uiDragJustEndedRef = useRef(false);
+  useEffect(() => {
+    if (!draggingUIElement) return;
+    const startEl = uiElementsRef.current.find(u => u.id === draggingUIElement);
+    if (startEl) uiDragStartRef.current = { id: startEl.id, from: { x: startEl.x, y: startEl.y }, moved: false };
+    uiDragJustEndedRef.current = false;
+    const onMove = (e: MouseEvent) => {
+      const container = containerRef.current; if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const wx = (e.clientX - rect.left - coord.xZero) / coord.xScale;
+      const wy = (coord.yZero - (e.clientY - rect.top)) / coord.yScale;
+      if (uiDragStartRef.current) uiDragStartRef.current.moved = true;
+      setUIElementsTracked(prev => prev.map(el => el.id === draggingUIElement ? { ...el, x: wx, y: wy } : el));
+    };
+    const onUp = () => {
+      const start = uiDragStartRef.current;
+      if (start?.moved) {
+        const el = uiElementsRef.current.find(u => u.id === start.id);
+        if (el && (Math.abs(el.x - start.from.x) > 1e-9 || Math.abs(el.y - start.from.y) > 1e-9)) {
+          addCommand({ type: 'uiMove', id: start.id, from: start.from, to: { x: el.x, y: el.y } });
+        }
+      }
+      // 仅真实拖动过才抑制随后的 click（防拖完按钮误触发脚本）；普通点击不抑制
+      uiDragJustEndedRef.current = start?.moved === true;
+      uiDragStartRef.current = null;
+      setDraggingUIElement(null);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+  }, [draggingUIElement, coord, addCommand, setUIElementsTracked, setDraggingUIElement]);
+
+  // ─── widget 改值入 undo（滑块拖动 / 输入框提交，与 SidePanel 同一命令通道）──
+  const handleUIValueCommit = useCallback((element: { numericLabel?: string }, oldValue: number, newValue: number) => {
+    if (!element.numericLabel || oldValue === newValue) return;
+    const numeric = kernel.getConstruction().getElements().find(
+      el => el instanceof GeoNumeric && (el as GeoNumeric).label === element.numericLabel) as GeoNumeric | undefined;
+    if (!numeric) return;
+    notifyNumericChange(numeric, oldValue, newValue);
+    numeric.setValue(newValue);
+    kernel.notifyUpdate(numeric);
+  }, [kernel, notifyNumericChange]);
 
   // ─── 键盘快捷键 ───────────────────────────────────────────────────
   useEffect(() => {
@@ -694,23 +776,34 @@ const handleExport = useCallback(() => {
       .sort((a, b) => (a.el.layer - b.el.layer) || (a.i - b.i))
       .map(({ el }) => el);
     const selectedSet = new Set(selectedElements);
+    // 线型（dash）此前只在 SVG 导出/3D 生效，2D 主画布 17 个 draw 函数全没接——
+    // 统一在分派点按屏幕像素（存值 / xScale）施加，绘制完复位
+    const drawWithStyle = (el: GeoElement, draw: () => void) => {
+      if (el.strokeDash && el.strokeDash.length) {
+        renderer.setLineDash(el.strokeDash.map(d => d / coord.xScale));
+      }
+      draw();
+      renderer.setLineDash([]);
+    };
     drawOrder.forEach(el => {
       const sel = selectedSet.has(el);
-      if (el instanceof GeoPolygon) drawPolygon(renderer, el, sel, coord.xScale);
-      else if (el instanceof GeoConicPart) drawConicPart(renderer, el, sel, coord.xScale);
-      else if (el instanceof GeoArc) drawArc(renderer, el, sel, coord.xScale);
-      else if (el instanceof GeoConic) drawConic(renderer, el, sel, coord.xScale);
-      else if (el instanceof GeoLocus) drawLocus(renderer, el, sel, coord.xScale);
-      else if (el instanceof GeoBooleanRegion) drawBooleanRegion(renderer, el, sel, coord.xScale);
-      else if (el instanceof GeoFunction) drawFunction(renderer, el, sel, coord.visibleWorldBounds(), coord.xScale, canvas.width / dpr);
-      else if (el instanceof GeoCurve) drawCurve(renderer, el, sel, coord.visibleWorldBounds(), coord.xScale, canvas.width / dpr);
-      else if (el instanceof GeoInequality) drawInequality(renderer, el, coord.visibleWorldBounds(), coord.xScale);
-      else if (el instanceof GeoText) drawText(renderer, el, sel, coord.xScale);
-      else if (el instanceof GeoPolyLine) drawPolyLine(renderer, el, sel, coord.xScale);
-      else if (el instanceof GeoVector) drawVector(renderer, el, sel, coord.xScale);
-      else if (el instanceof GeoSegment) drawSegment(renderer, el, sel, coord.xScale);
-      else if (el instanceof GeoRay) drawRay(renderer, el, sel, coord.visibleWorldBounds(), coord.xScale);
-      else if (el instanceof GeoLine) drawLine(renderer, el, sel, coord.visibleWorldBounds(), coord.xScale);
+      if (el instanceof GeoPolygon) drawWithStyle(el, () => drawPolygon(renderer, el, sel, coord.xScale));
+      else if (el instanceof GeoConicPart) drawWithStyle(el, () => drawConicPart(renderer, el, sel, coord.xScale));
+      else if (el instanceof GeoArc) drawWithStyle(el, () => drawArc(renderer, el, sel, coord.xScale));
+      else if (el instanceof GeoConic) drawWithStyle(el, () => drawConic(renderer, el, sel, coord.xScale, coord.visibleWorldBounds()));
+      else if (el instanceof GeoLocus) drawWithStyle(el, () => drawLocus(renderer, el, sel, coord.xScale));
+      else if (el instanceof GeoBooleanRegion) drawWithStyle(el, () => drawBooleanRegion(renderer, el, sel, coord.xScale));
+      else if (el instanceof GeoFunction) drawWithStyle(el, () => drawFunction(renderer, el, sel, coord.visibleWorldBounds(), coord.xScale, canvas.width / dpr));
+      else if (el instanceof GeoCurve) drawWithStyle(el, () => drawCurve(renderer, el, sel, coord.visibleWorldBounds(), coord.xScale, canvas.width / dpr));
+      else if (el instanceof GeoInequality) drawWithStyle(el, () => drawInequality(renderer, el, coord.visibleWorldBounds(), coord.xScale, sel));
+      else if (el instanceof GeoText) drawWithStyle(el, () => drawText(renderer, el, sel, coord.xScale));
+      else if (el instanceof GeoPolyLine) drawWithStyle(el, () => drawPolyLine(renderer, el, sel, coord.xScale));
+      else if (el instanceof GeoVector) drawWithStyle(el, () => drawVector(renderer, el, sel, coord.xScale));
+      else if (el instanceof GeoSegment) drawWithStyle(el, () => drawSegment(renderer, el, sel, coord.xScale));
+      else if (el instanceof GeoRay) drawWithStyle(el, () => drawRay(renderer, el, sel, coord.visibleWorldBounds(), coord.xScale));
+      else if (el instanceof GeoLine) drawWithStyle(el, () => drawLine(renderer, el, sel, coord.visibleWorldBounds(), coord.xScale));
+      else if (el instanceof GeoNumeric && el.isAngle) drawAngleMarker(renderer, el, coord.xScale);
+      else if (el instanceof GeoNumeric && el.sliderVisible) drawSliderDrawable(renderer, el, sel, coord);
     });
     drawOrder.forEach(el => { if (el instanceof GeoPoint) drawPoint(renderer, el, selectedSet.has(el), coord.xScale); });
 
@@ -802,7 +895,12 @@ const handleExport = useCallback(() => {
   const zoom = useCallback((factor: number) => {
     if (!containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
-    const sx = rect.width / 2, sy = rect.height / 2;
+    // 官方 getZoomPoint：优先以鼠标所在处为缩放焦点，鼠标在画布外才回退中心
+    const lx = lastClientPosRef.current.x - rect.left;
+    const ly = lastClientPosRef.current.y - rect.top;
+    const inCanvas = lx >= 0 && ly >= 0 && lx <= rect.width && ly <= rect.height;
+    const sx = inCanvas ? lx : rect.width / 2;
+    const sy = inCanvas ? ly : rect.height / 2;
     setCoord(prev => {
       let next = prev.zoom(factor, sx, sy);
       if (next.xScale < MIN_SCALE) next = prev.zoom(MIN_SCALE / prev.xScale, sx, sy);
@@ -812,6 +910,14 @@ const handleExport = useCallback(() => {
   }, []);
 
   // ─── 鼠标事件 ─────────────────────────────────────────────────────
+  // ── 右键拖动平移后抑制 contextmenu（官方 handleContextMenu 判定位移）──
+  const rightDownPosRef = useRef<{ x: number; y: number } | null>(null);
+  // ── 多选整体拖动（E1-3）+ Shift 轴向约束（E1-4）的拖拽起点快照 ──
+  const multiDragRef = useRef<{ primary0: { x: number; y: number }; items: { el: GeoPoint; x0: number; y0: number }[] } | null>(null);
+  // ── 画布滑条拖拽（官方 MoveMode.NUMERIC / MoveMode.SLIDER）──
+  const sliderValueDragRef = useRef<{ num: GeoNumeric; oldValue: number } | null>(null);
+  const sliderMoveRef = useRef<{ num: GeoNumeric; startX: number; startY: number; origX: number; origY: number; moved: boolean } | null>(null);
+
   const handleMouseDown = (e: React.MouseEvent) => {
     const { screenX, screenY, x, y } = getMousePos(e, true);
     lastClientPosRef.current = { x: e.clientX, y: e.clientY };
@@ -825,10 +931,11 @@ const handleExport = useCallback(() => {
       req.onSubmit(null);
       return;
     }
-    if (e.button === 1 || e.button === 2 || (e.button === 0 && e.shiftKey)) { setIsPanning(true); setLastPanPos({ x: screenX, y: screenY }); return; }
+    if (e.button === 1 || e.button === 2 || (e.button === 0 && e.shiftKey)) { setIsPanning(true); setLastPanPos({ x: screenX, y: screenY }); rightDownPosRef.current = { x: screenX, y: screenY }; return; }
     if (mode === 'pan') { setIsPanning(true); setLastPanPos({ x: screenX, y: screenY }); return; }
-    if (mode === 'zoom_in') { zoom(1.25); return; }
-    if (mode === 'zoom_out') { zoom(1 / 1.25); return; }
+    // 官方缩放工具单击因子 1.5（EuclidianView.java:172 MODE_ZOOM_FACTOR）
+    if (mode === 'zoom_in') { zoom(1.5); return; }
+    if (mode === 'zoom_out') { zoom(1 / 1.5); return; }
     // 标签拖拽优先于对象命中（GeoGebra：labels > objects）；隐藏对象与导航未到的对象不可命中
     if ((mode === 'move' || mode === 'select') && e.button === 0) {
       const labelHit = hitLabel(kernel.getConstruction().getElements().filter((el): el is GeoElement => el instanceof GeoElement && el.isEffectivelyVisible() && (navStep === null || el.constIndex <= navStep)), x, y, coord.xScale, coord.visibleWorldBounds());
@@ -836,6 +943,24 @@ const handleExport = useCallback(() => {
         setDraggingLabel(labelHit);
         setLabelDragStart({ sx: screenX, sy: screenY, ox: labelHit.labelOffsetX, oy: labelHit.labelOffsetY });
         setSelectedElements([labelHit]);
+        setRenderRev(r => r + 1);
+        return;
+      }
+      // 画布滑条（官方：blob 命中 → 拖值；轨道命中 → 移位；命中即选中）
+      const sliderNums = kernel.getConstruction().getElements().filter((el): el is GeoNumeric =>
+        el instanceof GeoNumeric && el.sliderVisible && el.isEffectivelyVisible() && (navStep === null || el.constIndex <= navStep));
+      for (const num of sliderNums.slice().reverse()) {
+        const hit = sliderHitAt(num, screenX, screenY);
+        if (!hit) continue;
+        setSelectedElements([num]);
+        if (hit === 'knob') {
+          // 单击即贴合到点击位置（官方 moveNumeric 的"just a click"直更新）
+          sliderValueDragRef.current = { num, oldValue: num.getValue() };
+          num.setValue(sliderValueAtMouse(num, screenX, screenY));
+          kernel.notifyUpdate(num);
+        } else {
+          sliderMoveRef.current = { num, startX: screenX, startY: screenY, origX: num.sliderX, origY: num.sliderY, moved: false };
+        }
         setRenderRev(r => r + 1);
         return;
       }
@@ -884,7 +1009,26 @@ const handleExport = useCallback(() => {
     const { screenX, screenY, x, y } = getMousePos(e, true, 'move'); setMousePos({ x, y });
     lastClientPosRef.current = { x: e.clientX, y: e.clientY };
     if (isPanning) { setCoord(prev => prev.panBy(screenX - lastPanPos.x, screenY - lastPanPos.y)); setLastPanPos({ x: screenX, y: screenY }); setRenderRev(r => r + 1); return; }
-    if (draggingUIElement) { setUIElementsTracked(prev => prev.map(el => el.id === draggingUIElement ? { ...el, x, y } : el)); return; }
+    // 画布滑条拖值/移位（官方 moveNumeric / moveSlider）
+    if (sliderValueDragRef.current) {
+      const { num } = sliderValueDragRef.current;
+      const v = sliderValueAtMouse(num, screenX, screenY);
+      if (v !== num.getValue()) {
+        num.setValue(v);
+        kernel.notifyUpdate(num);
+      }
+      setRenderRev(r => r + 1);
+      return;
+    }
+    if (sliderMoveRef.current) {
+      const ref = sliderMoveRef.current;
+      ref.num.sliderX = ref.origX + (screenX - ref.startX);
+      ref.num.sliderY = ref.origY + (screenY - ref.startY);
+      if (Math.abs(screenX - ref.startX) > 2 || Math.abs(screenY - ref.startY) > 2) ref.moved = true;
+      setRenderRev(r => r + 1);
+      return;
+    }
+    // widget 拖拽走 window 级监听（见 uiDragStartRef effect），此处不再处理
     // 标签拖拽：偏移按屏幕像素累计（+x 右 / +y 下），绘制与命中共享 labels.ts 锚点
     if (draggingLabel && labelDragStart) {
       draggingLabel.labelOffsetX = labelDragStart.ox + (screenX - labelDragStart.sx);
@@ -942,7 +1086,30 @@ const handleExport = useCallback(() => {
         if (!dragGrabOffsetRef.current) {
           dragGrabOffsetRef.current = { x: draggedElement.getX() - x, y: draggedElement.getY() - y };
         }
-        draggedElement.setCoords(x + dragGrabOffsetRef.current.x, y + dragGrabOffsetRef.current.y);
+        if (!multiDragRef.current) {
+          // E1-3：多选拖动快照——选中集里其余可移动自由点随主点同位移；
+          // E1-4 的轴向约束也以该起点为基准
+          const others = selectedElements
+            .filter((el): el is GeoPoint => el instanceof GeoPoint && el !== draggedElement && el.isIndependent() && !el.isFixed)
+            .map(el => ({ el, x0: el.getX(), y0: el.getY() }));
+          multiDragRef.current = {
+            primary0: { x: draggedElement.getX() + dragGrabOffsetRef.current.x, y: draggedElement.getY() + dragGrabOffsetRef.current.y },
+            items: others,
+          };
+        }
+        let tx = x + dragGrabOffsetRef.current.x;
+        let ty = y + dragGrabOffsetRef.current.y;
+        const ref = multiDragRef.current;
+        if (e.shiftKey && ref) {
+          // E1-4：Shift 锁主轴（以拖拽起点为基准，位移大者胜出）
+          const ddx = tx - ref.primary0.x, ddy = ty - ref.primary0.y;
+          if (Math.abs(ddx) >= Math.abs(ddy)) ty = ref.primary0.y; else tx = ref.primary0.x;
+        }
+        const delta = ref ? { x: tx - ref.primary0.x, y: ty - ref.primary0.y } : { x: 0, y: 0 };
+        draggedElement.setCoords(tx, ty);
+        for (const item of ref?.items ?? []) {
+          item.el.setCoords(item.x0 + delta.x, item.y0 + delta.y);
+        }
       }
       else if (draggedElement instanceof GeoPoint && draggedElement.parentAlgo) {
         const algo = draggedElement.parentAlgo;
@@ -1012,6 +1179,25 @@ const handleExport = useCallback(() => {
       return;
     }
     if (draggingUIElement) { setDraggingUIElement(null); return; }
+    // 滑条拖拽收尾：值变化走 numeric 命令、位置变化走 style 命令（均可撤销）
+    if (sliderValueDragRef.current) {
+      const { num, oldValue } = sliderValueDragRef.current;
+      sliderValueDragRef.current = null;
+      notifyNumericChange(num, oldValue, num.getValue());
+      return;
+    }
+    if (sliderMoveRef.current) {
+      const ref = sliderMoveRef.current;
+      sliderMoveRef.current = null;
+      if (ref.moved) {
+        addCommand({
+          type: 'style', element: ref.num,
+          before: { sliderX: ref.origX, sliderY: ref.origY },
+          after: { sliderX: ref.num.sliderX, sliderY: ref.num.sliderY },
+        });
+      }
+      return;
+    }
     if (draggingLabel) {
       if (labelDragStart) {
         const moved = draggingLabel.labelOffsetX !== labelDragStart.ox || draggingLabel.labelOffsetY !== labelDragStart.oy;
@@ -1036,7 +1222,8 @@ const handleExport = useCallback(() => {
       // 容差 eps 按像素换算成世界单位（默认 5 是世界单位，缩放下框选会抓到矩形外很远的对象）
       const marqueeEps = 5 / coord.xScale;
       for (const el of kernel.getConstruction().getElements()) {
-        if (!el.isEffectivelyVisible()) continue;
+        // getElements() 混含算法对象，isEffectivelyVisible 仅 GeoElement 有——无守卫则框选松手即 TypeError
+        if (!(el instanceof GeoElement) || !el.isEffectivelyVisible()) continue;
         if (navStep !== null && el.constIndex > navStep) continue;
         if (elementIntersectsRect(el, rect, marqueeEps)) hitElements.push(el);
       }
@@ -1059,7 +1246,7 @@ const handleExport = useCallback(() => {
         addCommand({ type: 'move', oldState: dragStartState, newState });
       }
     }
-    setDraggedElement(null); setDragStartState(null); dragGrabOffsetRef.current = null;
+    setDraggedElement(null); setDragStartState(null); dragGrabOffsetRef.current = null; multiDragRef.current = null;
   };
 
   const handleWheel = useCallback((e: WheelEvent) => {
@@ -1079,14 +1266,23 @@ const handleExport = useCallback(() => {
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     lastClientPosRef.current = { x: e.clientX, y: e.clientY };
+    // 右键拖动平移后抑制菜单（官方 handleContextMenu 判定位移 > 阈值）
+    const rect0 = canvasRef.current?.getBoundingClientRect();
+    if (rightDownPosRef.current && rect0) {
+      const moved = Math.hypot((e.clientX - rect0.left) - rightDownPosRef.current.x, (e.clientY - rect0.top) - rightDownPosRef.current.y);
+      rightDownPosRef.current = null;
+      if (moved > 6) return;
+    }
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
     const screenX = e.clientX - rect.left;
     const screenY = e.clientY - rect.top;
     const world = coord.screenToWorld(screenX, screenY);
     // 隐藏对象/导航未到的对象不弹菜单
-    const els = kernel.getConstruction().getElements().filter(el => el.isEffectivelyVisible() && (navStep === null || el.constIndex <= navStep));
-    const hit = hitScreenObject(els, world.x, world.y, coord.xScale);
+    const els = kernel.getConstruction().getElements().filter((el): el is GeoElement => el instanceof GeoElement && el.isEffectivelyVisible() && (navStep === null || el.constIndex <= navStep));
+    // 与左键一致：先查对象，再查标签命中（此前右键点标签直接落空白分支）
+    const hit = hitScreenObject(els, world.x, world.y, coord.xScale)
+      ?? hitLabel(els, world.x, world.y, coord.xScale, coord.visibleWorldBounds());
     if (!hit) {
       // 空白右键：有轨迹残影时提供清除入口（对标 GeoGebra「重新绘制所有对象」）
       const hasTraces = kernel.getConstruction().getElements().some(el => el.trace && traceRecorder.getStamps(() => true).length > 0);
@@ -1247,6 +1443,41 @@ const handleExport = useCallback(() => {
     const target = e.target as HTMLElement;
     // 不要拦截输入框、或已被上层处理的 Escape/Delete/Enter
     if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+    // E1-5（官方 handleArrowKeyMovement）：有选中对象时方向键微移对象而非平移视图
+    //（Shift=1、Ctrl=0.01、默认 0.1 世界单位）
+    if (e.key.startsWith('Arrow') && selectedElements.length > 0) {
+      const movable = selectedElements.filter((el): el is GeoPoint =>
+        el instanceof GeoPoint && el.isIndependent() && !el.isFixed);
+      // 选中的是画布滑条 → 方向键按 increment 微调值（官方滑条键盘语义）
+      const sliderNums = selectedElements.filter((el): el is GeoNumeric =>
+        el instanceof GeoNumeric && el.sliderVisible);
+      if (movable.length > 0) {
+        e.preventDefault();
+        const step = e.shiftKey ? 1 : (e.ctrlKey || e.metaKey) ? 0.01 : 0.1;
+        const delta = e.key === 'ArrowLeft' ? [-step, 0]
+          : e.key === 'ArrowRight' ? [step, 0]
+          : e.key === 'ArrowUp' ? [0, step]
+          : [0, -step];
+        const before = captureMoveState(kernel);
+        movable.forEach(p => p.setCoords(p.getX() + delta[0], p.getY() + delta[1]));
+        kernel.flushNow();
+        addCommand({ type: 'move', oldState: before, newState: captureMoveState(kernel) });
+        setRenderRev(r => r + 1);
+        return;
+      }
+      if (sliderNums.length > 0) {
+        e.preventDefault();
+        const dir = e.key === 'ArrowRight' || e.key === 'ArrowUp' ? 1 : -1;
+        const step = e.shiftKey ? 10 : 1;
+        for (const num of sliderNums) {
+          const oldValue = num.getValue();
+          num.setValue(num.valueAtParam(num.paramOfValue() + dir * step * num.animationIncrement / Math.max(num.intervalMax - num.intervalMin, 1e-9)));
+          notifyNumericChange(num, oldValue, num.getValue());
+        }
+        setRenderRev(r => r + 1);
+        return;
+      }
+    }
     const res = resolveViewKey(e.key);
     if (res.kind === 'none') return;
     e.preventDefault();
@@ -1323,7 +1554,7 @@ const handleExport = useCallback(() => {
           )}
 
           {view === '2d' && (
-            <CanvasOverlay uiElements={uiElements} setUIElements={setUIElementsTracked} editingUIElement={editingUIElement} setEditingUIElement={setEditingUIElement} draggingUIElement={draggingUIElement} setDraggingUIElement={setDraggingUIElement} coord={coord} kernel={kernel} onBooleanToggle={handleBooleanToggle} />
+            <CanvasOverlay uiElements={uiElements} setUIElements={setUIElementsTracked} editingUIElement={editingUIElement} setEditingUIElement={setEditingUIElement} draggingUIElement={draggingUIElement} setDraggingUIElement={setDraggingUIElement} coord={coord} kernel={kernel} onBooleanToggle={handleBooleanToggle} onValueCommit={handleUIValueCommit} isDragClick={() => uiDragJustEndedRef.current} />
           )}
 
           {/* 画布内数值/文本输入浮层（去 prompt 化） */}

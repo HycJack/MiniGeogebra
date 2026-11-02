@@ -1,9 +1,19 @@
 import { ExpressionNode, Scope } from './ExpressionNode';
 
+/** sin/cos 近零吸零（官方 MyDouble.checkZero，MyDouble.java:373-391）：
+ *  大输入下浮点噪声（sin(π)=1.22e-16）会污染 AreEqual/求根/显示，精确置 0。 */
+const snapNearZero = (value: number, input: number): number =>
+  Math.abs(input) > 0.1 && Math.abs(value) < 1e-14 ? 0 : value;
+
+/** HALF_UP 远离零取整（官方 MyDouble.doRound，MyDouble.java:654-661）：
+ *  Math.round 向 +∞，Round(-2.5) 会错给 -2，官方是 -3。 */
+export const roundHalfAwayFromZero = (value: number): number =>
+  value < 0 ? -Math.round(-value) : Math.round(value);
+
 const evaluateCall = (name: string, args: number[]): number => {
   switch (name) {
-    case 'sin': return Math.sin(args[0]);
-    case 'cos': return Math.cos(args[0]);
+    case 'sin': return snapNearZero(Math.sin(args[0]), args[0]);
+    case 'cos': return snapNearZero(Math.cos(args[0]), args[0]);
     case 'tan': return Math.tan(args[0]);
     case 'asin': return Math.asin(args[0]);
     case 'acos': return Math.acos(args[0]);
@@ -15,7 +25,7 @@ const evaluateCall = (name: string, args: number[]): number => {
     case 'log': return Math.log10(args[0]);
     case 'floor': return Math.floor(args[0]);
     case 'ceil': return Math.ceil(args[0]);
-    case 'round': return Math.round(args[0]);
+    case 'round': return roundHalfAwayFromZero(args[0]);
     case 'min': return Math.min(...args);
     case 'max': return Math.max(...args);
     default: return NaN;
@@ -47,12 +57,15 @@ export function evaluate(node: ExpressionNode, scope: Scope, userFunctions?: Map
     }
     case 'unary': {
       const value = evaluate(node.operand, scope, userFunctions);
-      return Number.isFinite(value) ? -value : NaN;
+      // 官方允许 ∞ 参与运算（MyDouble 保留 IEEE 语义），只有 NaN 视为 undefined
+      return Number.isNaN(value) ? NaN : -value;
     }
     case 'binary': {
       const left = evaluate(node.left, scope, userFunctions);
       const right = evaluate(node.right, scope, userFunctions);
-      if (!Number.isFinite(left) || !Number.isFinite(right)) return NaN;
+      // NaN 是 undefined；±∞ 是合法 defined 值（官方 1/0=+∞，MyDouble.java:284-292），
+      // 交给 IEEE 算术自然传播（inf-inf=NaN、0*inf=NaN 与官方一致）
+      if (Number.isNaN(left) || Number.isNaN(right)) return NaN;
       switch (node.op) {
         case '+': return left + right;
         case '-': return left - right;
@@ -63,8 +76,13 @@ export function evaluate(node: ExpressionNode, scope: Scope, userFunctions?: Map
         case '<=': return left <= right ? 1 : 0;
         case '==': return left === right ? 1 : 0;
         case '!=': return left !== right ? 1 : 0;
-        case '/': return right === 0 ? NaN : left / right;
-        case '^': return Math.pow(left, right);
+        case '/': return left / right;
+        case '^': {
+          // 官方 MyDouble.pow 特判 ∞^0 → NaN（MyDouble.java:323-337）；
+          // JS Math.pow(∞,0)=1、Math.pow(1,±∞)=NaN 后者已一致
+          if (right === 0 && !Number.isFinite(left)) return NaN;
+          return Math.pow(left, right);
+        }
       }
     }
   }
@@ -117,6 +135,7 @@ function containsString(node: ExpressionNode, scope: Scope): boolean {
 }
 
 function formatNum(v: number): string {
-  if (!Number.isFinite(v)) return '?';
+  if (Number.isNaN(v)) return '?';
+  if (!Number.isFinite(v)) return v > 0 ? '∞' : '-∞';
   return String(parseFloat(v.toFixed(2)));
 }

@@ -27,7 +27,7 @@ export interface KeyResult {
   dy?: number;
 }
 
-export const DEFAULT_ZOOM_FACTOR = 1.2;
+export const DEFAULT_ZOOM_FACTOR = 1.1;
 export const DEFAULT_PAN_STEP = 40;
 
 /**

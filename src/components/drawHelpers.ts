@@ -8,11 +8,14 @@
 
 import { IRenderer } from '../kernel/view/IRenderer';
 import { CoordinateSystem } from '../kernel/core/CoordinateSystem';
+import { calculateGridStep } from '../kernel/core/Snap';
 import { GeoPoint } from '../kernel/geo/GeoPoint';
 import { GeoLine } from '../kernel/geo/GeoLine';
 import { GeoSegment } from '../kernel/geo/GeoSegment';
 import { GeoPolygon } from '../kernel/geo/GeoPolygon';
 import { GeoConic } from '../kernel/geo/GeoConic';
+import { GeoNumeric } from '../kernel/geo/GeoNumeric';
+import { sliderGeomScreen } from './sliderDrawable';
 import { GeoLocus } from '../kernel/geo/GeoLocus';
 import { GeoText } from '../kernel/geo/GeoText';
 import { GeoArc } from '../kernel/geo/GeoArc';
@@ -52,14 +55,9 @@ export function drawGrid(renderer: IRenderer, wScreen: number, hScreen: number, 
   const startY = Math.min(coord.screenToWorldY(0), coord.screenToWorldY(hScreen));
   const endY = Math.max(coord.screenToWorldY(0), coord.screenToWorldY(hScreen));
 
-  const targetStepScreen = 50;
-  const targetStepWorld = targetStepScreen / coord.xScale;
-  const magnitude = Math.pow(10, Math.floor(Math.log10(targetStepWorld)));
-  const residual = targetStepWorld / magnitude;
-  let step = magnitude;
-  if (residual > 5) step = 10 * magnitude;
-  else if (residual > 2) step = 5 * magnitude;
-  else if (residual > 1) step = 2 * magnitude;
+  // 网格步长唯一实现在 Snap.calculateGridStep（吸附与画线共用；此前两份拷贝，
+  // 任何一边调参吸附点就会偏离网格线）
+  const step = calculateGridStep(coord.xScale);
 
   const firstX = Math.floor(startX / step) * step;
   const firstY = Math.floor(startY / step) * step;
@@ -317,13 +315,35 @@ export function drawPolygon(renderer: IRenderer, poly: GeoPolygon, selected: boo
 }
 
 /** 圆锥曲线（圆 / 椭圆 / 双曲线 / 抛物线）。 */
-export function drawConic(renderer: IRenderer, c: GeoConic, selected: boolean, scale: number): void {
+export function drawConic(renderer: IRenderer, c: GeoConic, selected: boolean, scale: number, bounds?: DrawBounds): void {
   if (!c.isDefined() || !c.isEffectivelyVisible()) return;
 
   const stroke = c.strokeColor ?? c.defaultStrokeColor;
   const baseWidth = c.strokeWidth ?? c.defaultLineWidth;
   renderer.strokeStyle = selected ? '#3b82f6' : stroke;
   renderer.lineWidth = (selected ? baseWidth * 2 : baseWidth) / scale;
+
+  // 退化为单一直线的圆锥曲线（如三点圆共线，官方退化语义 defined）：
+  // 二次块为零、有线性项 → 按贯穿视野的直线绘制（曲线采样分支对退化型返回空）。
+  const [cA, cB, cC, cD, cE, cF] = c.coeffs;
+  const quadMag = Math.max(Math.abs(cA), Math.abs(cB), Math.abs(cC));
+  const linMag = Math.max(Math.abs(cD), Math.abs(cE));
+  if (quadMag < 1e-12 * Math.max(linMag, 1e-30) && linMag > 1e-12 && bounds) {
+    renderer.beginPath();
+    if (Math.abs(cE) > 1e-12) {
+      const y1 = (-cF - cD * bounds.minX) / cE;
+      const y2 = (-cF - cD * bounds.maxX) / cE;
+      renderer.moveTo(bounds.minX, y1);
+      renderer.lineTo(bounds.maxX, y2);
+    } else {
+      const x = -cF / cD;
+      renderer.moveTo(x, bounds.minY);
+      renderer.lineTo(x, bounds.maxY);
+    }
+    renderer.stroke();
+    drawLabel(renderer, c, selected, scale);
+    return;
+  }
 
   if (c.isCircle()) {
     // Fast path for circles: use arc()
@@ -396,6 +416,7 @@ export function drawLocus(renderer: IRenderer, locus: GeoLocus, selected: boolea
     }
     renderer.stroke();
   }
+  drawLabel(renderer, locus, selected, scale);
 }
 
 /** 多边形布尔结果区域（可变轮廓填充 + 描边）。 */
@@ -414,6 +435,19 @@ export function drawBooleanRegion(renderer: IRenderer, region: GeoBooleanRegion,
     renderer.strokeStyle = stroke;
     renderer.lineWidth = (selected ? 3 : 2) / scale;
     renderer.stroke();
+  }
+  // 标签放在首个轮廓形心
+  if (region.contours.length > 0 && region.contours[0].length >= 3) {
+    const c = region.contours[0];
+    const cx = c.reduce((s, p) => s + p.x, 0) / c.length;
+    const cy = c.reduce((s, p) => s + p.y, 0) / c.length;
+    renderer.save();
+    renderer.font = `bold ${14 / scale}px sans-serif`;
+    renderer.fillStyle = selected ? '#1e40af' : '#1f2937';
+    renderer.textAlign = 'left';
+    renderer.textBaseline = 'bottom';
+    if (region.label) renderer.fillText(region.label, cx + 10 / scale, cy + 10 / scale);
+    renderer.restore();
   }
 }
 
@@ -459,13 +493,9 @@ export function drawFunction(
   }
   renderer.stroke();
 
-  if (selected && fn.labelVisible && fn.labelMode === 'always') {
-    renderer.fillStyle = '#1e40af';
-    renderer.font = `bold ${14 / scale}px sans-serif`;
-    renderer.textAlign = 'left';
-    renderer.textBaseline = 'bottom';
-    renderer.fillText(fn.label || fn.id, bounds.minX + 10 / scale, bounds.minY + 20 / scale);
-  }
+  // 标签走统一 drawLabel（锚点 = 可视段中点，可命中/可拖），此前仅选中时
+  // 固定画在视口左上角
+  drawLabel(renderer, fn, selected, scale, bounds);
 }
 
 /** 参数曲线：自适应采样后描边，无定义处断开。 */
@@ -502,13 +532,8 @@ export function drawCurve(
   }
   renderer.stroke();
 
-  if (selected && curve.labelVisible && curve.labelMode === 'always') {
-    renderer.fillStyle = '#1e40af';
-    renderer.font = `bold ${14 / scale}px sans-serif`;
-    renderer.textAlign = 'left';
-    renderer.textBaseline = 'bottom';
-    renderer.fillText(curve.label || curve.id, bounds.minX + 10 / scale, bounds.minY + 20 / scale);
-  }
+  // 标签走统一 drawLabel（锚点 = 可视段中点），此前仅选中时固定视口左上
+  drawLabel(renderer, curve, selected, scale, bounds);
 }
 
 /** 向量（带箭头的线段）。 */
@@ -586,12 +611,31 @@ export function drawConicPart(renderer: IRenderer, cp: GeoConicPart, selected: b
     renderer.arc(center.x, center.y, r, sa, ea, ccw);
     renderer.closePath();
     renderer.fill();
+  } else if (cp.getPartType() === 2 && (cp.fillColor ?? cp.defaultFillColor)) {
+    // 弓形填充（官方 DrawConicPart 对 OPEN 弧 fill 出弦封闭区）——此前只有扇形有填充
+    renderer.fillStyle = cp.fillColor ?? cp.defaultFillColor!;
+    renderer.beginPath();
+    renderer.arc(center.x, center.y, r, sa, ea, ccw);
+    renderer.closePath();
+    renderer.fill();
   }
 
   renderer.strokeStyle = selected ? '#3b82f6' : stroke;
   renderer.lineWidth = (selected ? baseWidth * 2 : baseWidth) / scale;
   renderer.beginPath();
+  if (cp.isSector()) {
+    // 扇形描边连带两条半径（官方 PIE closure 一起 stroke）
+    renderer.moveTo(center.x, center.y);
+    renderer.lineTo(center.x + r * Math.cos(sa), center.y + r * Math.sin(sa));
+  }
   renderer.arc(center.x, center.y, r, sa, ea, ccw);
+  if (cp.isSector()) {
+    renderer.closePath();
+  } else if (cp.getPartType() !== 2) {
+    // 弧不描弦；弓形另描弦（官方 OPEN 弧 stroke 不含弦，segment 弦是几何边界）
+    renderer.stroke();
+    renderer.beginPath();
+  }
   renderer.stroke();
 
   if (cp.getPartType() === 2) { // SEGMENT
@@ -603,7 +647,8 @@ export function drawConicPart(renderer: IRenderer, cp: GeoConicPart, selected: b
   drawLabel(renderer, cp, selected, scale);
 }
 
-/** 射线。 */
+/** 射线：延伸到视口外（官方 DrawRay 按视口尺度算端点）——固定 10000 世界
+ *  单位在深缩放下画面中间截断。 */
 export function drawRay(renderer: IRenderer, ray: GeoRay, selected: boolean, bounds: DrawBounds, scale: number): void {
   if (!ray.isDefined() || !ray.isEffectivelyVisible()) return;
   const sp = ray.getStartPoint();
@@ -614,9 +659,10 @@ export function drawRay(renderer: IRenderer, ray: GeoRay, selected: boolean, bou
   const baseWidth = ray.strokeWidth ?? ray.defaultLineWidth;
   renderer.strokeStyle = selected ? '#3b82f6' : stroke;
   renderer.lineWidth = (selected ? baseWidth * 2 : baseWidth) / scale;
+  const extent = (bounds.maxX - bounds.minX) + (bounds.maxY - bounds.minY);
   renderer.beginPath();
   renderer.moveTo(sp.getX(), sp.getY());
-  renderer.lineTo(sp.getX() + 10000 * dx, sp.getY() + 10000 * dy);
+  renderer.lineTo(sp.getX() + extent * dx, sp.getY() + extent * dy);
   renderer.stroke();
   drawLabel(renderer, ray, selected, scale);
 }
@@ -812,12 +858,15 @@ export function drawHoverMarker(
 
 
 
-/** 二元不等式区域：逐行扫描线填充，边界用二分精化。 */
+/** 二元不等式区域：逐行扫描线填充；边界按形态渲染——g 与 x/y 无关时画
+ *  水平/垂直直线（此前 y>c 类完全不画），一般情形逐行精化点近邻连成折线
+ *  （此前是逐行竖向短线，呈阶梯状）。 */
 export function drawInequality(
   renderer: IRenderer,
   ineq: GeoInequality,
   bounds: DrawBounds,
   scale: number,
+  selected = false,
 ): void {
   if (!ineq.isDefined() || !ineq.isEffectivelyVisible()) return;
   const width = bounds.maxX - bounds.minX;
@@ -829,7 +878,7 @@ export function drawInequality(
   const dx = width / cols;
   const dy = height / rows;
 
-  const stroke = ineq.strokeColor ?? ineq.defaultStrokeColor;
+  const stroke = selected ? '#3b82f6' : (ineq.strokeColor ?? ineq.defaultStrokeColor);
   const fill = ineq.fillColor ?? ineq.defaultFillColor ?? 'rgba(124, 58, 237, 0.18)';
 
   // 第一遍：收集每一行满足条件的区间（边界处二分精化）
@@ -877,18 +926,101 @@ export function drawInequality(
   renderer.fill();
 
   // 边界轮廓：严格不等式虚线，非严格实线
-  if (boundaryPts.length > 0) {
+  const strokeBoundary = (): void => {
     renderer.strokeStyle = stroke;
     renderer.lineWidth = (ineq.strokeWidth ?? ineq.defaultLineWidth) / scale;
     if (!ineq.includesBoundary()) renderer.setLineDash([4 / scale, 4 / scale]);
+  };
+
+  if (ineq.boundaryIndependentOf('x')) {
+    // g 只依赖 y：边界是水平线 y=c（可多条，如 y²<4）
+    const roots = rootsAlongAxis(ineq, 'y', rows, bounds, (bounds.minX + bounds.maxX) / 2);
+    strokeBoundary();
     renderer.beginPath();
-    for (const pt of boundaryPts) {
-      renderer.moveTo(pt.x, pt.y - dy / 2);
-      renderer.lineTo(pt.x, pt.y + dy / 2);
+    for (const y0 of roots) {
+      renderer.moveTo(bounds.minX, y0);
+      renderer.lineTo(bounds.maxX, y0);
+    }
+    renderer.stroke();
+    renderer.setLineDash([]);
+  } else if (ineq.boundaryIndependentOf('y')) {
+    // g 只依赖 x：边界是垂直线 x=c（可多条）
+    const roots = rootsAlongAxis(ineq, 'x', cols, bounds, (bounds.minY + bounds.maxY) / 2);
+    strokeBoundary();
+    renderer.beginPath();
+    for (const x0 of roots) {
+      renderer.moveTo(x0, bounds.minY);
+      renderer.lineTo(x0, bounds.maxY);
+    }
+    renderer.stroke();
+    renderer.setLineDash([]);
+  } else if (boundaryPts.length >= 2) {
+    // 一般情形：逐行精化点近邻连成折线（半径 3·max(dx,dy) 内取最近未用点）
+    strokeBoundary();
+    const radius2 = Math.pow(3 * Math.max(dx, dy), 2);
+    const used = new Array(boundaryPts.length).fill(false);
+    renderer.beginPath();
+    for (let i = 0; i < boundaryPts.length; i++) {
+      if (used[i]) continue;
+      used[i] = true;
+      let cur = boundaryPts[i];
+      renderer.moveTo(cur.x, cur.y);
+      while (true) {
+        let best = -1;
+        let bestD2 = radius2;
+        for (let j = 0; j < boundaryPts.length; j++) {
+          if (used[j]) continue;
+          const ddx = boundaryPts[j].x - cur.x;
+          const ddy = boundaryPts[j].y - cur.y;
+          const d2 = ddx * ddx + ddy * ddy;
+          if (d2 < bestD2) { bestD2 = d2; best = j; }
+        }
+        if (best === -1) break;
+        used[best] = true;
+        cur = boundaryPts[best];
+        renderer.lineTo(cur.x, cur.y);
+      }
     }
     renderer.stroke();
     renderer.setLineDash([]);
   }
+
+  drawLabel(renderer, ineq, selected, scale, bounds);
+}
+
+/** 沿单一坐标轴扫描 g 的符号变化并二分求根（最多 8 个）；fixed 为另一轴的取值。 */
+function rootsAlongAxis(
+  ineq: GeoInequality,
+  axis: 'x' | 'y',
+  steps: number,
+  bounds: DrawBounds,
+  fixed: number,
+): number[] {
+  const lo = axis === 'x' ? bounds.minX : bounds.minY;
+  const hi = axis === 'x' ? bounds.maxX : bounds.maxY;
+  const at = (t: number): number => (axis === 'x' ? ineq.evaluateDiff(t, fixed) : ineq.evaluateDiff(fixed, t));
+  const step = (hi - lo) / steps;
+  const roots: number[] = [];
+  let prevT = lo;
+  let prevF = at(lo);
+  for (let s = 1; s <= steps && roots.length < 8; s++) {
+    const t = lo + s * step;
+    const f = at(t);
+    if (Number.isFinite(prevF) && Number.isFinite(f) && prevF === 0) {
+      roots.push(prevT);
+    } else if (Number.isFinite(prevF) && Number.isFinite(f) && (prevF < 0) !== (f < 0)) {
+      // 二分精化
+      let a = prevT, b = t;
+      for (let k = 0; k < 24; k++) {
+        const m = (a + b) / 2;
+        const fm = at(m);
+        if (!Number.isFinite(fm) || (at(a) < 0) !== (fm < 0)) b = m; else a = m;
+      }
+      roots.push((a + b) / 2);
+    }
+    prevT = t; prevF = f;
+  }
+  return roots;
 }
 
 /** 从粗网格边界沿 x 向二分精化 g(x,y)=0 的位置；g 两侧同号时返回 null。 */
@@ -911,4 +1043,135 @@ function refineBoundary(
   if (!Number.isFinite(gMid)) return x;
   if (Math.abs(gMid) < 1e-9) return mid;
   return refineBoundary(ineq, mid, y, Math.abs(mid - x) / 2, depth + 1);
+}
+
+/**
+ * 角度弧标记（官方 DrawAngle）：角度数值（isAngle）在顶点处画浅填充扇形 + 细弧。
+ * 支持三点角（顶点 P2）、两点角（顶点为原点）、两线角（顶点为交点）；
+ * 扫向统一为 [0,2π) 逆时针（与 AlgoAngle 的 atan2 语义一致）。
+ * 此前角度测量值在画布上零呈现（H2-12 后半句）。
+ */
+export function drawAngleMarker(renderer: IRenderer, num: GeoNumeric, scale: number): void {
+  if (!num.isAngle || !num.isDefined() || !num.isEffectivelyVisible()) return;
+  const algo = num.parentAlgo;
+  if (!algo) return;
+  const angle = num.getValue();
+  if (!Number.isFinite(angle) || angle <= 1e-9) return;
+  const cls = algo.getClassName();
+  let vx = 0, vy = 0, a0 = 0;
+  if (cls === 'AlgoAngle' || cls === 'AlgoAngleOriented') {
+    const [p1, p2, p3] = algo.getInput() as GeoPoint[];
+    if (!p1?.isDefined() || !p2?.isDefined() || !p3?.isDefined()) return;
+    vx = p2.getX(); vy = p2.getY();
+    a0 = Math.atan2(p1.getY() - vy, p1.getX() - vx);
+  } else if (cls === 'AlgoAngleTwoPoints') {
+    const [p1, p2] = algo.getInput() as GeoPoint[];
+    if (!p1?.isDefined() || !p2?.isDefined()) return;
+    a0 = Math.atan2(p1.getY(), p1.getX());
+  } else if (cls === 'AlgoAngleTwoLines') {
+    const [l1, l2] = algo.getInput() as GeoLine[];
+    if (!l1?.isDefined() || !l2?.isDefined()) return;
+    const det = l1.a * l2.b - l2.a * l1.b;
+    if (Math.abs(det) < 1e-12) return; // 平行线无交点（无顶点）
+    vx = (l1.b * l2.c - l2.b * l1.c) / det;
+    vy = (l2.a * l1.c - l1.a * l2.c) / det;
+    a0 = Math.atan2(l1.b, l1.a); // 法向方向为角的始边
+  } else {
+    return;
+  }
+  const r = 18 / scale;
+  const stroke = num.strokeColor ?? num.defaultStrokeColor;
+  renderer.save();
+  // 浅填充扇形（顶点 → 弧）
+  renderer.beginPath();
+  renderer.moveTo(vx, vy);
+  renderer.arc(vx, vy, r, a0, a0 + angle, false);
+  renderer.closePath();
+  renderer.fillStyle = num.fillColor ?? 'rgba(124, 58, 237, 0.18)';
+  renderer.fill();
+  // 细弧
+  renderer.beginPath();
+  renderer.arc(vx, vy, r, a0, a0 + angle, false);
+  renderer.strokeStyle = stroke;
+  renderer.lineWidth = 1.5 / scale;
+  renderer.stroke();
+  renderer.restore();
+}
+
+/**
+ * 画布滑条（对标官方 DrawSlider）：轨道线 + 圆形滑块 + `a = 值` 标签。
+ * 滑条位置是屏幕绝对坐标——在世界变换内按 当前往返换算 绘制，
+ * 平移/缩放后滑条仍锚定在原屏幕位置（官方 absolute screen loc 语义）。
+ * 垂直滑条轨道向上延伸（官方 sy − w）。
+ */
+export function drawSliderDrawable(renderer: IRenderer, num: GeoNumeric, selected: boolean, coord: CoordinateSystem): void {
+  if (!num.isDefined() || !num.isEffectivelyVisible() || !num.sliderVisible) return;
+  const g = sliderGeomScreen(num);
+  // 屏幕 px → 世界坐标（xZero/yZero 为世界原点的屏幕位置）
+  const toW = (px: number, py: number) => ({
+    x: (px - coord.xZero) / coord.xScale,
+    y: (coord.yZero - py) / coord.yScale,
+  });
+  const start = toW(g.sx, g.sy);
+  const end = toW(g.ex, g.ey);
+  const knob = toW(g.kx, g.ky);
+  const blob = num.sliderBlobSize / coord.xScale;
+  const color = num.strokeColor ?? num.defaultStrokeColor;
+
+  // 轨道（官方视觉：细浅色线；thickness=10 只是命中热区宽度）
+  renderer.save();
+  renderer.strokeStyle = withAlpha(color, 0.45);
+  renderer.lineWidth = 2 / coord.xScale;
+  renderer.beginPath();
+  renderer.moveTo(start.x, start.y);
+  renderer.lineTo(end.x, end.y);
+  renderer.stroke();
+
+  // 滑块外环（官方 circleOuter：selColor 浅色填充）
+  renderer.beginPath();
+  renderer.arc(knob.x, knob.y, blob + 3 / coord.xScale, 0, 2 * Math.PI);
+  renderer.fillStyle = selected ? 'rgba(59,130,246,0.45)' : 'rgba(191,219,254,0.9)';
+  renderer.fill();
+
+  // 滑块本体（官方：objectColor 填充 + NEUTRAL_900 深色描边）
+  renderer.beginPath();
+  renderer.arc(knob.x, knob.y, blob, 0, 2 * Math.PI);
+  renderer.fillStyle = color;
+  renderer.fill();
+  renderer.strokeStyle = '#374151';
+  renderer.lineWidth = 1 / coord.xScale;
+  renderer.stroke();
+  renderer.restore();
+
+  // `a = 值` 标签（官方 LABEL_NAME_VALUE：水平滑条在滑块上方，垂直在右侧）
+  if (num.labelVisible && num.label) {
+    const labelScreen = g.horizontal
+      ? { x: g.kx + 4, y: g.ky - num.sliderBlobSize - 8 }
+      : { x: g.kx + num.sliderBlobSize + 8, y: g.ky + 4 };
+    const labelW = toW(labelScreen.x, labelScreen.y);
+    renderer.save();
+    renderer.font = `bold ${14 / coord.xScale}px sans-serif`;
+    renderer.fillStyle = selected ? '#1e40af' : '#1f2937';
+    renderer.textAlign = 'left';
+    renderer.textBaseline = 'bottom';
+    renderer.fillText(`${num.label} = ${num.formatValue()}`, labelW.x, labelW.y);
+    renderer.restore();
+  }
+}
+
+/** 十六进制/rgba 颜色字符串叠加透明度（IRenderer 无 globalAlpha 通道）。 */
+function withAlpha(color: string, alpha: number): string {
+  const hex = /^#([0-9a-f]{6})$/i.exec(color.trim());
+  if (hex) {
+    const r = parseInt(hex[1].slice(0, 2), 16);
+    const g = parseInt(hex[1].slice(2, 4), 16);
+    const b = parseInt(hex[1].slice(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+  const rgba = /^rgba?\(([^)]+)\)$/i.exec(color.trim());
+  if (rgba) {
+    const parts = rgba[1].split(',').map(p => p.trim());
+    return `rgba(${parts[0]}, ${parts[1]}, ${parts[2]}, ${alpha})`;
+  }
+  return color;
 }

@@ -101,14 +101,15 @@ describe('Distance 语义', () => {
     expect(d!.getValue()).toBeCloseTo(3, 9);
   });
 
-  it('Distance(l1, l2) 相交线 → undefined', () => {
+  it('Distance(l1, l2) 相交线 → 0（官方 GeoLine.distance 非平行返回 0）', () => {
     const k = makeKernel();
     addInput(k, 'l1 = Line((0, 0), (1, 0))');
     addInput(k, 'l2 = Line((0, 0), (0, 1))');
     addInput(k, 'd = Distance(l1, l2)');
     const d = labelOf<GeoNumeric>(k, 'd');
     expect(d).toBeDefined();
-    expect(d!.isDefined()).toBe(false);
+    expect(d!.isDefined()).toBe(true);
+    expect(d!.getValue()).toBe(0);
   });
 });
 

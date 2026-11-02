@@ -6,7 +6,10 @@ import { GeoNumeric } from '../geo/GeoNumeric';
 import { GeoVec3D } from '../core/GeoVec3D';
 
 /**
- * 角度测量：∠P1P2P3（顶点为 P2），结果以弧度计，范围 [0, π]。
+ * 角度测量：∠P1P2P3（顶点为 P2），从射线 P2→P1 逆时针扫到 P2→P3，
+ * 范围 [0, 2π)。对标官方 AlgoAnglePoints 的 atan2(det, dot)（负值按
+ * GeoAngle.setValue 归一到 [0,2π)）——此前 acos ∈ [0,π] 把顺时针角
+ * 折成补角（如顺时针 90° 应为 270°，官方如此）。
  * 输出为 GeoNumeric。
  */
 export class AlgoAngle extends AlgoElement {
@@ -37,7 +40,6 @@ export class AlgoAngle extends AlgoElement {
     const v2x = this.p3.getX() - this.p2.getX();
     const v2y = this.p3.getY() - this.p2.getY();
 
-    const dot = v1x * v2x + v1y * v2y;
     const n1 = Math.hypot(v1x, v1y);
     const n2 = Math.hypot(v2x, v2y);
 
@@ -46,12 +48,11 @@ export class AlgoAngle extends AlgoElement {
       return;
     }
 
-    let cos = dot / (n1 * n2);
-    // 数值稳定：截断到 [-1, 1]
-    if (cos > 1) cos = 1;
-    if (cos < -1) cos = -1;
-
-    const angle = Math.acos(cos); // [0, π]
+    // |v||w|·sinα = det(v,w)，|v||w|·cosα = v·w → tanα = det/dot（官方同式）
+    const det = v1x * v2y - v1y * v2x;
+    const dot = v1x * v2x + v1y * v2y;
+    let angle = Math.atan2(det, dot); // (−π, π]
+    if (angle < 0) angle += 2 * Math.PI; // → [0, 2π) 逆时针
     this.outputValue.setValue(angle);
     this.outputValue.setDefined();
   }
@@ -161,7 +162,8 @@ export class AlgoAngleTwoLines extends AlgoElement {
 
 /**
  * 两点角（对标 CmdAngle.process2 的 Angle(P, Q)）：位置向量 (P−O) 与 (Q−O)
- * 的夹角，[0, π]。任一点与原点重合时输出 undefined（零向量无方向）。
+ * 的夹角，从 OP 逆时针扫到 OQ，范围 [0, 2π)（官方 AlgoAngleVectors 的 atan2
+ * 语义）。任一点与原点重合时输出 undefined（零向量无方向）。
  */
 export class AlgoAngleTwoPoints extends AlgoElement {
   private outputValue: GeoNumeric;
@@ -185,11 +187,11 @@ export class AlgoAngleTwoPoints extends AlgoElement {
       this.outputValue.setUndefined();
       return;
     }
+    const det = this.p1.getX() * this.p2.getY() - this.p1.getY() * this.p2.getX();
     const dot = this.p1.getX() * this.p2.getX() + this.p1.getY() * this.p2.getY();
-    let cos = dot / (n1 * n2);
-    if (cos > 1) cos = 1;
-    if (cos < -1) cos = -1;
-    this.outputValue.setValue(Math.acos(cos));
+    let value = Math.atan2(det, dot);
+    if (value < 0) value += 2 * Math.PI;
+    this.outputValue.setValue(value);
     this.outputValue.setDefined();
   }
 

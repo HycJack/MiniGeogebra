@@ -52,12 +52,55 @@ import { GeoPolyLine } from '../../kernel/geo/GeoPolyLine';
 import { GeoRay } from '../../kernel/geo/GeoRay';
 import { GeoElement } from '../../kernel/geo/GeoElement';
 import { GeoBoolean } from '../../kernel/geo/GeoBoolean';
+import { intersectLineWithConic, intersectConicConic } from '../../kernel/geo/conicSolve';
 
 // ---- 命中热区 ----
 const POINT_EPS = 10;   // 点热区（像素）
 const OBJ_EPS = 5;      // 线/曲线热区（像素）
 
-/** 工具模式调度表（不含 UI 元素工具：text/slider/button/checkbox，由 GeometryCanvas 单独处理）。 */
+/** 官方点工具交点分支的探针（EuclidianController.java:4802-4819
+ *  getSingleIntersectionPoint）：对点击处的两个对象求交并找最近解，
+ *  返回 1-based 下标供 AlgoIntersect(obj1, obj2, pointIndex) 单点输出。
+ *  解的顺序与 AlgoIntersect.compute 相同（共用 conicSolve 原语）；
+ *  弧/扇形按整圆求解后还有角窗过滤，此处不适用（调用方排除）。 */
+const findNearestIntersectionIndex = (
+  obj1: GeoElement, obj2: GeoElement, x: number, y: number, maxDist: number,
+): number | null => {
+  const lineOf = (el: GeoElement): { a: number; b: number; c: number } | null => {
+    if (el instanceof GeoLine) return { a: el.a, b: el.b, c: el.c };
+    if (el instanceof GeoRay) {
+      const x1 = el.startPoint.getX(), y1 = el.startPoint.getY();
+      const x2 = el.secondPoint.getX(), y2 = el.secondPoint.getY();
+      return { a: y1 - y2, b: x2 - x1, c: x1 * y2 - x2 * y1 };
+    }
+    return null;
+  };
+  const l1 = lineOf(obj1), l2 = lineOf(obj2);
+  let solutions: { x: number; y: number }[] = [];
+  if (l1 && l2) {
+    const det = l1.a * l2.b - l2.a * l1.b;
+    const mag = Math.max(Math.abs(l1.a), Math.abs(l1.b), Math.abs(l2.a), Math.abs(l2.b), 1);
+    if (Math.abs(det) >= 1e-12 * mag * mag) {
+      solutions = [{ x: (l1.b * l2.c - l2.b * l1.c) / det, y: (l1.c * l2.a - l2.c * l1.a) / det }];
+    }
+  } else if (l1 && obj2 instanceof GeoConic) {
+    solutions = intersectLineWithConic(obj2.coeffs, l1.a, l1.b, l1.c);
+  } else if (l2 && obj1 instanceof GeoConic) {
+    solutions = intersectLineWithConic(obj1.coeffs, l2.a, l2.b, l2.c);
+  } else if (obj1 instanceof GeoConic && obj2 instanceof GeoConic) {
+    solutions = intersectConicConic(obj1.coeffs, obj2.coeffs);
+  }
+  let bestIdx = -1;
+  let bestDist = maxDist;
+  solutions.forEach((s, i) => {
+    const d = Math.hypot(s.x - x, s.y - y);
+    if (d < bestDist) { bestDist = d; bestIdx = i; }
+  });
+  return bestIdx >= 0 ? bestIdx + 1 : null;
+};
+
+/** 工具模式调度表。注：text/slider/button/checkbox 虽是 UI 元素工具，
+ *  处理器同样在本文件的 case 里——漏列 'inputbox' 曾使输入框工具整体死按钮。 */
 const TOOL_MODE_LIST: readonly ToolMode[] = [
   'select', 'move', 'point', 'line', 'segment', 'midpoint', 'circle', 'circle_center_point',
   'circle3', 'intersect', 'parallel', 'orthogonal', 'perpendicular_bisector',
@@ -71,7 +114,7 @@ const TOOL_MODE_LIST: readonly ToolMode[] = [
   'point_on_object', 'segment_fixed', 'vector_from_point', 'angle_fixed',
   'mirror_line', 'mirror_point', 'mirror_circle', 'translate_vector',
   'pan', 'zoom_in', 'zoom_out', 'show_hide', 'show_hide_label', 'delete',
-  'text', 'slider', 'button', 'checkbox',
+  'text', 'slider', 'button', 'checkbox', 'inputbox',
 ] as const;
 
 /** 统一的鼠标按下处理器 —— GeometryCanvas 按当前 mode 分派调用。 */
@@ -235,11 +278,13 @@ export const handlePointerDown = (
     if (target && target !== ts.checkboxBoolean) {
       const bool = ts.checkboxBoolean as GeoBoolean;
       const el = target as GeoElement;
-      // 联动按标签引用：无标签对象先补一个，否则点击被静默忽略、用户以为已关联
+      // 联动按标签引用：无标签对象先按类型补一个（圆/椭圆用 c,d,e 表——
+      // 此前一律用线表，圆锥曲线拿到 'f'）
       if (!el.label) {
-        el.label = el instanceof GeoPoint
-          ? construction.getNextPointLabel()
-          : construction.getNextLineLabel();
+        if (el instanceof GeoPoint) el.label = construction.getNextPointLabel();
+        else if (el instanceof GeoConic) el.label = construction.getNextCircleLabel();
+        else if (el instanceof GeoNumeric) el.label = construction.getNextNumericLabel();
+        else el.label = construction.getNextLineLabel();
       }
       if (!bool.linkedLabels.includes(el.label)) bool.linkedLabels.push(el.label);
       setRenderRev(r => r + 1);
@@ -293,6 +338,31 @@ export const handlePointerDown = (
     case 'point':
     case 'point_on_object': {
       const obj = hitObject();
+      // 官方点工具交点分支（EuclidianController.java:4802-4819）：点在两个
+      // 非点对象的交叉处时直接创建交点（依赖点）——此前得到自由点，拖动
+      // 一方不联动。弧/扇形有角窗过滤，探针索引会对不上，排除在外。
+      if (mode === 'point') {
+        const first = obj;
+        const rest = first
+          ? visibleElements.filter(el => el !== first)
+          : visibleElements;
+        const second = first ? hitScreenObject(rest, point.x, point.y, coord.xScale) : undefined;
+        const isArcLike = (el: GeoElement) => el instanceof GeoArc || el instanceof GeoConicPart;
+        if (first && second && !(first instanceof GeoPoint) && !(second instanceof GeoPoint)
+            && !isArcLike(first) && !isArcLike(second)) {
+          const index = findNearestIntersectionIndex(first, second, point.x, point.y, 6 / coord.xScale);
+          if (index !== null) {
+            const inter = new AlgoIntersect(kernel, first, second, index);
+            construction.addElement(inter);
+            construction.addElement(inter.getOutputPoints()[0]);
+            inter.update();
+            setSelectedElements([inter.getOutputPoints()[0]]);
+            kernel.notifyUpdate(inter.getOutputPoints()[0]);
+            setRenderRev(r => r + 1);
+            break;
+          }
+        }
+      }
       if (
         obj instanceof GeoSegment || obj instanceof GeoLine || obj instanceof GeoRay ||
         obj instanceof GeoArc || obj instanceof GeoCurve ||
@@ -528,16 +598,15 @@ export const handlePointerDown = (
       const pts = ctx.polygonPoints ?? [];
       if (pHit) {
         if (pts.length > 2 && pHit === pts[0]) {
-          // 有 Algo 的多边形：注册顶点→多边形依赖边（拖顶点 Area/周长/变换像才联动）
+          // 有 Algo 的多边形：顶点→多边形依赖边（拖顶点 Area/周长/变换像才联动）；
+          // 边是同一算法的兄弟输出（官方 AlgoPolygon 同构）——删多边形时随级联整组消失
           const polyAlgo = new AlgoPolygonPoints(kernel, [...pts]);
           const poly = polyAlgo.getOutput();
           poly.label = construction.getNextPolygonLabel();
           kernel.getConstruction().addElement(polyAlgo);
           kernel.getConstruction().addElement(poly);
-          for (let i = 0; i < pts.length; i++) {
-            const seg = new AlgoSegmentTwoPoints(kernel, pts[i], pts[(i + 1) % pts.length]);
-            kernel.getConstruction().addElement(seg);
-            kernel.getConstruction().addElement(seg.getOutput());
+          for (const edge of polyAlgo.getEdges()) {
+            kernel.getConstruction().addElement(edge);
           }
           polyAlgo.update();
           kernel.notifyUpdate(poly);
@@ -545,7 +614,8 @@ export const handlePointerDown = (
           ctx.polygonCreatedPoints?.splice(0);
           setPolygonPoints([]);
           clearSel();
-        } else {
+        } else if (pHit !== pts[pts.length - 1]) {
+          // 重复点击刚选过的顶点忽略（此前 <3 点时会重复压表）
           setPolygonPoints([...pts, pHit]);
           setSelectedElements([...selectedElements, pHit]);
           setRenderRev(r => r + 1);
@@ -1134,31 +1204,36 @@ export const handlePointerDown = (
     case 'checkbox':
     case 'inputbox': {
       const id = `ui_${Date.now()}`;
+      // 滑条不再是 HTML widget：Slider 工具直接创建内核 GeoNumeric（官方
+      // 默认 −5..5 / 步长 0.1 / 宽 200px），画布上是真实 drawable，见
+      // drawSliderDrawable——下方仅处理其余 UI 元素工具
+      if (mode === 'slider') {
+        const construction = kernel.getConstruction();
+        const numeric = new GeoNumeric(kernel, 0);
+        numeric.intervalMin = -5;
+        numeric.intervalMax = 5;
+        numeric.animationIncrement = 0.1;
+        numeric.sliderVisible = true;
+        numeric.sliderX = screen.x;
+        numeric.sliderY = screen.y;
+        numeric.sliderWidthPx = 200;
+        numeric.sliderHorizontal = true;
+        numeric.label = construction.getNextNumericLabel();
+        numeric.labelVisible = true;
+        construction.addElement(numeric);
+        construction.updateDependentAlgorithms(numeric);
+        setRenderRev?.(r => r + 1);
+        break;
+      }
       let newUIElement: any = {
         id,
         type: mode,
         x: point.x,
         y: point.y,
-        label: mode === 'text' ? 'Text' : mode === 'slider' ? 'Slider' : mode === 'button' ? 'Button' : 'Checkbox',
-        value: mode === 'slider' ? 50 : undefined,
-        min: mode === 'slider' ? 0 : undefined,
-        max: mode === 'slider' ? 100 : undefined,
-        step: mode === 'slider' ? 1 : undefined,
+        label: mode === 'text' ? 'Text' : mode === 'button' ? 'Button' : 'Checkbox',
+        value: undefined,
         checked: mode === 'checkbox' ? false : undefined,
       };
-      // 画布滑块绑定一个**内核 GeoNumeric**（对标 GeoGebra 的 Slider 工具）：
-      // 拖动画布滑块 = 改内核数值，依赖它的对象实时联动，代数视图同步可见。
-      if (mode === 'slider') {
-        const numeric = new GeoNumeric(kernel, 50);
-        numeric.intervalMin = 0;
-        numeric.intervalMax = 100;
-        const construction = kernel.getConstruction();
-        numeric.label = construction.getNextNumericLabel();
-        construction.addElement(numeric);
-        construction.updateDependentAlgorithms(numeric);
-        newUIElement.numericLabel = numeric.label;
-        setRenderRev?.(r => r + 1);
-      }
       // 输入框绑定**最近的自由数值**（对标官方 InputBox：输入即改绑定值）；
       // 无自由数值时创建一个 a=1 兜底
       if (mode === 'inputbox') {

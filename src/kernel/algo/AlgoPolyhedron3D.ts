@@ -15,6 +15,7 @@ import { GeoPoint3D } from '../geo/GeoPoint3D';
 import { GeoNumeric } from '../geo/GeoNumeric';
 import { GeoLine3D } from '../geo/GeoLine3D';
 import { GeoPlane3D } from '../geo/GeoPlane3D';
+import { GeoCircle3D } from '../geo/GeoCircle3D';
 import { GeoQuadric3D, INTERSECTION_PASSING_LINE, LineQuadricIntersectionType } from '../geo/GeoQuadric3D';
 
 export type PolyhedronKind = 'prism' | 'pyramid';
@@ -367,4 +368,55 @@ export class AlgoAnglePlanes3D extends Algo3DBase<GeoNumeric> {
     this.out.setValue(Math.acos(Math.min(1, cos)));
     this.out.setDefined();
   }
+}
+
+
+/** 两球相交 → 交圆（官方 CmdIntersect3D 的 intersectAsCircle 分支）。
+ *  相离/内含/重合 → undefined。 */
+export class AlgoIntersectSpheres3D extends AlgoElement {
+  private outputCircle: GeoCircle3D;
+
+  constructor(kernel: IKernel, private s1: GeoQuadric3D, private s2: GeoQuadric3D) {
+    super(kernel);
+    this.outputCircle = new GeoCircle3D(kernel);
+    this.setInputOutput();
+  }
+
+  setInputOutput(): void {
+    this.input = [this.s1, this.s2];
+    this.setOutput([this.outputCircle]);
+  }
+
+  getOutput(): GeoCircle3D { return this.outputCircle; }
+
+  compute(): void {
+    this.outputCircle.setUndefined();
+    if (!this.s1.isDefined() || !this.s2.isDefined()) return;
+    if (this.s1.getKind() !== 'sphere' || this.s2.getKind() !== 'sphere') return;
+    const c1 = this.s1.getBase().toPoint();
+    const c2 = this.s2.getBase().toPoint();
+    const r1 = this.s1.getParam();
+    const r2 = this.s2.getParam();
+    const d = c2.sub(c1).norm();
+    if (d < 1e-9) return;                        // 重合同心（含同一球）不建交圆
+    if (d > r1 + r2 + 1e-9) return;              // 相离
+    if (d < Math.abs(r1 - r2) - 1e-9) return;    // 内含
+    // 交圆心在 c1→c2 连线上：距 c1 为 a = (r1² − r2² + d²) / (2d)
+    const a = (r1 * r1 - r2 * r2 + d * d) / (2 * d);
+    const h2 = r1 * r1 - a * a;
+    if (h2 <= 0) {
+      // 相切：退化为半径 0 的"圆"——官方输出 undefined（单点走 pointIndex 变体）
+      return;
+    }
+    const center = c1.add(c2.sub(c1).scale(a / d));
+    const normal = d2n(c2.sub(c1));
+    this.outputCircle.setCircle(center, normal, Math.sqrt(h2));
+    this.outputCircle.setDefined();
+  }
+}
+
+/** 非零向量的方向化（safe normalize）。 */
+function d2n(v: { x: number; y: number; z: number }): Coords4 {
+  const n = Math.hypot(v.x, v.y, v.z);
+  return n > 1e-12 ? Coords4.fromDirection(v.x / n, v.y / n, v.z / n) : Coords4.fromDirection(0, 0, 1);
 }

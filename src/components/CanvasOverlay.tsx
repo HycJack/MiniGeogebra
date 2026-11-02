@@ -36,11 +36,15 @@ interface CanvasOverlayProps {
   kernel?: Kernel;
   /** 复选框勾选回调：由 GeometryCanvas 写内核 GeoBoolean 并记 undo。 */
   onBooleanToggle?: (element: UIElement, next: boolean) => void;
+  /** 滑块/输入框改值走内核数值 + undo 命令通道（与 SidePanel 同一路径）。 */
+  onValueCommit?: (element: UIElement, oldValue: number, newValue: number) => void;
+  /** 刚结束一次真实拖拽（抑制拖完后落在按钮上的 click 误触发脚本）。 */
+  isDragClick?: () => boolean;
 }
 
 const CanvasOverlay: React.FC<CanvasOverlayProps> = ({
   uiElements, setUIElements, editingUIElement, setEditingUIElement,
-  draggingUIElement, setDraggingUIElement, coord, kernel, onBooleanToggle
+  draggingUIElement, setDraggingUIElement, coord, kernel, onBooleanToggle, onValueCommit, isDragClick
 }) => {
   return (
     <>
@@ -86,16 +90,6 @@ function runMiniScript(kernel: Kernel, script: readonly string[]): void {
     }
   }
 }
-
-/** 滑块显示值：绑定内核数值时读其当前值（动画/重定义后保持同步），否则用 UI 状态。 */
-  const sliderLiveValue = (el: UIElement): number => {
-    if (el.numericLabel && kernel) {
-      const numeric = kernel.getConstruction().getElements()
-        .find(n => n instanceof GeoNumeric && (n as GeoNumeric).label === el.numericLabel) as GeoNumeric | undefined;
-      if (numeric && Number.isFinite(numeric.getValue())) return numeric.getValue();
-    }
-    return el.value ?? 0;
-  };
 
   const handleUIDragStart = (e: React.MouseEvent) => {
           e.stopPropagation();
@@ -147,48 +141,6 @@ function runMiniScript(kernel: Kernel, script: readonly string[]): void {
               )}
             </div>
           );
-        } else if (element.type === 'slider') {
-          return (
-            <div
-              key={element.id}
-              className="absolute bg-white border border-gray-300 rounded-lg shadow-sm p-3 cursor-move"
-              style={{
-                left: `${screenX}px`,
-                top: `${screenY}px`,
-                transform: 'translate(-50%, -50%)'
-              }}
-              onMouseDown={handleUIDragStart}
-            >
-              <div className="text-sm font-medium mb-2">{element.label}</div>
-              <input
-                type="range"
-                min={element.min}
-                max={element.max}
-                step={element.step}
-                value={sliderLiveValue(element)}
-                onChange={(e) => {
-                  e.stopPropagation();
-                  const val = Number(e.target.value);
-                  const updated = uiElements.map(el =>
-                    el.id === element.id ? { ...el, value: val } : el
-                  );
-                  setUIElements(updated);
-                  // 联动内核：滑块绑定的 GeoNumeric 同步改值，依赖对象实时重算
-                  if (element.numericLabel && kernel) {
-                    const numeric = kernel.getConstruction().getElements()
-                      .find(el => el instanceof GeoNumeric && (el as GeoNumeric).label === element.numericLabel) as GeoNumeric | undefined;
-                    if (numeric) {
-                      numeric.setValue(val);
-                      kernel.notifyUpdate(numeric);
-                    }
-                  }
-                }}
-                className="w-32"
-                onMouseDown={(e) => e.stopPropagation()}
-              />
-              <div className="text-xs text-gray-600 mt-1 text-center">{sliderLiveValue(element)}</div>
-            </div>
-          );
         } else if (element.type === 'button') {
           return (
             <button
@@ -212,6 +164,8 @@ function runMiniScript(kernel: Kernel, script: readonly string[]): void {
               }}
               onClick={(e) => {
                 e.stopPropagation();
+                // 拖动结束落点在按钮上不触发脚本（拖拽与点击互斥）
+                if (isDragClick?.()) return;
                 // 按钮脚本：SetValue/StartAnimation（对标官方按钮脚本，最小子集）
                 if (element.script?.length && kernel) runMiniScript(kernel, element.script);
               }}
@@ -227,6 +181,7 @@ function runMiniScript(kernel: Kernel, script: readonly string[]): void {
                 return numeric?.getValue();
               })()
             : undefined;
+          const initial = liveValue !== undefined && Number.isFinite(liveValue) ? String(liveValue) : String(element.value ?? '');
           return (
             <div
               key={element.id}
@@ -234,25 +189,17 @@ function runMiniScript(kernel: Kernel, script: readonly string[]): void {
               style={{ left: `${screenX}px`, top: `${screenY}px`, transform: 'translate(-50%, -50%)' }}
               onMouseDown={handleUIDragStart}
             >
-              <input
-                type="text"
-                defaultValue={liveValue ?? element.value ?? ''}
-                className="w-28 px-2 py-1 text-sm border rounded font-mono"
-                onKeyDown={(e) => {
-                  e.stopPropagation();
-                  if (e.key === 'Enter') {
-                    const v = Number((e.target as HTMLInputElement).value);
-                    if (element.numericLabel && kernel && Number.isFinite(v)) {
-                      const numeric = kernel.getConstruction().getElements()
-                        .find(n => n instanceof GeoNumeric && (n as GeoNumeric).label === element.numericLabel) as GeoNumeric | undefined;
-                      if (numeric) { numeric.setValue(v); kernel.notifyUpdate(numeric); }
-                    }
-                    (e.target as HTMLInputElement).blur();
-                  } else if (e.key === 'Escape') {
-                    (e.target as HTMLInputElement).blur();
+              <LiveBoundInput
+                key={`${element.id}:${initial}`}
+                initial={initial}
+                onCommit={(v) => {
+                  if (onValueCommit) { onValueCommit(element, liveValue ?? element.value ?? 0, v); return; }
+                  if (element.numericLabel && kernel && Number.isFinite(v)) {
+                    const numeric = kernel.getConstruction().getElements()
+                      .find(n => n instanceof GeoNumeric && (n as GeoNumeric).label === element.numericLabel) as GeoNumeric | undefined;
+                    if (numeric) { numeric.setValue(v); kernel.notifyUpdate(numeric); }
                   }
                 }}
-                onMouseDown={(e) => e.stopPropagation()}
               />
             </div>
           );
@@ -299,6 +246,35 @@ function runMiniScript(kernel: Kernel, script: readonly string[]): void {
         return null;
       })}
     </>
+  );
+};
+
+/** 绑定数值的输入框：显示内核实时值（动画/外部改值后不再陈旧），
+ *  聚焦期间不回写显示，Enter 提交、Esc/失焦还原。 */
+const LiveBoundInput: React.FC<{ initial: string; onCommit: (v: number) => void }> = ({ initial, onCommit }) => {
+  const [text, setText] = React.useState(initial);
+  const focusedRef = React.useRef(false);
+  React.useEffect(() => { if (!focusedRef.current) setText(initial); }, [initial]);
+  return (
+    <input
+      type="text"
+      value={text}
+      className="w-28 px-2 py-1 text-sm border rounded font-mono"
+      onFocus={() => { focusedRef.current = true; }}
+      onBlur={() => { focusedRef.current = false; setText(initial); }}
+      onChange={(e) => setText(e.target.value)}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') {
+          const v = Number((e.target as HTMLInputElement).value);
+          if (Number.isFinite(v)) onCommit(v);
+          (e.target as HTMLInputElement).blur();
+        } else if (e.key === 'Escape') {
+          (e.target as HTMLInputElement).blur();
+        }
+      }}
+      onMouseDown={(e) => e.stopPropagation()}
+    />
   );
 };
 

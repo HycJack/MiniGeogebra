@@ -207,7 +207,9 @@ export function functionParameterAt(
   return bestDistance === Number.POSITIVE_INFINITY ? NaN : bestX;
 }
 
-/** 通用对象命中：点优先；其次线段、直线、圆、多边形。两轮均按图层排序。 */
+/** 通用对象命中：点 > 文本 > 其余对象（官方 Hits.getTopHits 优先级
+ *  Euclidian/Hits.java:720-751：point > textfield > text > numeric > 其余——
+ *  此前文本排在链末，文本与图形重叠时永远选不中）。两轮均按图层排序。 */
 export function hitScreenObject(els: readonly ConstructionElement[], x: number, y: number, scale: number): GeoElement | undefined {
   // 1. 优先命中点（吸附热区）
   for (const i of hitOrder(els)) {
@@ -215,6 +217,16 @@ export function hitScreenObject(els: readonly ConstructionElement[], x: number, 
     if (el instanceof GeoPoint && Math.hypot(el.getX() - x, el.getY() - y) < 10 / scale) {
       return el;
     }
+  }
+  // 1.5. 文本次于点（文本浮在图形上时先选中文本）
+  for (const i of hitOrder(els)) {
+    const el = els[i];
+    if (!(el instanceof GeoText)) continue;
+    // 热区按 14px 字号估算的包围盒（上下各留余量，规避基线方向差异）
+    const w = (el.text.length * 9 + 4) / scale;
+    const h = 16 / scale;
+    const m = 2 / scale;
+    if (x >= el.x - m && x <= el.x + w + m && y >= el.y - h - m && y <= el.y + h + m) return el;
   }
   // 2. 命中其他几何对象
   for (const i of hitOrder(els)) {
@@ -272,13 +284,6 @@ export function hitScreenObject(els: readonly ConstructionElement[], x: number, 
       if (el.isDefined() && el.isInRegionXY(x, y)) return el;
     } else if (el instanceof GeoPolygon) {
       if ((el as any).isInRegionXY(x, y)) return el;
-    } else if (el instanceof GeoText) {
-      // 文本此前无任何命中路径：画布上点不中、选不中、删不掉。
-      // 热区按 14px 字号估算的包围盒（上下各留余量，规避基线方向差异）。
-      const w = (el.text.length * 9 + 4) / scale;
-      const h = 16 / scale;
-      const m = 2 / scale;
-      if (x >= el.x - m && x <= el.x + w + m && y >= el.y - h - m && y <= el.y + h + m) return el;
     } else if (el instanceof GeoElement && (el as any).isInRegionXY && typeof (el as any).contours !== 'undefined') {
       // GeoBooleanRegion 等轮廓区域：点内命中
       if ((el as any).isInRegionXY(x, y)) return el;

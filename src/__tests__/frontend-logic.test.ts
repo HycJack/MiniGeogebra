@@ -16,9 +16,9 @@ describe('resolveViewKey', () => {
   const coord = CoordinateSystem.centered(800, 600, 50);
   const size = { width: 800, height: 600 };
 
-  it('maps "+" and "=" to zoom-in factor 1.2', () => {
-    expect(resolveViewKey('+', coord, size)).toEqual({ kind: 'zoom', factor: 1.2 });
-    expect(resolveViewKey('=', coord, size)).toEqual({ kind: 'zoom', factor: 1.2 });
+  it('maps "+" and "=" to zoom-in factor 1.1（官方 MOUSE_WHEEL_ZOOM_FACTOR）', () => {
+    expect(resolveViewKey('+', coord, size)).toEqual({ kind: 'zoom', factor: 1.1 });
+    expect(resolveViewKey('=', coord, size)).toEqual({ kind: 'zoom', factor: 1.1 });
   });
 
   it('maps "-" and "_" to zoom-out factor 1/1.2', () => {

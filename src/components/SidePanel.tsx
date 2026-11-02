@@ -6,6 +6,7 @@ import { GeoPolygon } from '../kernel/geo/GeoPolygon';
 import { GeoConic } from '../kernel/geo/GeoConic';
 import { GeoNumeric } from '../kernel/geo/GeoNumeric';
 import { CoordinateSystem } from '../kernel/core/CoordinateSystem';
+import { formatNumber } from '../kernel/core/Options';
 import { ConstructionElement } from '../kernel/core/ConstructionElement';
 import { SliderControl } from './SliderControl';
 import AlgebraInputBar from './AlgebraInputBar';
@@ -56,7 +57,7 @@ const SidePanel: React.FC<SidePanelWithHandlersProps> = ({
           }`}
           onClick={() => setPanelTab('algebra')}>
           <Menu size={14} />
-          <span>代数视图</span>
+          <span>{t('panelAlgebraView')}</span>
         </button>
         <button
           className={`px-3 py-2 text-sm font-medium flex-1 flex items-center justify-center gap-2 ${
@@ -64,7 +65,7 @@ const SidePanel: React.FC<SidePanelWithHandlersProps> = ({
           }`}
           onClick={() => setPanelTab('properties')}>
           <Sliders size={14} />
-          <span>属性</span>
+          <span>{t('panelProperties')}</span>
         </button>
       </div>
 
@@ -135,7 +136,7 @@ const SidePanel: React.FC<SidePanelWithHandlersProps> = ({
                         className="flex-1 accent-blue-600 h-1"
                       />
                       <span className="text-xs font-mono text-gray-600 w-12 text-right">
-                        {el.getValue().toFixed(2)}
+                        {formatNumber(el.getValue(), kernel.getOptions())}
                       </span>
                     </div>
                   )}
@@ -156,7 +157,7 @@ const SidePanel: React.FC<SidePanelWithHandlersProps> = ({
                   <h3 className="font-semibold text-gray-700 text-sm">{t('animationsAndControls')}</h3>
                   <button
                     type="button"
-                    onClick={() => kernel.getAnimationManager().stopAllAnimation()}
+                    onClick={() => kernel.getAnimationManager().stopAnimation()}
                     className="p-1.5 rounded hover:bg-gray-200 text-gray-600 transition-colors"
                     title={t('stopAnimation')}
                   >
@@ -185,7 +186,7 @@ const SidePanel: React.FC<SidePanelWithHandlersProps> = ({
           {selectedElements.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-gray-400">
               <Menu size={32} className="mb-3 opacity-50" />
-              <span className="text-sm">请先在画布上选择一个对象查看/编辑属性</span>
+              <span className="text-sm">{t('propSelectFirst')}</span>
             </div>
           ) : selectedElements.length === 1 ? (
             (() => {
@@ -199,7 +200,7 @@ const SidePanel: React.FC<SidePanelWithHandlersProps> = ({
                   </div>
 
                   <div className="space-y-1.5">
-                    <label className="text-xs font-medium text-gray-600 block">轮廓颜色</label>
+                    <label className="text-xs font-medium text-gray-600 block">{t('propStrokeColor')}</label>
                     <div className="flex gap-2 items-center">
                       <input type="color"
                         value={el.strokeColor ?? '#000000'}
@@ -215,7 +216,7 @@ const SidePanel: React.FC<SidePanelWithHandlersProps> = ({
                   </div>
 
                   <div className="space-y-1.5">
-                    <label className="text-xs font-medium text-gray-600 block">线宽</label>
+                    <label className="text-xs font-medium text-gray-600 block">{t('propStrokeWidth')}</label>
                     <input type="number" min="0" step="0.5" max="50"
                       value={el.strokeWidth ?? el.defaultLineWidth}
                       onChange={(e) => recordStyleChange(el, { strokeWidth: Number(e.target.value) })}
@@ -224,20 +225,66 @@ const SidePanel: React.FC<SidePanelWithHandlersProps> = ({
                   </div>
 
                   <div className="space-y-1.5">
-                    <label className="text-xs font-medium text-gray-600 block">线型</label>
+                    <label className="text-xs font-medium text-gray-600 block">{t('propLineStyle')}</label>
                     <button
-                      onClick={() => recordStyleChange(el, { strokeDash: el.strokeDash ? null : [5 / coord.xScale, 5 / coord.xScale] })}
+                      onClick={() => recordStyleChange(el, { strokeDash: el.strokeDash ? null : [5, 5] })}
                       className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded bg-gray-50 hover:bg-gray-100 flex justify-between items-center">
-                      <span>{el.strokeDash && el.strokeDash.length ? '虚线' : '实线'}</span>
+                      <span>{el.strokeDash && el.strokeDash.length ? t('propDash') : t('propSolid')}</span>
                       {el.strokeDash && el.strokeDash.length ? (
                         <span className="text-gray-500 font-mono">{String(el.strokeDash[0]).slice(0,3)} , {String(el.strokeDash[1]).slice(0,3)}</span>
                       ) : null}
                     </button>
                   </div>
 
+                  {el instanceof GeoNumeric && (
+                    <div className="space-y-1.5 pt-3 border-t border-gray-200">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-medium text-gray-600">{t('propSliderSection')}</label>
+                        <button
+                          onClick={() => recordStyleChange(el, { sliderVisible: !el.sliderVisible })}
+                          className={`text-xs px-2 py-0.5 border rounded ${el.sliderVisible ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-gray-50 border-gray-300 text-gray-500'}`}
+                        >
+                          {el.sliderVisible ? t('propSliderShownOnCanvas') : t('propSliderHiddenOnCanvas')}
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="text-xs text-gray-600">
+                          {t('propSliderMin')}
+                          <input type="number" step="any" value={el.intervalMin}
+                            onChange={(e) => recordStyleChange(el, { intervalMin: Number(e.target.value) })}
+                            className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                        </label>
+                        <label className="text-xs text-gray-600">
+                          {t('propSliderMax')}
+                          <input type="number" step="any" value={el.intervalMax}
+                            onChange={(e) => recordStyleChange(el, { intervalMax: Number(e.target.value) })}
+                            className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                        </label>
+                        <label className="text-xs text-gray-600">
+                          {t('propSliderIncrement')}
+                          <input type="number" step="any" min="0" value={el.animationIncrement}
+                            onChange={(e) => recordStyleChange(el, { animationIncrement: Number(e.target.value) })}
+                            className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                        </label>
+                        <label className="text-xs text-gray-600">
+                          {t('propSliderWidthPx')}
+                          <input type="number" step="10" min="20" value={el.sliderWidthPx}
+                            onChange={(e) => recordStyleChange(el, { sliderWidthPx: Number(e.target.value) })}
+                            className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                        </label>
+                      </div>
+                      <button
+                        onClick={() => recordStyleChange(el, { sliderHorizontal: !el.sliderHorizontal })}
+                        className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded bg-gray-50 hover:bg-gray-100 flex justify-between items-center">
+                        <span>{t('propSliderDirection')}</span>
+                        <span className="text-gray-500">{el.sliderHorizontal ? t('propHorizontal') : t('propVertical')}</span>
+                      </button>
+                    </div>
+                  )}
+
                   {needsFill && (
                     <div className="space-y-1.5">
-                      <label className="text-xs font-medium text-gray-600 block">填充颜色</label>
+                      <label className="text-xs font-medium text-gray-600 block">{t('propFillColor')}</label>
                       <div className="flex gap-2 items-center">
                         <input type="color"
                           value={el.fillColor ?? 'rgba(59, 130, 246, 0.2)'}
@@ -254,7 +301,7 @@ const SidePanel: React.FC<SidePanelWithHandlersProps> = ({
                   )}
 
                   <div className="flex items-center justify-between">
-                    <label className="text-xs font-medium text-gray-700">显示标签</label>
+                    <label className="text-xs font-medium text-gray-700">{t('propShowLabel')}</label>
                     <input type="checkbox"
                       checked={el.labelVisible}
                       onChange={(e) => recordStyleChange(el, { labelVisible: e.target.checked })}
@@ -262,14 +309,14 @@ const SidePanel: React.FC<SidePanelWithHandlersProps> = ({
                   </div>
 
                   <div className="space-y-1.5">
-                    <label className="text-xs font-medium text-gray-600 block">标签显示时机</label>
+                    <label className="text-xs font-medium text-gray-600 block">{t('propLabelMode')}</label>
                     <select
                       value={el.labelMode}
                       onChange={(e) => recordStyleChange(el, { labelMode: e.target.value as any })}
                       className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded bg-white focus:outline-none focus:ring-2 focus:ring-blue-500">
-                      <option value="always">总是显示</option>
-                      <option value="mouse">鼠标悬停或选中时</option>
-                      <option value="never">从不显示</option>
+                      <option value="always">{t('propLabelAlways')}</option>
+                      <option value="mouse">{t('propLabelHover')}</option>
+                      <option value="never">{t('propLabelNever')}</option>
                     </select>
                   </div>
                 </div>
@@ -278,11 +325,11 @@ const SidePanel: React.FC<SidePanelWithHandlersProps> = ({
           ) : (
             <div className="space-y-4">
               <div className="text-sm font-medium text-gray-700">
-                <span className="text-blue-600">{selectedElements.length}</span> 个对象被选中
+                <span className="text-blue-600">{selectedElements.length}</span> {t('propSelectedCountSuffix')}
               </div>
               <div className="space-y-2 text-sm">
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-gray-600">统一轮廓颜色:</span>
+                  <span className="text-xs text-gray-600">{t('propUniformStrokeColor')}:</span>
                   <input type="color" value="#000000"
                     onChange={(e) => {
                       selectedElements.forEach((el) => recordStyleChange(el, { strokeColor: e.target.value }));
@@ -295,10 +342,10 @@ const SidePanel: React.FC<SidePanelWithHandlersProps> = ({
                     selectedElements.forEach((el) => recordStyleChange(el, { strokeDash: null }));
                   }}
                   className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded bg-gray-50 hover:bg-gray-100">
-                  全部设为实线
+                  {t('propAllSolid')}
                 </button>
                 <div className="pt-2 text-xs text-gray-500">
-                  多选时只能编辑共享样式；单个对象时还可编辑填充、标签等完整属性。
+                  {t('propMultiSelectHint')}；{t('propSingleHint')}。
                 </div>
               </div>
             </div>

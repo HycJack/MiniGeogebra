@@ -68,6 +68,12 @@ export class GeoInequality extends GeoElement {
     return this.op === '<=' || this.op === '>=';
   }
 
+  /** 边界方程 g=0 是否与某变量无关（y>c 类边界是水平线、x>c 是垂直线，
+   *  渲染端据此选策略——此前 y>c 的水平边界完全不画）。 */
+  boundaryIndependentOf(varName: 'x' | 'y'): boolean {
+    return !astUsesVariable(this.lhs, varName) && !astUsesVariable(this.rhs, varName);
+  }
+
   getAlgebraDescription(): string {
     if (!this.isDefined()) return `${this.label}（未定义）`;
     return `${this.label} : ${this.expressionText}`;

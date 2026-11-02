@@ -38,6 +38,11 @@ export class Construction {
     if (element instanceof AlgoElement) {
       this.algoElements.push(element);
       this.registerForwardDeps(element);
+      // 算法输出带 labelWanted（如 AlgoIntersect 的惰性标签交点）→ 开闸
+      if (element.getGeoElements().some(g => g.labelWanted)) this.hasWantedLabels = true;
+    }
+    if (element.isGeoElement() && (element as import('../geo/GeoElement').GeoElement).labelWanted) {
+      this.hasWantedLabels = true;
     }
   }
 
@@ -97,6 +102,7 @@ export class Construction {
     for (const algo of this.algoElements) {
       algo.update();
     }
+    this.assignWantedLabels();
   }
 
   updateDependentAlgorithms(changedElement: GeoElement) {
@@ -201,9 +207,14 @@ export class Construction {
     while (queue.length > 0) {
       const cur = queue.shift()!;
 
-      // 1) 若 cur 是某算法的输出 → 该算法也失去存在意义
+      // 1) 若 cur 是某算法的输出 → 该算法失去存在意义，其**全部**输出
+      //    （兄弟输出，如多边形的边）一并删除——官方 AlgoPolygon 的边与
+      //    多边形是同一算法的多输出，只删目标输出会留孤儿边
       if (cur instanceof GeoElement && cur.parentAlgo) {
         enqueue(cur.parentAlgo);
+        for (const out of cur.parentAlgo.getGeoElements()) {
+          enqueue(out);
+        }
       }
 
       // 2) 收集所有依赖 cur 的算法及其全部输出（用正向图 O(k) 替代全量扫描）
@@ -411,6 +422,51 @@ export class Construction {
     const existingLabels = new Set(this.elements.map(e => (e as any).label).filter((l: string) => l));
     if (additionalLabels) additionalLabels.forEach(l => existingLabels.add(l));
     return existingLabels;
+  }
+
+  /** 任一 labelWanted 元素存在即置位（此后每次 flush 做一次 O(N) 扫描补发）。 */
+  private hasWantedLabels = false;
+
+  /**
+   * 标签惰性补发（官方 GeoElement.updateGeo 的 labelWanted 语义）：
+   * undefined 期间不占字符表字母，首次 defined 才消费——否则平行线交点
+   * （J5 起常驻 undefined）会烧掉 C、D…，后续点标签整体后移。
+   */
+  assignWantedLabels(): void {
+    if (!this.hasWantedLabels) return;
+    // 扫描构造元素 + 算法输出（后者可能尚未入 elements，如测试直驱路径）
+    const seen = new Set<ConstructionElement>();
+    // 批内互斥：未入构造的算法输出（collectLabels 看不到）同批补发时也不能撞标签
+    const fresh = new Set<string>();
+    const visit = (el: ConstructionElement | undefined | null) => {
+      if (!el || seen.has(el) || !el.isGeoElement()) return;
+      seen.add(el);
+      const geo = el as import('../geo/GeoElement').GeoElement;
+      if (!geo.labelWanted || geo.label || !geo.isDefined()) return;
+      geo.label = this.labelForGeo(geo, fresh);
+      fresh.add(geo.label);
+      geo.labelWanted = false;
+    };
+    for (const el of this.elements) visit(el);
+    for (const algo of this.algoElements) algo.getGeoElements().forEach(visit);
+    // 全部补发完则关闸，恢复零开销
+    this.hasWantedLabels = false;
+    for (const el of seen) {
+      if ((el as import('../geo/GeoElement').GeoElement).labelWanted) { this.hasWantedLabels = true; break; }
+    }
+  }
+
+  /** 按几何类型选字符表（与各 Algo 构造时的既有约定一致）。 */
+  private labelForGeo(geo: import('../geo/GeoElement').GeoElement, additional?: Set<string>): string {
+    const cn = geo.getClassName();
+    if (cn === 'GeoNumeric') return this.getNextNumericLabel(additional);
+    if (cn === 'GeoLine' || cn === 'GeoSegment' || cn === 'GeoRay' || cn === 'GeoVector' || cn === 'GeoPolyLine' || cn === 'GeoLine3D' || cn === 'GeoPolyline3D') {
+      return this.getNextLineLabel(additional);
+    }
+    if (cn === 'GeoConic' || cn === 'GeoArc' || cn === 'GeoConicPart' || cn === 'GeoCircle3D' || cn === 'GeoQuadric3D' || cn === 'GeoPlane3D' || cn === 'GeoConic3D' || cn === 'GeoPolyhedron3D' || cn === 'GeoLocus' || cn === 'GeoLocus3D' || cn === 'GeoSurface') {
+      return this.getNextCircleLabel(additional);
+    }
+    return this.getNextPointLabel(additional);
   }
 
   /** 从字符表取第一个可用标签；一轮用尽后加 "_n" 后缀继续。 */
