@@ -46,6 +46,9 @@ export class GeoFunction extends GeoElement {
   private samples: FunctionSample[] = [];
   private sampledRange: { minX: number; maxX: number; pixelWidth: number; viewHeight: number } | null = null;
   private samplesDirty = true;
+  /** 限域（官方 Function(f, a, b)）：定义域外求值 NaN、采样截断。默认无限制。 */
+  private domainMin = Number.NEGATIVE_INFINITY;
+  private domainMax = Number.POSITIVE_INFINITY;
 
   constructor(
     kernel: IKernel,
@@ -91,10 +94,29 @@ export class GeoFunction extends GeoElement {
   }
 
   evaluateAt(x: number): number {
+    // 限域函数（官方 Function(f,a,b) 语义）：定义域外 undefined
+    if (x < this.domainMin || x > this.domainMax) return NaN;
     const scope = new Map(this.scope);
     scope.set(this.variableName, x);
     return evaluate(this.expression, scope, this.userFunctions);
   }
+
+  /** 设置定义域（Function(f,a,b)）；无参重置为全域。 */
+  /** 作用域浅拷贝（限域包装等需要镜像求值配置的算法用）。 */
+  getScopeShallow(): Scope { return new Map(this.scope); }
+
+  getUserFunctions(): Map<string, { expression: ExpressionNode; variableName: string }> | null {
+    return this.userFunctions;
+  }
+
+  setDomain(min: number, max: number): void {
+    this.domainMin = Number.isFinite(min) ? min : Number.NEGATIVE_INFINITY;
+    this.domainMax = Number.isFinite(max) ? max : Number.POSITIVE_INFINITY;
+    this.samplesDirty = true;
+  }
+
+  getDomainMin(): number { return this.domainMin; }
+  getDomainMax(): number { return this.domainMax; }
 
   /**
    * 在 `[minX, maxX]` 上重新采样曲线。
@@ -131,12 +153,16 @@ export class GeoFunction extends GeoElement {
       return this.samples;
     }
 
+    // 限域：采样区间与定义域求交（此前限域函数全视口采样、域外全 NaN 段）
+    const lo = Math.max(minX, this.domainMin);
+    const hi = Math.min(maxX, this.domainMax);
+    const clampedWidth = Math.max(0, hi - lo);
     const count = Math.max(MIN_SAMPLE_COUNT, Math.min(MAX_BASE_COUNT, Math.ceil(pixelWidth / 2)));
-    const step = width / count;
+    const step = clampedWidth / count;
 
     const base: FunctionSample[] = [];
     for (let i = 0; i <= count; i++) {
-      const x = minX + step * i;
+      const x = lo + step * i;
       base.push({ x, y: this.sampleValue(x) });
     }
 

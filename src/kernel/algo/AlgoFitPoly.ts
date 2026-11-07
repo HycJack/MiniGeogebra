@@ -97,7 +97,7 @@ function binomial(k: number, j: number): number {
 }
 
 /** 部分主元高斯消元解线性方程组；奇异返回 null。 */
-function solveLinear(a: number[][], b: number[]): number[] | null {
+export function solveLinear(a: number[][], b: number[]): number[] | null {
   const n = b.length;
   const aug = a.map((row, i) => [...row, b[i]]);
   for (let col = 0; col < n; col++) {

@@ -37,6 +37,9 @@ import { AlgoSequence, AlgoListElement, AlgoListAggregate, AlgoListTransform } f
 import { AlgoPrimeFactors, AlgoDivisorsList, gcd, lcm, isPrime, nextPrime, previousPrime, divisorsSum, binomialCoefficient, toBase, fromBase } from '../algo/AlgoNumberTheory';
 import { AlgoConicSingleAxis, AlgoConicSemiAxisLength, AlgoConicAxisLength, AlgoConicLinearEccentricity, AlgoCircleSector } from '../algo/AlgoConicProperties';
 import { AlgoFractionText, AlgoScientificText, makeText, nameOf, formulaText, tableText, splitText, textToUnicode, unicodeToText, makeTextList, makeNumericList } from '../algo/AlgoTextOps';
+import { AlgoFitExp, AlgoFitGrowth, AlgoFitLog, AlgoFitPow, AlgoFitLineX, AlgoFitLineY } from '../algo/AlgoFitCurve';
+import { futureValue, presentValue, payment as financePayment, rate as financeRate } from '../algo/AlgoFinance';
+import { AlgoFunctionRestricted } from '../algo/AlgoFunctionRestricted';
 import { AlgoDependentSurface } from '../algo/AlgoDependentSurface';
 import { AlgoSurfaceOfRevolution } from '../algo/AlgoSurfaceOfRevolution';
 import { GeoCircle3D } from '../geo/GeoCircle3D';
@@ -154,7 +157,7 @@ const COMMAND_ARITY: Record<string, [number, number]> = {
   Distance: [2, 2],
   Slope: [1, 1],
   Rotate: [2, 3],
-  FitPoly: [3, 12],
+  FitPoly: [2, 12],   // 2 参 = 完整列表字面量（花括号感知 splitArgs 后不再被切碎）
   Text: [2, 4],
   Angle: [2, 3], // 2 = 两线角 Angle(l1,l2)，3 = 三点角
   Slider: [0, 9],   // 官方 CmdSlider arity（min,max,increment,speed,width,isAngle,horizontal,animating,random）
@@ -334,6 +337,19 @@ const COMMAND_ARITY: Record<string, [number, number]> = {
   UnicodeToText: [1, 1],
   LetterToUnicode: [1, 1],
   UnicodeToLetter: [1, 1],
+  // ---- 拟合族（L4-A8）+ 金融族（L4-A10）+ 限域函数 ----
+  Fit: [1, 1],                     // FitLine 的官方名（y 对 x 回归）
+  FitLineY: [1, 1],
+  FitLineX: [1, 1],
+  FitExp: [1, 1],
+  FitGrowth: [1, 1],
+  FitLog: [1, 1],
+  FitPow: [1, 1],
+  FutureValue: [4, 5],
+  PresentValue: [4, 5],
+  Payment: [4, 5],
+  Rate: [4, 6],
+  Function: [3, 3],
 };
 
 /** 全部命令名（字典序）：供输入栏自动补全使用。 */
@@ -403,8 +419,9 @@ const splitArgs = (argsText: string): string[] => {
       continue;
     }
     if (char === '"' || char === "'") { quote = char; continue; }
-    if (char === '(') depth++;
-    else if (char === ')') depth--;
+    // 花括号同样计入深度：命令参数里的列表字面量 FitExp({P0, P1}) 不被逗号拆开
+    if (char === '(' || char === '{') depth++;
+    else if (char === ')' || char === '}') depth--;
     else if (char === ',' && depth === 0) {
       args.push(argsText.slice(start, i).trim());
       start = i + 1;
@@ -2460,8 +2477,22 @@ const dispatchCommand = (
         if (!pt) throw new Error(`FitPoly expects points and a trailing degree; "${src.trim()}" is not a point`);
         points.push(pt);
       };
-      // 列表参数可能被顶层逗号切碎（{P1, P2, P3} → "{P1" / "P2" / "P3}"）：
-      // 仅当参数以 "{" 开头时进入拼接模式，直到收到带 "}" 的片段。
+      // 完整列表字面量（花括号感知 splitArgs 后 args[0] 不再被切碎）：
+      const intactLiteral = args.length === 2 && args[0].trim().startsWith('{') && args[0].trim().endsWith('}')
+        ? args[0].trim().slice(1, -1).split(',').map(x => x.trim()).filter(x => x.length > 0)
+        : null;
+      if (intactLiteral) {
+        for (const label of intactLiteral) {
+          const pt = ctx.findPoint(label);
+          if (!pt) throw new Error(`FitPoly expects points and a trailing degree; "${label}" is not a point`);
+          points.push(pt);
+        }
+        const algoFp = new AlgoFitPoly(kernel, points, degree);
+        assignNextLabel(algoFp.getOutput(), () => construction.getNextFunctionLabel(existingLabels));
+        existingLabels.add(algoFp.getOutput().label);
+        return [algoFp, algoFp.getOutput()];
+      }
+      // 旧式碎片拼接（保留兼容）
       const rebuilt: string[] = [];
       let joining = false;
       for (let i = 0; i < args.length - 1; i++) {
@@ -3746,6 +3777,75 @@ const dispatchCommand = (
       const text = args[0].trim().replace(/^"(.*)"$/, '$1');
       const codes = textToUnicode(text);
       return [ctx.createStaticNumeric(codes.length > 0 ? codes[0] : NaN)];
+    }
+
+    // ---- 拟合族（官方 CmdFitExp / CmdFitLineX / ...：点列表活依赖）----
+    case 'Fit':
+    case 'FitLineY':
+    case 'FitLineX':
+    case 'FitExp':
+    case 'FitGrowth':
+    case 'FitLog':
+    case 'FitPow': {
+      // 参数：点列表（或直接列点）；点全部入 input（移动点重新拟合）
+      const points: GeoPoint[] = [];
+      const firstArg = args[0].trim();
+      const srcList = ctx.findListArg(firstArg);
+      if (srcList) {
+        points.push(...srcList.getChildren().filter((c): c is GeoPoint => c instanceof GeoPoint));
+      } else if (firstArg.startsWith('{') && firstArg.endsWith('}')) {
+        // 内联列表字面量（花括号深度保护后完整到达）：展开标签
+        for (const label of firstArg.slice(1, -1).split(',')) {
+          const p = ctx.findPoint(label.trim());
+          if (p) points.push(p);
+        }
+      } else {
+        for (const arg of args) {
+          const p = resolvePointArg(ctx, arg);
+          points.push(p);
+        }
+      }
+      if (points.length < 2) throw new Error(`${name} expects at least two points`);
+      const algo = ({
+        Fit: AlgoFitLineY, FitLineY: AlgoFitLineY, FitLineX: AlgoFitLineX,
+        FitExp: AlgoFitExp, FitGrowth: AlgoFitGrowth, FitLog: AlgoFitLog, FitPow: AlgoFitPow,
+      } as unknown as typeof AlgoFitExp)[name];
+      const fit = new algo(kernel, points);
+      const out = fit.getOutput() as unknown as { label?: string };
+      assignNextLabel(out as never, () => construction.getNextFunctionLabel(existingLabels));
+      existingLabels.add((out as { label?: string }).label ?? '');
+      return [fit, ...(fit.getGeoElements() as GeoElement[])];
+    }
+    // ---- 金融族（官方 TABLE_FINANCIAL：静态求值）----
+    case 'FutureValue':
+    case 'PresentValue':
+    case 'Payment':
+    case 'Rate': {
+      const nums = args.map(a => ctx.evaluateNumber(a));
+      let value: number;
+      if (name === 'FutureValue') {
+        value = futureValue(nums[0], nums[1], nums[2], nums[3], nums[4] ?? 0);
+      } else if (name === 'PresentValue') {
+        value = presentValue(nums[0], nums[1], nums[2], nums[3], nums[4] ?? 0);
+      } else if (name === 'Payment') {
+        value = financePayment(nums[0], nums[1], nums[2], nums[3], nums[4] ?? 0);
+      } else {
+        value = financeRate(nums[0], nums[1], nums[2], nums[3], nums[4] ?? 0, nums[5] ?? 0.1);
+      }
+      return [ctx.createStaticNumeric(value)];
+    }
+    // ---- Function(f, a, b) 限域函数（官方 CmdFunction 三参形）----
+    case 'Function': {
+      const source = ctx.findFunction(args[0].trim());
+      if (!source) throw new Error(`Unknown function "${args[0].trim()}"`);
+      const resolveBound = (text: string): GeoNumeric | number => {
+        const n = ctx.findNumeric(text.trim());
+        return n ?? ctx.evaluateNumber(text);
+      };
+      const algo = new AlgoFunctionRestricted(kernel, source, resolveBound(args[1]), resolveBound(args[2]));
+      assignNextLabel(algo.getOutput(), () => construction.getNextFunctionLabel(existingLabels));
+      existingLabels.add(algo.getOutput().label);
+      return [algo, algo.getOutput()];
     }
 
     default:

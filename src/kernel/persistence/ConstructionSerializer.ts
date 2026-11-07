@@ -58,6 +58,8 @@ import { AlgoSequence, AlgoListElement, AlgoListAggregate, AlgoListTransform, LI
 import { AlgoPrimeFactors, AlgoDivisorsList } from '../algo/AlgoNumberTheory';
 import { AlgoConicSingleAxis, AlgoConicSemiAxisLength, AlgoConicAxisLength, AlgoConicLinearEccentricity, AlgoCircleSector } from '../algo/AlgoConicProperties';
 import { AlgoFractionText, AlgoScientificText } from '../algo/AlgoTextOps';
+import { AlgoFitExp, AlgoFitGrowth, AlgoFitLog, AlgoFitPow, AlgoFitLineX, AlgoFitLineY } from '../algo/AlgoFitCurve';
+import { AlgoFunctionRestricted } from '../algo/AlgoFunctionRestricted';
 import { GeoBoolean } from '../geo/GeoBoolean';
 import { AlgoRootList, ROOT_LIST_CAPACITY } from '../algo/AlgoRootList';
 import { AlgoFunctionExtremumPoint } from '../algo/AlgoFunctionExtremumPoint';
@@ -371,6 +373,11 @@ export function collectAlgoExtras(algo: AlgoElement): Partial<SerializedAlgorith
         extras.scalars = [algo.getRadiusValue(), algo.getSidesValue()];
       } else if (algo instanceof AlgoRegularPolygonEdge) {
         extras.scalars = [algo.getSidesValue()];
+      } else if (algo instanceof AlgoFunctionRestricted) {
+        extras.scalars = [
+          algo.getLo() instanceof GeoNumeric ? null : algo.getLo() as number,
+          algo.getHi() instanceof GeoNumeric ? null : algo.getHi() as number,
+        ];
       } else if (algo instanceof AlgoFractionText || algo instanceof AlgoScientificText) {
         const n = algo.getN();
         extras.scalars = [n instanceof GeoNumeric ? null : n];
@@ -585,6 +592,30 @@ export function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], s
       return new AlgoDilate(kernel, inputs[0], center, ratioNum ?? ratio);
     }
     case 'AlgoFitPoly':             return new AlgoFitPoly(kernel, inputs as import('../geo/GeoPoint').GeoPoint[], scalars?.[0] ?? 1);
+    case 'AlgoFitExp':
+    case 'AlgoFitGrowth':
+    case 'AlgoFitLog':
+    case 'AlgoFitPow':
+    case 'AlgoFitLineX':
+    case 'AlgoFitLineY': {
+      const pts = inputs.filter(i => i instanceof GeoPoint) as import('../geo/GeoPoint').GeoPoint[];
+      const ctor = {
+        AlgoFitExp, AlgoFitGrowth, AlgoFitLog, AlgoFitPow, AlgoFitLineX, AlgoFitLineY,
+      }[type as 'AlgoFitExp'];
+      return new ctor(kernel, pts);
+    }
+    case 'AlgoFunctionRestricted': {
+      const src = inputs.find(i => i instanceof GeoFunction) as GeoFunction
+        ?? inputs[0] as GeoFunction;
+      const live = inputs.filter(i => i instanceof GeoNumeric) as GeoNumeric[];
+      const lo = scalars?.[0] ?? null;
+      const hi = scalars?.[1] ?? null;
+      return new AlgoFunctionRestricted(
+        kernel, src,
+        lo === null ? live.shift() ?? 0 : lo,
+        hi === null ? live.shift() ?? 1 : hi,
+      );
+    }
     case 'AlgoFractionText':
     case 'AlgoScientificText': {
       const n = inputs.find(i => i instanceof GeoNumeric) as GeoNumeric | undefined
