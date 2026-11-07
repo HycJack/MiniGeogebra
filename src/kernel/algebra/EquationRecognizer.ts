@@ -40,6 +40,9 @@ import { AlgoFractionText, AlgoScientificText, makeText, nameOf, formulaText, ta
 import { AlgoFitExp, AlgoFitGrowth, AlgoFitLog, AlgoFitPow, AlgoFitLineX, AlgoFitLineY } from '../algo/AlgoFitCurve';
 import { futureValue, presentValue, payment as financePayment, rate as financeRate } from '../algo/AlgoFinance';
 import { AlgoFunctionRestricted } from '../algo/AlgoFunctionRestricted';
+import { AlgoAffineRatio, AlgoCrossRatio, AlgoBarycenter, AlgoAreConcurrent, AlgoInteriorAngles, AlgoDirection, AlgoDynamicCoordinates, AlgoPathParameter, AlgoTriangleCenterN } from '../algo/AlgoGeoMeasures';
+import { AlgoIteration, AlgoIterationList } from '../algo/AlgoIteration';
+import { AlgoFitGeneral, AlgoFitSin, AlgoFitLogistic } from '../algo/AlgoFitNonlinear';
 import { AlgoDependentSurface } from '../algo/AlgoDependentSurface';
 import { AlgoSurfaceOfRevolution } from '../algo/AlgoSurfaceOfRevolution';
 import { GeoCircle3D } from '../geo/GeoCircle3D';
@@ -338,7 +341,7 @@ const COMMAND_ARITY: Record<string, [number, number]> = {
   LetterToUnicode: [1, 1],
   UnicodeToLetter: [1, 1],
   // ---- 拟合族（L4-A8）+ 金融族（L4-A10）+ 限域函数 ----
-  Fit: [1, 1],                     // FitLine 的官方名（y 对 x 回归）
+  Fit: [1, 2],                     // 1 参 = FitLineY（官方别名）；2 参 = Fit(list, f) 通用拟合
   FitLineY: [1, 1],
   FitLineX: [1, 1],
   FitExp: [1, 1],
@@ -350,6 +353,21 @@ const COMMAND_ARITY: Record<string, [number, number]> = {
   Payment: [4, 5],
   Rate: [4, 6],
   Function: [3, 3],
+  // ---- 几何度量杂项（L4-A6）+ 迭代 + 非线性拟合 ----
+  AffineRatio: [3, 3],
+  Barycenter: [1, 2],
+  CrossRatio: [4, 4],
+  AreConcurrent: [3, 3],
+  InteriorAngles: [1, 1],
+  Direction: [1, 1],
+  DynamicCoordinates: [3, 3],
+  PathParameter: [1, 1],
+  TriangleCenter: [4, 4],
+  Iteration: [3, 3],
+  IterationList: [3, 3],
+  FitSin: [1, 1],
+  FitLogistic: [1, 1],
+  FitGeneral: [2, 2],   // 官方 Fit(list, f)——别名注册避免与 FitLine 冲突，分发时 Fit [2] 路由至此
 };
 
 /** 全部命令名（字典序）：供输入栏自动补全使用。 */
@@ -666,6 +684,29 @@ let redefineSeq = 0;
 
   const findNumeric = (label: string): GeoNumeric | undefined =>
     construction.getElements().find(el => el instanceof GeoNumeric && (el as GeoNumeric).label === label) as GeoNumeric | undefined;
+
+  /**
+   * 函数定义的依赖解析（官方语义扩展）：未知**单字母**变量自动创建自由数值 1
+   * 并入构造（GeoGebra 输入 f(x)=a x^b 会创建自由数 a、b——Fit 通用拟合的
+   * 前提）。多字母未知变量仍报错（拼写保护）。
+   */
+  const makeNumericDepsAutoFree = (expression: ExpressionNode, allowedVariables: string[] = []): GeoNumeric[] => {
+    const variables = collectVariables(expression);
+    return Array.from(variables).map(name => {
+      if (allowedVariables.includes(name)) return null;
+      const existing = construction.getElements().find(
+        el => el instanceof GeoNumeric && (el as GeoNumeric).label === name) as GeoNumeric | undefined;
+      if (existing) return existing;
+      if (/^[a-zA-Z]$/.test(name)) {
+        const free = new GeoNumeric(kernel, 1);
+        free.label = name;
+        existingLabels.add(name);
+        construction.addElement(free);
+        return free;
+      }
+      throw new Error(`Unknown variable "${name}"`);
+    }).filter((dependency): dependency is GeoNumeric => dependency !== null);
+  };
 
   /** 找出表达式引用到的滑块依赖（允许列表如参数名除外）。 */
   const collectDeps = (expressions: ExpressionNode[], allowedVariables: string[]): GeoNumeric[] => {
@@ -1022,7 +1063,7 @@ let redefineSeq = 0;
           el => el instanceof GeoElement && (el as unknown as { label?: string }).label === functionHeader.label);
         if (!(existingFn instanceof GeoFunction)) throw new Error(`Label "${functionHeader.label}" already exists`);
         const expression = parseExpression(rightText);
-        const dependencies = makeNumericDependencies(expression, [functionHeader.variableName]);
+        const dependencies = makeNumericDepsAutoFree(expression, [functionHeader.variableName]);
         const fnDeps = makeFunctionDeps(expression, functionHeader.label);
         const algo = new AlgoDependentFunction(kernel, expression, functionHeader.variableName, rightText, dependencies, fnDeps);
         // 与 redefineElement 同一条构造段重建路径（输入缓存于私有字段，仅换 input 数组不生效）
@@ -1040,7 +1081,7 @@ let redefineSeq = 0;
         return [];
       }
       const expression = parseExpression(rightText);
-      const dependencies = makeNumericDependencies(expression, [functionHeader.variableName]);
+      const dependencies = makeNumericDepsAutoFree(expression, [functionHeader.variableName]);
       const fnDeps = makeFunctionDeps(expression, functionHeader.label);
       const algo = new AlgoDependentFunction(kernel, expression, functionHeader.variableName, rightText, dependencies, fnDeps);
       algo.getOutput().label = functionHeader.label;
@@ -3787,6 +3828,26 @@ const dispatchCommand = (
     case 'FitGrowth':
     case 'FitLog':
     case 'FitPow': {
+      // Fit(list, f) 两参形式 → 通用非线性拟合（官方 CmdFit 的 GeoFunction 分支）
+      if (name === 'Fit' && args.length === 2) {
+        const points: GeoPoint[] = [];
+        const firstArg = args[0].trim();
+        const srcList = ctx.findListArg(firstArg);
+        if (srcList) {
+          points.push(...srcList.getChildren().filter((c): c is GeoPoint => c instanceof GeoPoint));
+        } else if (firstArg.startsWith('{') && firstArg.endsWith('}')) {
+          for (const label of firstArg.slice(1, -1).split(',')) {
+            const p = ctx.findPoint(label.trim());
+            if (p) points.push(p);
+          }
+        }
+        const model = ctx.findFunction(args[1].trim());
+        if (!model) throw new Error(`Fit expects a list of points and a model function`);
+        const general = new AlgoFitGeneral(kernel, points, model, model.variableName || 'x');
+        assignNextLabel(general.getOutput(), () => construction.getNextFunctionLabel(existingLabels));
+        existingLabels.add(general.getOutput().label);
+        return [general, general.getOutput()];
+      }
       // 参数：点列表（或直接列点）；点全部入 input（移动点重新拟合）
       const points: GeoPoint[] = [];
       const firstArg = args[0].trim();
@@ -3843,6 +3904,182 @@ const dispatchCommand = (
         return n ?? ctx.evaluateNumber(text);
       };
       const algo = new AlgoFunctionRestricted(kernel, source, resolveBound(args[1]), resolveBound(args[2]));
+      assignNextLabel(algo.getOutput(), () => construction.getNextFunctionLabel(existingLabels));
+      existingLabels.add(algo.getOutput().label);
+      return [algo, algo.getOutput()];
+    }
+
+    // ---- 几何度量杂项（官方 AlgoAffineRatio / AlgoCrossRatio / ...）----
+    case 'AffineRatio': {
+      const p = resolvePointArg(ctx, args[0]);
+      const a = resolvePointArg(ctx, args[1]);
+      const b = resolvePointArg(ctx, args[2]);
+      const algo = new AlgoAffineRatio(kernel, p, a, b);
+      assignNextLabel(algo.getOutput(), () => construction.getNextNumericLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+    case 'CrossRatio': {
+      const [a, b, c, d] = args.map(arg => resolvePointArg(ctx, arg));
+      const algo = new AlgoCrossRatio(kernel, a, b, c, d);
+      assignNextLabel(algo.getOutput(), () => construction.getNextNumericLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+    case 'Barycenter': {
+      // Barycenter(list[, weightsList]) | Barycenter(P1..Pn)
+      const first = ctx.findListArg(args[0].trim());
+      const lit = /^\{(.*)\}$/.exec(args[0].trim());
+      let points: GeoPoint[];
+      if (first) {
+        points = first.getChildren().filter((c): c is GeoPoint => c instanceof GeoPoint);
+      } else if (lit) {
+        // 内联列表字面量（花括号感知 splitArgs 后完整到达）
+        points = [];
+        for (const label of lit[1].split(',')) {
+          const pt = ctx.findPoint(label.trim());
+          if (pt) points.push(pt);
+        }
+      } else {
+        points = args.map(arg => resolvePointArg(ctx, arg));
+      }
+      if (points.length === 0) throw new Error(`Barycenter expects points`);
+      let weights: GeoNumeric[] = [];
+      if (args.length === 2) {
+        const wList = ctx.findListArg(args[1].trim());
+        if (wList) weights = wList.getChildren().filter((c): c is GeoNumeric => c instanceof GeoNumeric);
+      }
+      const algo = new AlgoBarycenter(kernel, points, weights);
+      assignNextLabel(algo.getOutput(), () => construction.getNextPointLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+    case 'AreConcurrent': {
+      const lines = args.map(arg => {
+        const l = ctx.findLine(arg.trim());
+        if (!l) throw new Error(`AreConcurrent expects lines; "${arg.trim()}" is not a line`);
+        return l;
+      });
+      const algo = new AlgoAreConcurrent(kernel, lines[0], lines[1], lines[2]);
+      assignNextLabel(algo.getOutput(), () => construction.getNextNumericLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+    case 'InteriorAngles': {
+      const poly = ctx.findPolygon(args[0].trim());
+      if (!poly) throw new Error(`InteriorAngles expects a polygon`);
+      const algo = new AlgoInteriorAngles(kernel, poly);
+      const out = algo.getOutput();
+      assignNextLabel(out, () => construction.getNextPointLabel(existingLabels));
+      return [algo, out];
+    }
+    case 'Direction': {
+      const line = ctx.findLine(args[0].trim());
+      if (!line) throw new Error(`Direction expects a line`);
+      const algo = new AlgoDirection(kernel, line);
+      assignNextLabel(algo.getOutput(), () => construction.getNextVectorLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+    case 'DynamicCoordinates': {
+      // DynamicCoordinates(P, xExpr, yExpr)：官方记法 x(P)/y(P) 预处理为变量
+      // x_<label>/y_<label>（引用源点坐标，点依赖活更新）
+      const source = resolvePointArg(ctx, args[0]);
+      const sourceLabel = source.label || 'P';
+      const rewrite = (text: string): string => // 负向后行断言（\b 在 '2y' 之间不成立——前后都是词字符）：
+      // 只把独立出现的 x(P)/y(P) 改写，max(B)/sin(x(P)) 的尾部不受影响（sin 整体被内建函数层吃掉前 x( 前是 'n'，被断言挡住）
+      text.replace(/(?<![A-Za-z_\u0370-\u03FF])([xy])\(\s*([A-Za-z_\u0370-\u03FF][\w\u0370-\u03FF]*)\s*\)/g, '$1_$2');
+      const xAst = parseExpression(rewrite(args[1].trim()));
+      const yAst = parseExpression(rewrite(args[2].trim()));
+      // x_/y_ 前缀变量引用的点 → 活依赖
+      const pointDeps: GeoPoint[] = [];
+      const seenDeps = new Set<string>();
+      for (const ast of [xAst, yAst]) {
+        for (const name of collectVariables(ast)) {
+          if (!name.startsWith('x_') && !name.startsWith('y_')) continue;
+          const label = name.slice(2);
+          const pt = construction.getElements().find(
+            el => el instanceof GeoPoint && (el as GeoPoint).label === label) as GeoPoint | undefined;
+          if (pt && !seenDeps.has(label)) { pointDeps.push(pt); seenDeps.add(label); }
+        }
+      }
+      const coordNames = pointDeps.flatMap(p => [`x_${p.label}`, `y_${p.label}`]);
+      const allowed = [sourceLabel, ...coordNames];
+      const deps = [...ctx.makeNumericDeps(xAst, allowed), ...ctx.makeNumericDeps(yAst, allowed)];
+      const algo = new AlgoDynamicCoordinates(kernel, source, xAst, yAst, deps, pointDeps);
+      algo.commandText = `DynamicCoordinates(${args[0].trim()}, ${args[1].trim()}, ${args[2].trim()})`;
+      assignNextLabel(algo.getOutput(), () => construction.getNextPointLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+    case 'PathParameter': {
+      const p = resolvePointArg(ctx, args[0]);
+      const algo = new AlgoPathParameter(kernel, p);
+      assignNextLabel(algo.getOutput(), () => construction.getNextNumericLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+    case 'TriangleCenter': {
+      const [a, b, c] = args.slice(0, 3).map(arg => resolvePointArg(ctx, arg));
+      const n = ctx.findNumeric(args[3].trim()) ?? ctx.evaluateNumber(args[3]);
+      const algo = new AlgoTriangleCenterN(kernel, a, b, c, n);
+      assignNextLabel(algo.getOutput(), () => construction.getNextPointLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+    // ---- 迭代族（官方 AlgoIteration / AlgoIterationList）----
+    case 'Iteration':
+    case 'IterationList': {
+      const f = ctx.findFunction(args[0].trim());
+      if (!f) throw new Error(`${name} expects a function`);
+      const resolveBound = (text: string): GeoNumeric | number => {
+        const n = ctx.findNumeric(text.trim());
+        return n ?? ctx.evaluateNumber(text);
+      };
+      const start = resolveBound(args[1]);
+      const n = resolveBound(args[2]);
+      const algo = name === 'Iteration'
+        ? new AlgoIteration(kernel, f, start, n)
+        : new AlgoIterationList(kernel, f, start, n);
+      const out = algo.getOutput();
+      assignNextLabel(out as never, () => name === 'Iteration'
+        ? construction.getNextNumericLabel(existingLabels)
+        : construction.getNextPointLabel(existingLabels));
+      existingLabels.add(out.label);
+      return [algo, out];
+    }
+    // ---- 非线性拟合（官方 AlgoFit / AlgoFitSin / AlgoFitLogistic）----
+    case 'FitSin':
+    case 'FitLogistic': {
+      const points: GeoPoint[] = [];
+      const firstArg = args[0].trim();
+      const srcList = ctx.findListArg(firstArg);
+      if (srcList) {
+        points.push(...srcList.getChildren().filter((c): c is GeoPoint => c instanceof GeoPoint));
+      } else if (firstArg.startsWith('{') && firstArg.endsWith('}')) {
+        for (const label of firstArg.slice(1, -1).split(',')) {
+          const p = ctx.findPoint(label.trim());
+          if (p) points.push(p);
+        }
+      }
+      if (points.length < 3) throw new Error(`${name} expects at least three points`);
+      const algo = name === 'FitSin'
+        ? new AlgoFitSin(kernel, points)
+        : new AlgoFitLogistic(kernel, points);
+      assignNextLabel(algo.getOutput(), () => construction.getNextFunctionLabel(existingLabels));
+      existingLabels.add(algo.getOutput().label);
+      return [algo, algo.getOutput()];
+    }
+    case 'FitGeneral':
+    case 'FitTwo': {
+      // Fit(list, f)：f 的自由参数自动发现，LM 数值最小二乘
+      const points: GeoPoint[] = [];
+      const firstArg = args[0].trim();
+      const srcList = ctx.findListArg(firstArg);
+      if (srcList) {
+        points.push(...srcList.getChildren().filter((c): c is GeoPoint => c instanceof GeoPoint));
+      } else if (firstArg.startsWith('{') && firstArg.endsWith('}')) {
+        for (const label of firstArg.slice(1, -1).split(',')) {
+          const p = ctx.findPoint(label.trim());
+          if (p) points.push(p);
+        }
+      }
+      const model = ctx.findFunction(args[1].trim());
+      if (!model) throw new Error(`Fit expects a list of points and a model function`);
+      const mainVar = model.variableName || 'x';
+      const algo = new AlgoFitGeneral(kernel, points, model, mainVar);
       assignNextLabel(algo.getOutput(), () => construction.getNextFunctionLabel(existingLabels));
       existingLabels.add(algo.getOutput().label);
       return [algo, algo.getOutput()];

@@ -26,7 +26,9 @@ function resolveTrianglePoints(input: GeoElement[]): GeoPoint[] {
 }
 
 /** 外接圆圆心（三点共线时返回 null）。 */
-export function circumcenter(A: GeoPoint, B: GeoPoint, C: GeoPoint): { x: number; y: number } | null {
+type XYAccessor = { getX(): number; getY(): number };
+
+export function circumcenter(A: XYAccessor, B: XYAccessor, C: XYAccessor): { x: number; y: number } | null {
   const ax = A.getX(), ay = A.getY();
   const bx = B.getX(), by = B.getY();
   const cx = C.getX(), cy = C.getY();

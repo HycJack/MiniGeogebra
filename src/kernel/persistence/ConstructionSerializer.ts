@@ -60,6 +60,9 @@ import { AlgoConicSingleAxis, AlgoConicSemiAxisLength, AlgoConicAxisLength, Algo
 import { AlgoFractionText, AlgoScientificText } from '../algo/AlgoTextOps';
 import { AlgoFitExp, AlgoFitGrowth, AlgoFitLog, AlgoFitPow, AlgoFitLineX, AlgoFitLineY } from '../algo/AlgoFitCurve';
 import { AlgoFunctionRestricted } from '../algo/AlgoFunctionRestricted';
+import { AlgoAffineRatio, AlgoCrossRatio, AlgoBarycenter, AlgoAreConcurrent, AlgoInteriorAngles, AlgoDirection, AlgoDynamicCoordinates, AlgoPathParameter, AlgoTriangleCenterN } from '../algo/AlgoGeoMeasures';
+import { AlgoIteration, AlgoIterationList } from '../algo/AlgoIteration';
+import { AlgoFitGeneral, AlgoFitSin, AlgoFitLogistic } from '../algo/AlgoFitNonlinear';
 import { GeoBoolean } from '../geo/GeoBoolean';
 import { AlgoRootList, ROOT_LIST_CAPACITY } from '../algo/AlgoRootList';
 import { AlgoFunctionExtremumPoint } from '../algo/AlgoFunctionExtremumPoint';
@@ -373,6 +376,17 @@ export function collectAlgoExtras(algo: AlgoElement): Partial<SerializedAlgorith
         extras.scalars = [algo.getRadiusValue(), algo.getSidesValue()];
       } else if (algo instanceof AlgoRegularPolygonEdge) {
         extras.scalars = [algo.getSidesValue()];
+      } else if (algo instanceof AlgoTriangleCenterN) {
+        extras.scalars = [algo.getN() instanceof GeoNumeric ? null : algo.getN() as number];
+      } else if (algo instanceof AlgoIteration || algo instanceof AlgoIterationList) {
+        const [st, en] = algo.getBounds();
+        extras.scalars = [
+          st instanceof GeoNumeric ? null : st,
+          en instanceof GeoNumeric ? null : en,
+        ];
+      } else if (algo instanceof AlgoDynamicCoordinates) {
+        // 命令文本重建（含表达式，走 parseAlgebraInput）
+        extras.expressionText = algo.getCommandText();
       } else if (algo instanceof AlgoFunctionRestricted) {
         extras.scalars = [
           algo.getLo() instanceof GeoNumeric ? null : algo.getLo() as number,
@@ -472,9 +486,9 @@ export function collectAlgoExtras(algo: AlgoElement): Partial<SerializedAlgorith
 
 /** Factory: rebuild algorithm instance by type (inputs already exist in map) */
 export function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], scalars?: (number | null)[]): AlgoElement {
-  const asPoint = (n: number) => inputs[n] as import('../geo/GeoPoint').GeoPoint;
+  const asPoint = (n: number) => inputs[n] as GeoPoint;
   const asConic = (n: number) => inputs[n] as import('../geo/GeoConic').GeoConic;
-  const asLine = (n: number) => inputs[n] as import('../geo/GeoLine').GeoLine;
+  const asLine = (n: number) => inputs[n] as GeoLine;
   const asSegment = (n: number) => inputs[n] as import('../geo/GeoSegment').GeoSegment;
   const asPolyLine = (n: number) => inputs[n] as import('../geo/GeoPolyLine').GeoPolyLine;
   const asRay = (n: number) => inputs[n] as import('../geo/GeoRay').GeoRay;
@@ -504,7 +518,7 @@ export function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], s
     }
     case 'AlgoSlopeFunction':       return new AlgoSlopeFunction(kernel, inputs[0] as import('../geo/GeoFunction').GeoFunction);
     case 'AlgoTangentLineConic':    return new AlgoTangentLineConic(kernel, asLine(0), asConic(1));
-    case 'AlgoAreEqual':            return new AlgoAreEqual(kernel, inputs[0] as GeoNumeric | import('../geo/GeoPoint').GeoPoint, inputs[1] as GeoNumeric | import('../geo/GeoPoint').GeoPoint);
+    case 'AlgoAreEqual':            return new AlgoAreEqual(kernel, inputs[0] as GeoNumeric | GeoPoint, inputs[1] as GeoNumeric | GeoPoint);
     case 'AlgoCirclePointRadius':    return new AlgoCirclePointRadius(kernel, asPoint(0), inputs[1] instanceof GeoNumeric ? inputs[1] : scalars?.[0] ?? (inputs[1] as any)?.value ?? 50);
     case 'AlgoCircleCenterPoint':    return new AlgoCircleCenterPoint(kernel, asPoint(0), asPoint(1));
     case 'AlgoCircleThreePoints':    return new AlgoCircleThreePoints(kernel, asPoint(0), asPoint(1), asPoint(2));
@@ -554,18 +568,18 @@ export function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], s
     case 'AlgoPerimeter':            return new AlgoPerimeter(kernel, inputs[0] as GeoPolygon);
     case 'AlgoConicPerimeter':       return new AlgoConicPerimeter(kernel, asConic(0), scalars?.[0] === 1);
     case 'AlgoTangent':              return new AlgoTangent(kernel, asConic(0), asPoint(1));
-    case 'AlgoLocus':                return new AlgoLocus(kernel, inputs[1] as import('../geo/GeoPoint').GeoPoint, inputs[0] as import('../geo/GeoPoint').GeoPoint);
+    case 'AlgoLocus':                return new AlgoLocus(kernel, inputs[1] as GeoPoint, inputs[0] as GeoPoint);
     case 'AlgoLocus3D':              return new AlgoLocus3D(kernel, inputs[1] as GeoPoint3D, inputs[0] as GeoPoint3D);
     case 'AlgoVector':              return new AlgoVector(kernel, asPoint(0), asPoint(1));
     case 'AlgoSemicircle':          return new AlgoSemicircle(kernel, asPoint(0), asPoint(1));
-    case 'AlgoPolyLine':            return new AlgoPolyLine(kernel, inputs as import('../geo/GeoPoint').GeoPoint[]);
+    case 'AlgoPolyLine':            return new AlgoPolyLine(kernel, inputs as GeoPoint[]);
     case 'AlgoCircularSector':      return new AlgoCircularSector(kernel, asPoint(0), asPoint(1), asPoint(2));
     case 'AlgoCircumcircularArc':   return new AlgoCircumcircularArc(kernel, asPoint(0), asPoint(1), asPoint(2));
     case 'AlgoSlope':               return new AlgoSlope(kernel, asLine(0));
     case 'AlgoEllipse':             return new AlgoEllipse(kernel, asPoint(0), asPoint(1), asPoint(2));
     case 'AlgoHyperbola':           return new AlgoHyperbola(kernel, asPoint(0), asPoint(1), asPoint(2));
     case 'AlgoParabola':            return new AlgoParabola(kernel, asPoint(0), asLine(1));
-    case 'AlgoConicFivePoints':     return new AlgoConicFivePoints(kernel, inputs as import('../geo/GeoPoint').GeoPoint[]);
+    case 'AlgoConicFivePoints':     return new AlgoConicFivePoints(kernel, inputs as GeoPoint[]);
     case 'AlgoCompass':             return new AlgoCompass(kernel, asPoint(0), asPoint(1), asPoint(2));
     case 'AlgoArc':                 return new AlgoArc(kernel, asPoint(0), asPoint(1), asPoint(2));
     case 'AlgoCircumcircularSector': return new AlgoCircumcircularSector(kernel, asPoint(0), asPoint(1), asPoint(2));
@@ -591,14 +605,57 @@ export function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], s
       const ratio = ratioNum ? ratioNum.getValue() : scalars?.[0] ?? 1;
       return new AlgoDilate(kernel, inputs[0], center, ratioNum ?? ratio);
     }
-    case 'AlgoFitPoly':             return new AlgoFitPoly(kernel, inputs as import('../geo/GeoPoint').GeoPoint[], scalars?.[0] ?? 1);
+    case 'AlgoFitPoly':             return new AlgoFitPoly(kernel, inputs as GeoPoint[], scalars?.[0] ?? 1);
+    case 'AlgoAffineRatio':
+      return new AlgoAffineRatio(kernel, inputs[0] as GeoPoint, inputs[1] as GeoPoint, inputs[2] as GeoPoint);
+    case 'AlgoCrossRatio':
+      return new AlgoCrossRatio(kernel, inputs[0] as GeoPoint, inputs[1] as GeoPoint, inputs[2] as GeoPoint, inputs[3] as GeoPoint);
+    case 'AlgoBarycenter': {
+      const pts = inputs.filter(i => i instanceof GeoPoint) as GeoPoint[];
+      const wts = inputs.filter(i => i instanceof GeoNumeric) as GeoNumeric[];
+      return new AlgoBarycenter(kernel, pts, wts);
+    }
+    case 'AlgoAreConcurrent':
+      return new AlgoAreConcurrent(kernel, inputs[0] as GeoLine, inputs[1] as GeoLine, inputs[2] as GeoLine);
+    case 'AlgoInteriorAngles':
+      return new AlgoInteriorAngles(kernel, inputs[0] as GeoPolygon);
+    case 'AlgoDirection':
+      return new AlgoDirection(kernel, inputs[0] as GeoLine);
+    case 'AlgoPathParameter':
+      return new AlgoPathParameter(kernel, inputs[0] as GeoPoint);
+    case 'AlgoTriangleCenterN': {
+      const n = inputs.find(i => i instanceof GeoNumeric) as GeoNumeric | undefined
+        ?? scalars?.[0] ?? 1;
+      return new AlgoTriangleCenterN(kernel, inputs[0] as GeoPoint, inputs[1] as GeoPoint, inputs[2] as GeoPoint, n);
+    }
+    case 'AlgoIteration':
+    case 'AlgoIterationList': {
+      const f = inputs[0] as GeoFunction;
+      const live = inputs.filter(i => i instanceof GeoNumeric) as GeoNumeric[];
+      const st = scalars?.[0] ?? null;
+      const en = scalars?.[1] ?? null;
+      return type === 'AlgoIteration'
+        ? new AlgoIteration(kernel, f, st === null ? live.shift() ?? 0 : st, en === null ? live.shift() ?? 1 : en)
+        : new AlgoIterationList(kernel, f, st === null ? live.shift() ?? 0 : st, en === null ? live.shift() ?? 1 : en);
+    }
+    case 'AlgoFitSin':
+      return new AlgoFitSin(kernel, inputs.filter(i => i instanceof GeoPoint) as GeoPoint[]);
+    case 'AlgoFitLogistic':
+      return new AlgoFitLogistic(kernel, inputs.filter(i => i instanceof GeoPoint) as GeoPoint[]);
+    case 'AlgoFitGeneral': {
+      const model = inputs.find(i => i instanceof GeoFunction) as GeoFunction;
+      return new AlgoFitGeneral(kernel, inputs.filter(i => i instanceof GeoPoint) as GeoPoint[], model, model.variableName || 'x');
+    }
+    case 'AlgoDynamicCoordinates':
+      // 表达式经 rebuild 前置分支重解析（见 deserialize 的 expressionText 命令文本路径）
+      throw new Error('AlgoDynamicCoordinates requires expressionText rebuild path');
     case 'AlgoFitExp':
     case 'AlgoFitGrowth':
     case 'AlgoFitLog':
     case 'AlgoFitPow':
     case 'AlgoFitLineX':
     case 'AlgoFitLineY': {
-      const pts = inputs.filter(i => i instanceof GeoPoint) as import('../geo/GeoPoint').GeoPoint[];
+      const pts = inputs.filter(i => i instanceof GeoPoint) as GeoPoint[];
       const ctor = {
         AlgoFitExp, AlgoFitGrowth, AlgoFitLog, AlgoFitPow, AlgoFitLineX, AlgoFitLineY,
       }[type as 'AlgoFitExp'];
@@ -639,7 +696,7 @@ export function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], s
     case 'AlgoConicLinearEccentricity':
       return new AlgoConicLinearEccentricity(kernel, inputs[0] as import('../geo/GeoConic').GeoConic);
     case 'AlgoCircleSector':
-      return new AlgoCircleSector(kernel, inputs[0] as import('../geo/GeoConic').GeoConic, inputs[1] as import('../geo/GeoPoint').GeoPoint, inputs[2] as import('../geo/GeoPoint').GeoPoint);
+      return new AlgoCircleSector(kernel, inputs[0] as import('../geo/GeoConic').GeoConic, inputs[1] as GeoPoint, inputs[2] as GeoPoint);
     case 'AlgoPrimeFactors':
     case 'AlgoDivisorsList': {
       const n = inputs.find(i => i instanceof GeoNumeric) as GeoNumeric | undefined
@@ -832,7 +889,7 @@ export function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], s
     // C11 多边形布尔：scalars[0] 0=union 1=intersection 2=difference 3=xor
     case 'AlgoPolygonPoints': {
       // 顶点即输入（GeoPoint[]）；输出在 createAlgo 之后由调用方 addElement
-      return new AlgoPolygonPoints(kernel, inputs as import('../geo/GeoPoint').GeoPoint[]);
+      return new AlgoPolygonPoints(kernel, inputs as GeoPoint[]);
     }
     case 'AlgoPolygonBoolean': {
       const ops = ['union', 'intersection', 'difference', 'xor'] as const;
@@ -1436,7 +1493,7 @@ export function rebuildAlgorithm(
     return;
   }
   // Expression-based reconstruction for function/numeric dependency algorithms
-  if (a.expressionText && (a.type === 'AlgoDependentFunction' || a.type === 'AlgoDependentNumeric' || a.type === 'AlgoDependentInequality' || a.type === 'AlgoDependentQuadric3D' || a.type === 'AlgoDependentText' || a.type === 'AlgoSequence')) {
+  if (a.expressionText && (a.type === 'AlgoDependentFunction' || a.type === 'AlgoDependentNumeric' || a.type === 'AlgoDependentInequality' || a.type === 'AlgoDependentQuadric3D' || a.type === 'AlgoDependentText' || a.type === 'AlgoSequence' || a.type === 'AlgoDynamicCoordinates')) {
     const label = a.outputLabels[0] || '';
     let algInput: string;
     if (a.type === 'AlgoDependentInequality') {

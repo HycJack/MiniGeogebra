@@ -701,7 +701,7 @@ const handleExport = useCallback(() => {
     const startEl = uiElementsRef.current.find(u => u.id === draggingUIElement);
     if (startEl) uiDragStartRef.current = { id: startEl.id, from: { x: startEl.x, y: startEl.y }, moved: false };
     uiDragJustEndedRef.current = false;
-    const onMove = (e: MouseEvent) => {
+    const onMove = (e: PointerEvent) => {
       const container = containerRef.current; if (!container) return;
       const rect = container.getBoundingClientRect();
       const wx = (e.clientX - rect.left - coord.xZero) / coord.xScale;
@@ -722,9 +722,10 @@ const handleExport = useCallback(() => {
       uiDragStartRef.current = null;
       setDraggingUIElement(null);
     };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    return () => { window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); window.removeEventListener('pointercancel', onUp); };
   }, [draggingUIElement, coord, addCommand, setUIElementsTracked, setDraggingUIElement]);
 
   // ─── widget 改值入 undo（滑块拖动 / 输入框提交，与 SidePanel 同一命令通道）──
@@ -887,7 +888,7 @@ const handleExport = useCallback(() => {
   useEffect(() => { schedule(); }, [schedule]);
 
   // ─── 坐标 / 鼠标辅助 ─────────────────────────────────────────────
-  const getScreenPos = (e: React.MouseEvent | React.WheelEvent) => { const rect = canvasRef.current!.getBoundingClientRect(); return { screenX: e.clientX - rect.left, screenY: e.clientY - rect.top }; };
+  const getScreenPos = (e: React.PointerEvent | React.WheelEvent) => { const rect = canvasRef.current!.getBoundingClientRect(); return { screenX: e.clientX - rect.left, screenY: e.clientY - rect.top }; };
   const getGridStep = () => calculateGridStep(coord.xScale);
   /**
    * 点捕捉三态（官方 EuclidianController.java:4111-4230 语义）：
@@ -897,7 +898,7 @@ const handleExport = useCallback(() => {
    *   snap_grid  官方 ON_GRID：恒吸最近格点（percentage=1）。
    *  已有点吸附（sticky 拟物）恒 12px 屏幕半径，与创建点选热区一致。
    */
-  const getMousePos = (e: React.MouseEvent | React.WheelEvent, useSnap = false, phase: 'down' | 'move' = 'down') => {
+  const getMousePos = (e: React.PointerEvent | React.WheelEvent, useSnap = false, phase: 'down' | 'move' = 'down') => {
     void phase;
     const { screenX, screenY } = getScreenPos(e); const world = coord.screenToWorld(screenX, screenY);
     let { x, y } = world;
@@ -948,7 +949,7 @@ const handleExport = useCallback(() => {
   const sliderValueDragRef = useRef<{ num: GeoNumeric; oldValue: number } | null>(null);
   const sliderMoveRef = useRef<{ num: GeoNumeric; startX: number; startY: number; origX: number; origY: number; moved: boolean } | null>(null);
 
-  const handleMouseDown = (e: React.MouseEvent) => {
+  const handleMouseDown = (e: React.PointerEvent) => {
     const { screenX, screenY, x, y } = getMousePos(e, true);
     lastClientPosRef.current = { x: e.clientX, y: e.clientY };
     // 数值输入浮层打开时点击画布 = 取消输入并**消费本次点击**（评审 U4：
@@ -1035,7 +1036,7 @@ const handleExport = useCallback(() => {
     }
   };
 
-  const handleMouseMove = (e: React.MouseEvent) => {
+  const handleMouseMove = (e: React.PointerEvent) => {
     const { screenX, screenY, x, y } = getMousePos(e, true, 'move'); setMousePos({ x, y });
     lastClientPosRef.current = { x: e.clientX, y: e.clientY };
     if (isPanning) { setCoord(prev => prev.panBy(screenX - lastPanPos.x, screenY - lastPanPos.y)); setLastPanPos({ x: screenX, y: screenY }); setRenderRev(r => r + 1); return; }
@@ -1553,7 +1554,7 @@ const handleExport = useCallback(() => {
           ref={containerRef}
           tabIndex={0}
           onKeyDown={handleCanvasKeyDown}
-          onMouseDown={e => { if (!e.currentTarget.contains(document.activeElement)) e.currentTarget.focus(); }}
+          onPointerDown={e => { if (!e.currentTarget.contains(document.activeElement)) e.currentTarget.focus(); }}
         >
           <canvas ref={overlayCanvasRef} className="absolute inset-0 pointer-events-none z-[5]" style={{ touchAction: 'none', display: view === '3d' ? 'none' : undefined }} />
           <canvas ref={textOverlayRef} width={canvasSize.width} height={canvasSize.height} className="absolute inset-0 pointer-events-none z-[4]" style={{ touchAction: 'none', display: view === '3d' ? 'none' : undefined }} />
@@ -1569,10 +1570,11 @@ const handleExport = useCallback(() => {
                 : 'cursor-crosshair'
             }`}
             style={{ touchAction: 'none', display: view === '3d' ? 'none' : undefined }}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
+            onPointerDown={handleMouseDown}
+            onPointerMove={handleMouseMove}
+            onPointerUp={handleMouseUp}
+            onPointerLeave={handleMouseUp}
+            onPointerCancel={handleMouseUp}
             onContextMenu={handleContextMenu}
           />
 

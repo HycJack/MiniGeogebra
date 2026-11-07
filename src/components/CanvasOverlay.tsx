@@ -91,8 +91,11 @@ function runMiniScript(kernel: Kernel, script: readonly string[]): void {
   }
 }
 
-  const handleUIDragStart = (e: React.MouseEvent) => {
+  const handleUIDragStart = (e: React.PointerEvent) => {
           e.stopPropagation();
+          // 指针捕获：触屏拖拽时后续 pointermove/up 持续派发到本元素，
+          // window 级监听才能跟手（GeometryCanvas 的 UI 拖拽通道）
+          (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
           setDraggingUIElement(element.id);
         };
 
@@ -134,7 +137,7 @@ function runMiniScript(kernel: Kernel, script: readonly string[]): void {
                 <div
                   className="px-3 py-2 bg-white border border-gray-300 rounded shadow-sm cursor-move hover:border-blue-400"
                   onDoubleClick={() => setEditingUIElement(element.id)}
-                  onMouseDown={handleUIDragStart}
+                  onPointerDown={handleUIDragStart}
                 >
                   {element.label}
                 </div>
@@ -151,7 +154,7 @@ function runMiniScript(kernel: Kernel, script: readonly string[]): void {
                 top: `${screenY}px`,
                 transform: 'translate(-50%, -50%)'
               }}
-              onMouseDown={handleUIDragStart}
+              onPointerDown={handleUIDragStart}
               onDoubleClick={(e) => {
                 e.stopPropagation();
                 // 最小脚本编辑（过渡方案）：每行一条 SetValue/StartAnimation
@@ -187,7 +190,7 @@ function runMiniScript(kernel: Kernel, script: readonly string[]): void {
               key={element.id}
               className="absolute bg-white border border-gray-300 rounded-lg shadow-sm p-2 cursor-move"
               style={{ left: `${screenX}px`, top: `${screenY}px`, transform: 'translate(-50%, -50%)' }}
-              onMouseDown={handleUIDragStart}
+              onPointerDown={handleUIDragStart}
             >
               <LiveBoundInput
                 key={`${element.id}:${initial}`}
@@ -219,7 +222,7 @@ function runMiniScript(kernel: Kernel, script: readonly string[]): void {
                 top: `${screenY}px`,
                 transform: 'translate(-50%, -50%)'
               }}
-              onMouseDown={handleUIDragStart}
+              onPointerDown={handleUIDragStart}
             >
               <input
                 type="checkbox"
@@ -237,7 +240,7 @@ function runMiniScript(kernel: Kernel, script: readonly string[]): void {
                   }
                 }}
                 className="w-4 h-4"
-                onMouseDown={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
               />
               <span className="text-sm">{element.label}</span>
             </label>
@@ -273,7 +276,7 @@ const LiveBoundInput: React.FC<{ initial: string; onCommit: (v: number) => void 
           (e.target as HTMLInputElement).blur();
         }
       }}
-      onMouseDown={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
     />
   );
 };
