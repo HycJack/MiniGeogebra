@@ -69,7 +69,7 @@ import { AlgoFitPoly } from '../algo/AlgoFitPoly';
 import { AlgoParallelLine } from '../algo/AlgoParallelLine';
 import { AlgoOrthogonalLine } from '../algo/AlgoOrthogonalLine';
 import { AlgoPerpendicularBisector } from '../algo/AlgoPerpendicularBisector';
-import { AlgoAngleBisector } from '../algo/AlgoAngleBisector';
+import { AlgoAngleBisector, AlgoAngleBisectorLines } from '../algo/AlgoAngleBisector';
 import { AlgoEllipse } from '../algo/AlgoEllipse';
 import { AlgoHyperbola } from '../algo/AlgoHyperbola';
 import { AlgoParabola } from '../algo/AlgoParabola';
@@ -255,8 +255,8 @@ const COMMAND_ARITY: Record<string, [number, number]> = {
   PerpendicularLine: [2, 2],       // OrthogonalLine 的官方英文别名
   PerpendicularBisector: [2, 2],
   LineBisector: [1, 2],            // PerpendicularBisector 的官方英文名
-  AngleBisector: [3, 3],
-  AngularBisector: [3, 3],         // AngleBisector 的官方英文名
+  AngleBisector: [2, 3],
+  AngularBisector: [2, 3],         // AngleBisector 的官方英文名；2 线形官方 CmdAngularBisector
   Ellipse: [3, 3],
   Hyperbola: [3, 3],
   Parabola: [2, 2],
@@ -842,8 +842,20 @@ let redefineSeq = 0;
       throw new Error(`Cannot redefine "${label}": it is one output of a multi-output object`);
     }
     const newAlgo = created.find(el => el instanceof AlgoElement) as AlgoElement | undefined;
-    // 循环定义守卫（对标 CircularDefinitionException）：直接引用或传递依赖成环
+    // 循环定义守卫（对标 CircularDefinitionException）：直接引用或传递依赖成环。
+    // 官方特判（Construction.java:1516-1533）：独立对象自引用 = 就地赋值而非错误
+    // —— a = a + 1 语义是"把 a 设为表达式当前值"（脚本 SetValue 场景常规操作）。
     if (wouldCreateCycle(newGeo, existing)) {
+      if (existing.isIndependent() && existing.constructor === newGeo.constructor
+          && existing instanceof GeoNumeric && newGeo instanceof GeoNumeric) {
+        const newAlgoSelf = created.find(el => el instanceof AlgoElement) as AlgoElement | undefined;
+        newAlgoSelf?.update(); // 先算出新值（临时对象未入构造，算完即弃）
+        const value = newGeo.getValue();
+        if (!Number.isNaN(value)) {
+          existing.setValue(value);
+          return [];
+        }
+      }
       throw new Error(`Circular definition of "${label}"`);
     }
     // 构造段重建：依赖算法按 (类型, 输入, extras) 捕获后在 newGeo 之上原样重建
@@ -1860,7 +1872,17 @@ const dispatchCommand = (
 
     case 'AngleBisector':
     case 'AngularBisector': {
-      // 三点角平分线（顶点为第二点）；两直线版本官方另有，此处先接三点形态
+      // 两线形（官方 CmdAngularBisector：两条互相垂直的平分线）
+      if (args.length === 2) {
+        const l1 = ctx.findLine(args[0].trim());
+        const l2 = ctx.findLine(args[1].trim());
+        if (!l1 || !l2) throw new Error(`AngularBisector expects two lines or three points`);
+        const algo2 = new AlgoAngleBisectorLines(kernel, l1, l2);
+        algo2.getOutputLines().forEach(l => construction.getNextLineLabel(existingLabels));
+        assignOutputLabels(ctx, algo2.getGeoElements());
+        return [algo2, ...algo2.getGeoElements()];
+      }
+      // 三点角平分线（顶点为第二点）
       const algo = new AlgoAngleBisector(
         kernel, resolvePointArg(ctx, args[0]), resolvePointArg(ctx, args[1]), resolvePointArg(ctx, args[2]));
       assignNextLabel(algo.getOutput(), () => construction.getNextLineLabel(existingLabels));
@@ -2738,7 +2760,17 @@ const dispatchCommand = (
         existingLabels.add(algo.getGeoElements()[0].label);
         return [algo, ...algo.getGeoElements()];
       }
-      throw new Error(`Locus expects (tracer, driver) points in 2D or 3D`);
+      // Locus(Q, a)：数值滑块驱动（官方 CmdLocus 的 GeoNumeric 分支——
+      // Q 依赖滑块 a，扫 a 的区间采集 Q 的轨迹）
+      const tracerNum = ctx.findPoint(args[0].trim());
+      const driverNum = ctx.findNumeric(args[1].trim());
+      if (tracerNum && driverNum) {
+        const algo = new AlgoLocus(kernel, tracerNum, driverNum);
+        assignNextLabel(algo.getGeoElements()[0], () => `locus${existingLabels.size}`);
+        existingLabels.add(algo.getGeoElements()[0].label);
+        return [algo, ...algo.getGeoElements()];
+      }
+      throw new Error(`Locus expects (tracer, driver) points in 2D or 3D, or (point, slider)`);
     }
 
     case 'Tangent': {

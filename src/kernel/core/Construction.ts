@@ -22,6 +22,19 @@ export class Construction {
   // 否则 unregisterForwardDeps 全 Map 扫描，删除级联退化为 O(N²)
   private algoInputs = new Map<AlgoElement, Set<ConstructionElement>>();
 
+  // 传递依赖集缓存（官方 AlgoUpdateSet 预传播的等价物，GeoElement.java:3040-3055）：
+  // 官方在算法注册时把依赖写进所有传递输入的 AlgorithmSet，拖拽零图遍历；
+  // Mini 用"图变更版本号 + 惰性整表失效"达成同一量级——拖拽路径的 flush
+  // 每帧只需查表，不再对每个 pending 元素做 BFS（深依赖图下拖拽帧的主要内核开销）。
+  private depCache = new Map<ConstructionElement, AlgoElement[]>();
+  private depCacheVersion = 0;
+  private depCacheBuiltAt = -1;
+
+  /** 图结构变更（边增删/元素增删）后调用：整表失效（版本号自增）。 */
+  private invalidateDepCache(): void {
+    this.depCacheVersion++;
+  }
+
   constructor(public kernel: IKernel) {}
 
   addElement(element: ConstructionElement, index?: number) {
@@ -51,6 +64,7 @@ export class Construction {
    */
   registerForwardDeps(algo: AlgoElement): void {
     this.unregisterAlgoEdges(algo); // 防重复登记留下旧边
+    this.invalidateDepCache();
     const inputs = new Set<ConstructionElement>();
     for (const input of algo.getInput()) {
       inputs.add(input);
@@ -68,6 +82,7 @@ export class Construction {
   private unregisterAlgoEdges(algo: AlgoElement): void {
     const inputs = this.algoInputs.get(algo);
     if (!inputs) return;
+    this.invalidateDepCache();
     for (const input of inputs) {
       const set = this.forwardDeps.get(input);
       if (set) {
@@ -81,6 +96,7 @@ export class Construction {
   /** P1-1: 清理被删除元素在正向依赖图中的所有记录 */
   unregisterForwardDeps(element: ConstructionElement): void {
     this.forwardDeps.delete(element);
+    this.invalidateDepCache();
     if (element instanceof AlgoElement) this.unregisterAlgoEdges(element);
   }
 
@@ -117,15 +133,20 @@ export class Construction {
    * P1-1: 基于显式正向图的增量查询（O(受影响边数)）。
    */
   getForwardDependentAlgorithms(element: ConstructionElement): AlgoElement[] {
+    if (this.depCacheBuiltAt !== this.depCacheVersion) {
+      this.depCache.clear();
+      this.depCacheBuiltAt = this.depCacheVersion;
+    }
+    const cached = this.depCache.get(element);
+    if (cached) return cached;
+
     const dependent = new Set<AlgoElement>();
     const queue: ConstructionElement[] = [];
-
     if (element.isAlgoElement()) {
       (element as AlgoElement).getGeoElements().forEach(g => queue.push(g));
     } else {
       queue.push(element);
     }
-
     while (queue.length > 0) {
       const cur = queue.shift()!;
       const algos = this.forwardDeps.get(cur);
@@ -138,7 +159,9 @@ export class Construction {
         }
       }
     }
-    return Array.from(dependent);
+    const result = Array.from(dependent);
+    this.depCache.set(element, result);
+    return result;
   }
 
   /**
@@ -398,6 +421,7 @@ export class Construction {
   }
 
   clear() {
+    this.depCacheVersion++;
     this.elements = [];
     this.algoElements = [];
     this.stepCounter = 0;

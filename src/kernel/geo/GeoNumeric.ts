@@ -91,6 +91,12 @@ export class GeoNumeric extends GeoElement implements Animatable {
         this.animationDirection = type === AnimationType.DECREASING ? -1 : 1;
     }
 
+    /** 动画方向反转。圆锥曲线动画"空扇区反弹"用（双曲线两支不跨支瞬移）：
+     *  官方按连续参数 t 移动（PathMover.changeOrientation 对应物）。 */
+    reverseAnimationDirection(): void {
+        this.animationDirection = this.animationDirection === 1 ? -1 : 1;
+    }
+
     doAnimationStep(frameRate: number): boolean {
         const oldValue = this.value;
         const intervalWidth = this.intervalMax - this.intervalMin;

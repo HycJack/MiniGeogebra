@@ -36,15 +36,20 @@ export function applySnap(
   snapToGrid: boolean,
   snapToPoint: boolean,
   points: GeoPoint[] = [],
-  gridStep?: number
+  gridStep?: number,
+  /** 网格吸附阈值（世界单位）。缺省与点吸附共用 radius（像素换算）。
+   *  官方按格距比例判定（EuclidianController.java:4111-4230）：AUTOMATIC
+   *  用 0.125×格距、ON_GRID 恒吸最近格点——两者都随格距缩放而非屏幕像素。 */
+  gridRadius?: number,
 ): SnappedPosition {
+  const gridEps = gridRadius ?? radius;
   let best: { x: number; y: number; dist: number; type?: 'grid' | 'point'; point?: GeoPoint } | null = null;
 
   if (snapToGrid && gridStep !== undefined) {
     const gx = Math.round(x / gridStep) * gridStep;
     const gy = Math.round(y / gridStep) * gridStep;
     const d = Math.hypot(gx - x, gy - y);
-    if (d < radius && (!best || d < best.dist)) {
+    if (d < gridEps && (!best || d < best.dist)) {
       best = { x: gx, y: gy, dist: d, type: 'grid' };
     }
   }

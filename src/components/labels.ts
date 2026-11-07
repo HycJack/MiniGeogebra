@@ -22,6 +22,9 @@ import { GeoCurve } from '../kernel/geo/GeoCurve';
 import { GeoLocus } from '../kernel/geo/GeoLocus';
 import { GeoInequality } from '../kernel/geo/GeoInequality';
 
+/** 直线标签粘滞锚点缓存（官方按"与上次位置的 1-范数距离最小"选端点）。 */
+const lineLabelAnchorCache = new WeakMap<object, { x: number; y: number }>();
+
 export interface LabelAnchor {
   x: number;
   y: number;

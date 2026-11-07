@@ -70,15 +70,25 @@ describe('重定义样式保留（copyStyleForRedefine）', () => {
 });
 
 describe('循环定义递归守卫', () => {
-  it('间接环被拒：a=c+1 于 c=a+1 之后（此前被接受、值互相冻结）', () => {
+  it('独立对象自引用链 = 就地赋值（官方 Construction.java:1516-1533 特判）：a=c+1 于 c=a+1 之后取当前值', () => {
     const k = makeKernel();
     addInput(k, 'a = 1');
     addInput(k, 'c = a + 1');
-    expect(() => addInput(k, 'a = c + 1')).toThrow(/Circular definition/);
-    // 构造未被破坏：a 仍是自由数值 1
+    // 官方语义：独立数值自引用 = 把 a 设为表达式当前值（一次性赋值，
+    // 临时算法即弃——依赖图仍无环，c 跟随新 a 重算，不存在值冻结）
+    addInput(k, 'a = c + 1');
     const a = labelOf<GeoNumeric>(k, 'a')!;
-    expect(a.getValue()).toBe(1);
     expect(a.isIndependent()).toBe(true);
+    expect(a.getValue()).toBe(3);       // c 旧值 2 + 1
+    const c = labelOf<GeoNumeric>(k, 'c')!;
+    expect(c.getValue()).toBe(4);       // c = a + 1 随新 a 重算
+  });
+
+  it('依赖对象自引用仍被拒：c=c+1 于 c=a+1 之后（非独立，无赋值语义）', () => {
+    const k = makeKernel();
+    addInput(k, 'a = 1');
+    addInput(k, 'c = a + 1');
+    expect(() => addInput(k, 'c = c + 1')).toThrow(/Circular definition/);
   });
 
   it('函数互引环被拒：g(x)=f(x)+1 之后重定义 f(x)=g(x)', () => {

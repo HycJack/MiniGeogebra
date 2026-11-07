@@ -31,6 +31,8 @@ import {
   AlgoCircleCenterPoint, AlgoCircleThreePoints, AlgoIntersect, AlgoParallelLine,
   AlgoOrthogonalLine, AlgoPerpendicularBisector, AlgoAngleBisector, AlgoTangent,
   AlgoLocus, AlgoDistance, AlgoAngle, AlgoArea, AlgoArc,
+  AlgoAngleTwoLines, AlgoAngleVectors, AlgoCentroid, AlgoTangentLineConic, AlgoTangentFunctionNumber,
+  AlgoAngleBisectorLines,
   AlgoRegularPolygonEdge, AlgoCircleCenter,
   AlgoRotate, AlgoDilate, AlgoMirror, AlgoTranslate, AlgoShearStretch, AlgoInvert,
   buildTransformed,
@@ -418,6 +420,39 @@ export const handlePointerDown = (
       break;
 
     case 'midpoint': {
+      // 官方 EuclidianController.midpoint()（:2589-2632）：2 点 / 1 线段→中点 /
+      // 1 圆锥→中心 / 1 多边形→centroid。此前只认两点。
+      const objHit = hitObject();
+      if (objHit instanceof GeoSegment) {
+        const m = new AlgoMidpoint(kernel, objHit.startPoint, objHit.endPoint);
+        kernel.getConstruction().addElement(m);
+        kernel.getConstruction().addElement(m.getOutput());
+        m.update();
+        clearSel();
+        kernel.notifyUpdate(m);
+        setRenderRev(r => r + 1);
+        break;
+      }
+      if (objHit instanceof GeoConic) {
+        const c = new AlgoCircleCenter(kernel, objHit);
+        kernel.getConstruction().addElement(c);
+        kernel.getConstruction().addElement(c.getOutput());
+        c.update();
+        clearSel();
+        kernel.notifyUpdate(c);
+        setRenderRev(r => r + 1);
+        break;
+      }
+      if (objHit instanceof GeoPolygon) {
+        const c = new AlgoCentroid(kernel, [objHit]);
+        kernel.getConstruction().addElement(c);
+        kernel.getConstruction().addElement(c.getOutput());
+        c.update();
+        clearSel();
+        kernel.notifyUpdate(c);
+        setRenderRev(r => r + 1);
+        break;
+      }
       const pHit = hitPoint();
       if (pHit && selectedElements.length === 1 && selectedElements[0] instanceof GeoPoint) {
         const m = new AlgoMidpoint(kernel, selectedElements[0], pHit);
@@ -535,7 +570,8 @@ export const handlePointerDown = (
       if (obj) {
         const current = [...selectedElements, obj];
         const point = current.find(e => e instanceof GeoPoint) as GeoPoint | undefined;
-        const line = current.find(e => e instanceof GeoLine || e instanceof GeoSegment) as GeoLine | undefined;
+        // 方向载体：直线/线段，或向量（官方 parallel()/orthogonal() 认向量，:2456-2508）
+        const line = current.find(e => e instanceof GeoLine || e instanceof GeoVector) as GeoLine | undefined;
         if (point && line) {
           const algo = mode === 'parallel'
             ? new AlgoParallelLine(kernel, point, line as GeoLine)
@@ -554,6 +590,18 @@ export const handlePointerDown = (
     }
 
     case 'perpendicular_bisector': {
+      // 官方 :2651-2680：2 点或 1 线段
+      const segHit = (() => { const el = hitObject(); return el instanceof GeoSegment ? el : null; })();
+      if (segHit) {
+        const bis = new AlgoPerpendicularBisector(kernel, segHit.startPoint, segHit.endPoint);
+        kernel.getConstruction().addElement(bis);
+        kernel.getConstruction().addElement(bis.getOutput());
+        bis.update();
+        clearSel();
+        kernel.notifyUpdate(bis);
+        setRenderRev(r => r + 1);
+        break;
+      }
       const pHit = hitPoint();
       if (pHit) {
         const current = [...selectedElements, pHit];
@@ -574,6 +622,18 @@ export const handlePointerDown = (
     }
 
     case 'angle_bisector': {
+      // 官方 :2682-2708：3 点或 2 线（输出两条互相垂直的平分线）
+      const l1Hit = (() => { const el = hitObject(); return el instanceof GeoLine ? el : null; })();
+      if (l1Hit && selectedElements.length === 1 && selectedElements[0] instanceof GeoLine && selectedElements[0] !== l1Hit) {
+        const bis = new AlgoAngleBisectorLines(kernel, selectedElements[0] as GeoLine, l1Hit);
+        kernel.getConstruction().addElement(bis);
+        bis.getOutputLines().forEach(l => kernel.getConstruction().addElement(l));
+        bis.update();
+        clearSel();
+        kernel.notifyUpdate(bis);
+        setRenderRev(r => r + 1);
+        break;
+      }
       const pHit = hitPoint();
       if (pHit) {
         const current = [...selectedElements, pHit];
@@ -656,6 +716,52 @@ export const handlePointerDown = (
     }
 
     case 'angle': {
+      // 官方 EuclidianController.angle()（:4368-4414）：3 点 / 2 向量 / 2 直线 /
+      // 1 多边形（批量输出全部内角）。此前只接三点。
+      const objHit = hitObject();
+      // 1 多边形 → 全部内角
+      if (objHit instanceof GeoPolygon) {
+        const verts = objHit.vertices;
+        for (let i = 0; i < verts.length; i++) {
+          const prev = verts[(i - 1 + verts.length) % verts.length];
+          const next = verts[(i + 1) % verts.length];
+          const ang = new AlgoAngle(kernel, prev, verts[i], next);
+          ang.getOutput().label = nextAngleLabel(construction);
+          kernel.getConstruction().addElement(ang);
+          kernel.getConstruction().addElement(ang.getOutput());
+          ang.compute();
+        }
+        clearSel();
+        setRenderRev(r => r + 1);
+        break;
+      }
+      // 2 向量 → 向量夹角（向量方向即 (dx,dy)）：借临时直线系数无活依赖，
+      // 改用两独立向量的角度计算与两线同构（atan2(det, dot)）
+      const v1 = selectedElements.find(e => e instanceof GeoVector) as GeoVector | undefined;
+      const v2 = objHit instanceof GeoVector ? objHit : undefined;
+      if (v1 && v2) {
+        const ang = new AlgoAngleVectors(kernel, v1, v2);
+        ang.getOutput().label = nextAngleLabel(construction);
+        kernel.getConstruction().addElement(ang);
+        kernel.getConstruction().addElement(ang.getOutput());
+        ang.compute();
+        clearSel();
+        setRenderRev(r => r + 1);
+        break;
+      }
+      // 2 直线 → 两线角
+      const l1 = selectedElements.find(e => e instanceof GeoLine) as GeoLine | undefined;
+      const l2 = objHit instanceof GeoLine ? objHit : undefined;
+      if (l1 && l2) {
+        const ang = new AlgoAngleTwoLines(kernel, l1, l2);
+        ang.getOutput().label = nextAngleLabel(construction);
+        kernel.getConstruction().addElement(ang);
+        kernel.getConstruction().addElement(ang.getOutput());
+        ang.compute();
+        clearSel();
+        setRenderRev(r => r + 1);
+        break;
+      }
       const pHit = hitPoint();
       if (pHit) {
         if (selectedElements.length === 2 && selectedElements.every(e => e instanceof GeoPoint)) {
@@ -672,6 +778,10 @@ export const handlePointerDown = (
           setSelectedElements([...selectedElements, pHit].slice(-3));
           setRenderRev(r => r + 1);
         }
+      } else if (objHit) {
+        // 非点对象第一击：入选中（与点选择共用栈，上面分支消费）
+        setSelectedElements([...selectedElements, objHit]);
+        setRenderRev(r => r + 1);
       }
       break;
     }
@@ -696,6 +806,8 @@ export const handlePointerDown = (
       // GeoGebra 语义：依次点一个点与一条圆锥曲线（顺序任意）。
       // 此前两击都必须命中点、曲线取"构造中最新的一条"，多点一线时必然选错目标。
       const conicHit = (() => { const el = hitObject(); return el instanceof GeoConic ? el : null; })();
+      const fnHit = (() => { const el = hitObject(); return el instanceof GeoFunction ? el : null; })();
+      const lineHit = (() => { const el = hitObject(); return el instanceof GeoLine ? el : null; })();
       const pHit = hitPoint();
       const buildTangent = (conic: GeoConic, pt: GeoPoint) => {
         const tan = new AlgoTangent(kernel, conic, pt);
@@ -707,16 +819,56 @@ export const handlePointerDown = (
         setRenderRev(r => r + 1);
       };
       if (conicHit) {
+        // 官方 tangents()（:2861-2939）：点+圆锥之外还有 线+圆锥（平行切线）
+        const line = selectedElements.find(e => e instanceof GeoLine) as GeoLine | undefined;
+        if (line) {
+          const tan = new AlgoTangentLineConic(kernel, line, conicHit);
+          kernel.getConstruction().addElement(tan);
+          tan.getOutputLines().forEach(l => kernel.getConstruction().addElement(l));
+          tan.compute();
+          clearSel();
+          setRenderRev(r => r + 1);
+          break;
+        }
         const pt = selectedElements.find(e => e instanceof GeoPoint) as GeoPoint | undefined;
         if (pt) buildTangent(conicHit, pt);
         else { setSelectedElements([conicHit]); setRenderRev(r => r + 1); }
         break;
       }
+      if (fnHit) {
+        // 官方：点 + 函数 → 函数在点的横坐标处的切线（活依赖）
+        const pt = selectedElements.find(e => e instanceof GeoPoint) as GeoPoint | undefined;
+        if (pt) {
+          const tan = new AlgoTangentFunctionNumber(kernel, fnHit, pt);
+          kernel.getConstruction().addElement(tan);
+          tan.getGeoElements().forEach(el => kernel.getConstruction().addElement(el));
+          tan.compute();
+          clearSel();
+          setRenderRev(r => r + 1);
+          break;
+        }
+        setSelectedElements([...selectedElements, fnHit]);
+        setRenderRev(r => r + 1);
+        break;
+      }
       if (pHit) {
         const conic = selectedElements.find(e => e instanceof GeoConic) as GeoConic | undefined;
-        if (conic) buildTangent(conic, pHit);
-        else { setSelectedElements([pHit]); setRenderRev(r => r + 1); }
+        if (conic) { buildTangent(conic, pHit); break; }
+        // 点为第二击 + 首击是函数 → 函数切线
+        const fnSel = selectedElements.find(e => e instanceof GeoFunction) as GeoFunction | undefined;
+        if (fnSel) {
+          const tan = new AlgoTangentFunctionNumber(kernel, fnSel, pHit);
+          kernel.getConstruction().addElement(tan);
+          tan.getGeoElements().forEach(el => kernel.getConstruction().addElement(el));
+          tan.compute();
+          clearSel();
+          setRenderRev(r => r + 1);
+          break;
+        }
+        setSelectedElements([pHit]);
+        setRenderRev(r => r + 1);
       }
+      void lineHit;
       break;
     }
 

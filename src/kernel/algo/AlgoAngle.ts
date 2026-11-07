@@ -2,6 +2,7 @@ import { IKernel } from '../core/Interfaces';
 import { AlgoElement } from './AlgoElement';
 import { GeoPoint } from '../geo/GeoPoint';
 import { GeoLine } from '../geo/GeoLine';
+import { GeoVector } from '../geo/GeoVector';
 import { GeoNumeric } from '../geo/GeoNumeric';
 import { GeoVec3D } from '../core/GeoVec3D';
 
@@ -190,6 +191,44 @@ export class AlgoAngleTwoPoints extends AlgoElement {
     const det = this.p1.getX() * this.p2.getY() - this.p1.getY() * this.p2.getX();
     const dot = this.p1.getX() * this.p2.getX() + this.p1.getY() * this.p2.getY();
     let value = Math.atan2(det, dot);
+    if (value < 0) value += 2 * Math.PI;
+    this.outputValue.setValue(value);
+    this.outputValue.setDefined();
+  }
+
+  getOutput(): GeoNumeric { return this.outputValue; }
+}
+
+/**
+ * 两向量角（对标 AlgoAngleVectors）：方向向量 v=(endX-startX, endY-startY)，
+ * angle = atan2(det(v1,v2), v1·v2)，归一化到 [0, 2π)。任一向量为零向量时
+ * undefined。
+ */
+export class AlgoAngleVectors extends AlgoElement {
+  private outputValue: GeoNumeric;
+
+  constructor(kernel: IKernel, private v1: GeoVector, private v2: GeoVector) {
+    super(kernel);
+    this.outputValue = new GeoNumeric(kernel, 0);
+    this.outputValue.isAngle = true;
+    this.setInputOutput();
+  }
+
+  setInputOutput(): void {
+    this.input = [this.v1, this.v2];
+    this.setOutput([this.outputValue]);
+  }
+
+  compute(): void {
+    const d1x = this.v1.endX - this.v1.startX;
+    const d1y = this.v1.endY - this.v1.startY;
+    const d2x = this.v2.endX - this.v2.startX;
+    const d2y = this.v2.endY - this.v2.startY;
+    if (Math.hypot(d1x, d1y) < 1e-12 || Math.hypot(d2x, d2y) < 1e-12) {
+      this.outputValue.setUndefined();
+      return;
+    }
+    let value = Math.atan2(d1x * d2y - d1y * d2x, d1x * d2x + d1y * d2y);
     if (value < 0) value += 2 * Math.PI;
     this.outputValue.setValue(value);
     this.outputValue.setDefined();

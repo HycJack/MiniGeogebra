@@ -24,6 +24,10 @@ export class GeoPoint extends GeoElement {
 
   doAnimationStep(frameRate: number): boolean {
     if (!this.isAnimatable()) return false;
+    // 弧长匀速通道：PointOnConic 实现了 advancePathAnimation（官方 PathNormalizer
+    // 语义——按弧长推进而非参数线性，曲率大处不再视觉加速）
+    const algo = this.parentAlgo as { advancePathAnimation?: (frameRate: number) => boolean };
+    if (algo?.advancePathAnimation) return algo.advancePathAnimation(frameRate);
     const driver = this.parentAlgo?.getInput().find((i): i is GeoNumeric => i instanceof GeoNumeric);
     if (!driver) return false;
     return driver.doAnimationStep(frameRate);

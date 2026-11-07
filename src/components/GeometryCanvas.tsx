@@ -81,7 +81,8 @@ type Command =
   | { type: 'style'; element: GeoElement; before: Record<string, unknown>; after: Record<string, unknown> }
   | { type: 'numeric'; element: GeoNumeric; oldValue: number; newValue: number }
   | { type: 'boolean'; element: GeoBoolean; oldValue: boolean; newValue: boolean }
-  | { type: 'rename'; element: ConstructionElement; oldLabel: string; newLabel: string }
+  | { type: 'rename'; element: ConstructionElement; oldLabel: string; newLabel: string;
+      /** 抢标签让位（官方 setLabel → 旧占用者 doRenameLabel(getFreeLabel)）：被挤走的对象 */ bump?: { element: ConstructionElement; oldLabel: string; newLabel: string } }
   | { type: 'uiMove'; id: string; from: { x: number; y: number }; to: { x: number; y: number } };
 
 /** GeoGebra 默认视图常用的单位比例，初始图形坐标保持在 ±10 以内。 */
@@ -221,11 +222,28 @@ export const GeometryCanvas: React.FC = () => {
   const recordRename = useCallback((element: ConstructionElement, newLabel: string) => {
     const oldLabel = (element as any).label || '';
     if (oldLabel === newLabel) return;
-    // 查重上提到统一入口（评审 U7）：此前右键菜单自查、工具栏内联输入不查，
-    // 能造出重复标签
-    const clash = kernel.getConstruction().getElements()
-      .some(el => el !== element && (el as { label?: string }).label === newLabel);
-    if (clash) { alert(t('ctxRenameDuplicate')); return; }
+    // 抢标签让位（官方 GeoElement.setLabel，GeoElement.java:2363-2376）：新标签
+    // 已被占用时旧占用者自动改名腾位（A → A_1），而不是拒绝——"把 B 重命名为 A"
+    // 是官方常规工作流。此前 Mini 弹窗拒绝。
+    let bump: { element: ConstructionElement; oldLabel: string; newLabel: string } | undefined;
+    const clashEl = kernel.getConstruction().getElements()
+      .find(el => el !== element && (el as { label?: string }).label === newLabel);
+    if (clashEl) {
+      const bumpedOld = (clashEl as { label?: string }).label ?? '';
+      let freeLabel = `${newLabel}_1`;
+      for (let i = 1; kernel.getConstruction().getElements()
+        .some(el => el !== clashEl && el !== element && (el as { label?: string }).label === freeLabel); i++) {
+        freeLabel = `${newLabel}_${i + 1}`;
+      }
+      (clashEl as { label?: string }).label = freeLabel;
+      kernel.getConstruction().getElements().forEach(el => {
+        if (el instanceof GeoBoolean && el.linkedLabels.includes(bumpedOld)) {
+          el.linkedLabels = el.linkedLabels.map(l => (l === bumpedOld ? freeLabel : l));
+        }
+      });
+      rewriteExpressions(bumpedOld, freeLabel);
+      bump = { element: clashEl, oldLabel: bumpedOld, newLabel: freeLabel };
+    }
     (element as { label?: string }).label = newLabel;
     // 级联重写按标签解析的消费方：复选框联动（评审 U7：重命名被联动对象
     // 会静默弄断 checkbox）。serializer 的 outputLabels 是保存时现读的，无此问题。
@@ -236,7 +254,7 @@ export const GeometryCanvas: React.FC = () => {
     });
     rewriteExpressions(oldLabel, newLabel);
     kernel.getConstruction().updateAllAlgorithms();
-    addCommand({ type: 'rename', element, oldLabel, newLabel });
+    addCommand({ type: 'rename', element, oldLabel, newLabel, bump });
   }, [addCommand, kernel, t]);
 
   const handleLabelSubmit = useCallback(() => {
@@ -650,7 +668,7 @@ const handleExport = useCallback(() => {
     else if (cmd.type === 'move') restoreState(cmd.oldState);
     else if (cmd.type === 'numeric') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el instanceof GeoNumeric) el.setValue(cmd.oldValue); }
     else if (cmd.type === 'boolean') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el instanceof GeoBoolean) el.setValue(cmd.oldValue); }
-    else if (cmd.type === 'rename') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el) el.label = cmd.oldLabel; rewriteLinkedLabels(cmd.newLabel, cmd.oldLabel); rewriteExpressions(cmd.newLabel, cmd.oldLabel); }
+    else if (cmd.type === 'rename') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el) el.label = cmd.oldLabel; rewriteLinkedLabels(cmd.newLabel, cmd.oldLabel); rewriteExpressions(cmd.newLabel, cmd.oldLabel); if (cmd.bump) { const b = kernel.getConstruction().getElementById(cmd.bump.element.id); if (b) b.label = cmd.bump.oldLabel; rewriteExpressions(cmd.bump.newLabel, cmd.bump.oldLabel); } }
     else if (cmd.type === 'style') applyStyleDirectly(cmd.element, cmd.before);
     else if (cmd.type === 'uiMove') setUIElementsTracked(prev => prev.map(u => u.id === cmd.id ? { ...u, x: cmd.from.x, y: cmd.from.y } : u));
     kernel.getConstruction().updateAllAlgorithms(); setRenderRev(r => r + 1);
@@ -666,7 +684,7 @@ const handleExport = useCallback(() => {
     else if (cmd.type === 'move') restoreState(cmd.newState);
     else if (cmd.type === 'numeric') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el instanceof GeoNumeric) el.setValue(cmd.newValue); }
     else if (cmd.type === 'boolean') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el instanceof GeoBoolean) el.setValue(cmd.newValue); }
-    else if (cmd.type === 'rename') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el) el.label = cmd.newLabel; rewriteLinkedLabels(cmd.oldLabel, cmd.newLabel); rewriteExpressions(cmd.oldLabel, cmd.newLabel); }
+    else if (cmd.type === 'rename') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el) el.label = cmd.newLabel; rewriteLinkedLabels(cmd.oldLabel, cmd.newLabel); rewriteExpressions(cmd.oldLabel, cmd.newLabel); if (cmd.bump) { const b = kernel.getConstruction().getElementById(cmd.bump.element.id); if (b) b.label = cmd.bump.newLabel; rewriteExpressions(cmd.bump.oldLabel, cmd.bump.newLabel); } }
     else if (cmd.type === 'style') applyStyleDirectly(cmd.element, cmd.after);
     else if (cmd.type === 'uiMove') setUIElementsTracked(prev => prev.map(u => u.id === cmd.id ? { ...u, x: cmd.to.x, y: cmd.to.y } : u));
     kernel.getConstruction().updateAllAlgorithms(); setRenderRev(r => r + 1);
@@ -872,20 +890,32 @@ const handleExport = useCallback(() => {
   const getScreenPos = (e: React.MouseEvent | React.WheelEvent) => { const rect = canvasRef.current!.getBoundingClientRect(); return { screenX: e.clientX - rect.left, screenY: e.clientY - rect.top }; };
   const getGridStep = () => calculateGridStep(coord.xScale);
   /**
-   * 点捕捉三态（对标 GeoGebra Options→Point Capturing）：
+   * 点捕捉三态（官方 EuclidianController.java:4111-4230 语义）：
    *   off        不吸附；
-   *   automatic  吸附已有点始终生效，网格吸附只在按下（创建）时生效；
-   *   snap_grid  网格 + 已有点始终吸附。
+   *   automatic  网格/轴**可见时全过程**吸附（创建+拖拽），阈值 0.125×格距
+   *              （POINT_CAPTURING_GRID，世界单位随格距缩放）；不可见时不吸格；
+   *   snap_grid  官方 ON_GRID：恒吸最近格点（percentage=1）。
+   *  已有点吸附（sticky 拟物）恒 12px 屏幕半径，与创建点选热区一致。
    */
   const getMousePos = (e: React.MouseEvent | React.WheelEvent, useSnap = false, phase: 'down' | 'move' = 'down') => {
+    void phase;
     const { screenX, screenY } = getScreenPos(e); const world = coord.screenToWorld(screenX, screenY);
     let { x, y } = world;
     if (useSnap && snapEnabled) {
       const capturing = kernel.getOptions().pointCapturing;
       if (capturing !== 'off') {
+        const gridStep = getGridStep();
         const snapRadius = SNAP_POINT_RADIUS / coord.xScale;
-        const gridSnap = capturing === 'snap_grid' || (capturing === 'automatic' && phase === 'down');
-        const snapped = applySnap(x, y, snapRadius, gridSnap, snapToPoint, kernel.getConstruction().getElements().filter(el => el instanceof GeoPoint) as GeoPoint[], getGridStep());
+        let gridSnap = false;
+        let gridRadius = snapRadius;
+        if (capturing === 'snap_grid') {
+          gridSnap = true;
+          gridRadius = Infinity; // ON_GRID：恒吸最近格点
+        } else if (capturing === 'automatic' && (showGrid || showAxes)) {
+          gridSnap = true;
+          gridRadius = 0.125 * gridStep;
+        }
+        const snapped = applySnap(x, y, snapRadius, gridSnap, snapToPoint, kernel.getConstruction().getElements().filter(el => el instanceof GeoPoint) as GeoPoint[], gridStep, gridRadius);
         x = snapped.x; y = snapped.y;
       }
     }
