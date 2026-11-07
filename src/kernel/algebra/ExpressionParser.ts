@@ -100,6 +100,8 @@ export function preprocessInput(input: string): string {
   s = replaceAbsBars(s);
   s = replaceDegrees(s);
   s = s.replace(/π/g, PI_LITERAL);
+  // ASCII 'pi' 同为保留常量（官方词法；\b 防止命中 pin/alpha 等标识符内部）
+  s = s.replace(/\bpi\b/g, PI_LITERAL);
   s = replaceSqrt(s);
   return s;
 }

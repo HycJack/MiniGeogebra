@@ -33,6 +33,8 @@ import { GeoQuadric3D } from '../geo/GeoQuadric3D';
 import { GeoPolyhedron3D } from '../algo/AlgoPolyhedron3D';
 import { GeoSurface } from '../geo/GeoSurface';
 import { AlgoSphere3D, AlgoCylinder3D, AlgoCone3D, AlgoIntersectLineQuadric3D, AlgoPrism3D, AlgoPyramid3D, AlgoVolume3D, AlgoAngleLines3D, AlgoAnglePlanes3D, AlgoIntersectSpheres3D } from '../algo/AlgoPolyhedron3D';
+import { AlgoSequence, AlgoListElement, AlgoListAggregate, AlgoListTransform } from '../algo/AlgoListOps';
+import { AlgoPrimeFactors, AlgoDivisorsList, gcd, lcm, isPrime, nextPrime, previousPrime, divisorsSum, binomialCoefficient, toBase, fromBase } from '../algo/AlgoNumberTheory';
 import { AlgoDependentSurface } from '../algo/AlgoDependentSurface';
 import { AlgoSurfaceOfRevolution } from '../algo/AlgoSurfaceOfRevolution';
 import { GeoCircle3D } from '../geo/GeoCircle3D';
@@ -276,6 +278,38 @@ const COMMAND_ARITY: Record<string, [number, number]> = {
   Polyline: [2, 16],
   Vertex: [1, 2],
   Reflect: [2, 2],                 // Mirror 的官方英文别名（点/线镜像双形态）
+  // ---- 列表命令族（L4/F2-4，官方 Commands 对应名）----
+  Sequence: [4, 5],
+  Element: [2, 2],
+  First: [1, 2],
+  Last: [1, 2],
+  Take: [3, 3],
+  Sort: [1, 1],
+  Unique: [1, 1],
+  Reverse: [1, 1],
+  Append: [2, 2],
+  Insert: [3, 3],
+  Remove: [2, 2],
+  RemoveUndefined: [1, 1],
+  Flatten: [1, 1],
+  Join: [1, 2],
+  Sum: [1, 1],
+  Product: [1, 1],
+  IndexOf: [2, 2],
+  // ---- 数论命令族（L4-A1）----
+  GCD: [2, 2],
+  LCM: [2, 2],
+  Mod: [2, 2],
+  Div: [2, 2],
+  IsPrime: [1, 1],
+  NextPrime: [1, 1],
+  PreviousPrime: [1, 1],
+  PrimeFactors: [1, 1],
+  DivisorsList: [1, 1],
+  DivisorsSum: [1, 1],
+  BinomialCoefficient: [2, 2],
+  ToBase: [2, 2],
+  FromBase: [2, 2],
 };
 
 /** 全部命令名（字典序）：供输入栏自动补全使用。 */
@@ -609,6 +643,16 @@ let redefineSeq = 0;
     return deps;
   };
 
+  /** 静态数值输出（数论等纯算术命令）：自由 GeoNumeric 入构造。 */
+  const staticNumeric = (value: number, labels: Set<string>, cons: Construction): GeoNumeric => {
+    const geo = new GeoNumeric(kernel, value);
+    if (Number.isNaN(value)) geo.setUndefined();
+    assignNextLabel(geo, () => cons.getNextNumericLabel(labels));
+    labels.add(geo.label);
+    cons.addElement(geo);
+    return geo;
+  };
+
   const findPoint = (label: string): GeoPoint | undefined =>
     construction.getElements().find(el => el instanceof GeoPoint && (el as GeoPoint).label === label) as GeoPoint | undefined;
 
@@ -623,6 +667,10 @@ let redefineSeq = 0;
 
   const findCurve = (label: string): GeoCurve | undefined =>
     construction.getElements().find(el => el instanceof GeoCurve && (el as GeoCurve).label === label) as GeoCurve | undefined;
+
+  // 列表命令族的源查找（按标签；列表字面量在解析期已物化为 GeoList）
+  const findListArg = (label: string): GeoList | undefined =>
+    construction.getElements().find(el => el instanceof GeoList && (el as GeoList).label === label) as GeoList | undefined;
 
   const findPolygon = (label: string): GeoPolygon | undefined =>
     construction.getElements().find(el => el instanceof GeoPolygon && (el as GeoPolygon).label === label) as GeoPolygon | undefined;
@@ -876,9 +924,53 @@ let redefineSeq = 0;
     return []; // 已登记进构造
   };
 
+  const buildListLiteral = (rhs: string): GeoList => {
+    const match = /^\{(.*)\}$/.exec(rhs.trim());
+    if (!match) throw new Error(`Invalid list literal "${rhs.trim()}"`);
+    const items = splitArgs(match[1]).filter(arg => arg.length > 0);
+    if (items.length === 0) throw new Error('Empty list');
+    const children: GeoElement[] = [];
+    for (const item of items) {
+      const label = item.trim();
+      const found = construction.getElements().find(
+        el => el instanceof GeoElement && (el as unknown as { label?: string }).label === label);
+      if (found) {
+        children.push(found as GeoElement);
+        continue;
+      }
+      // 数字字面量：自有 GeoNumeric（不进构造、不占标签，constIndex=-1 序列化丢弃）
+      const asNumber = Number(label);
+      if (Number.isFinite(asNumber) && label !== '') {
+        const owned = new GeoNumeric(kernel, asNumber);
+        children.push(owned);
+        continue;
+      }
+      // 内联点元组 (x, y)：自有点
+      const tuple = /^\(([^,]+),([^,]+)\)$/.exec(label);
+      if (tuple) {
+        const x = evaluateNumber(tuple[1]);
+        const y = evaluateNumber(tuple[2]);
+        const owned = new GeoPoint(kernel, new GeoVec3D(x, y, 1));
+        children.push(owned);
+        continue;
+      }
+      throw new Error(`Unknown object "${label}" in list`);
+    }
+    return new GeoList(kernel, children);
+  };
+
   const definition = splitAtTopLevelEquals(raw);
   if (definition) {
     const [leftText, rightText] = definition;
+    // 赋值形式的列表字面量（src = {A, B, C}）：此前只支持裸输入，
+    // 带标签赋值会掉进 parseExpression 报 "Unsupported character {"。
+    if (/^\{(.*)\}$/.test(rightText.trim())) {
+      const list = buildListLiteral(rightText);
+      list.label = leftText.trim();
+      existingLabels.add(list.label);
+      construction.addElement(list);
+      return [list];
+    }
     const functionHeader = parseFunctionHeader(leftText);
 
     if (functionHeader) {
@@ -1100,17 +1192,7 @@ let redefineSeq = 0;
   // 必须先于命令匹配：{...} 不含括号，但 parseExpression 不识别花括号。
   const listMatch = /^\{(.*)\}$/.exec(raw);
   if (listMatch) {
-    const items = splitArgs(listMatch[1]).filter(arg => arg.length > 0);
-    if (items.length === 0) throw new Error('Empty list');
-    const children: GeoElement[] = [];
-    for (const item of items) {
-      const label = item.trim();
-      const found = construction.getElements().find(
-        el => el instanceof GeoElement && (el as unknown as { label?: string }).label === label);
-      if (!found) throw new Error(`Unknown object "${label}" in list`);
-      children.push(found as GeoElement);
-    }
-    const list = new GeoList(kernel, children);
+    const list = buildListLiteral(raw);
     list.label = construction.getNextPointLabel(existingLabels);
     existingLabels.add(list.label);
     return [list];
@@ -1150,7 +1232,10 @@ let redefineSeq = 0;
       const dispatched = dispatchCommand(canonical!, args, {
         construction, kernel, existingLabels, viewBounds,
         evaluateNumber, resolveNumber, makeFreePoint, assignNextLabel,
-        findPoint, findLine, findFunction, findNumeric, findConic, findPolygon, findCurve,
+        findPoint, findLine, findFunction, findNumeric, findConic, findPolygon, findCurve, findListArg,
+        makeNumericDeps: makeNumericDependencies,
+        makeFnDeps: makeFunctionDeps,
+        createStaticNumeric: (value: number) => staticNumeric(value, existingLabels, construction),
         findPoint3D, findLine3D, findPlane3D, findQuadric3D, findPolyhedron3D, findSurface, findCircle3D, findPolyline3D, findConic3D, findNet3D,
       });
       // 合并命令参数里内联创建、但未随命令输出返回的辅助点（见 createdElements 注释）
@@ -1208,6 +1293,13 @@ interface CommandContext {
   findConic: (label: string) => GeoConic | undefined;
   findPolygon: (label: string) => GeoPolygon | undefined;
   findCurve: (label: string) => GeoCurve | undefined;
+  findListArg: (label: string) => GeoList | undefined;
+  /** 表达式的数值依赖收集（列表命令族 Sequence 用；闭包在 impl 内）。 */
+  makeNumericDeps: (expression: ExpressionNode, allowedVariables?: string[]) => GeoNumeric[];
+  /** 表达式的用户函数依赖（传递闭包）。 */
+  makeFnDeps: (ast: ExpressionNode, selfLabel?: string) => GeoFunction[];
+  /** 静态数值输出（数论命令）：建自由 GeoNumeric 入构造并分配标签。 */
+  createStaticNumeric: (value: number) => GeoNumeric;
   findPoint3D: (label: string) => GeoPoint3D | undefined;
   findLine3D: (label: string) => GeoLine3D | undefined;
   findPlane3D: (label: string) => GeoPlane3D | undefined;
@@ -3309,6 +3401,209 @@ const dispatchCommand = (
       const algo = new AlgoParabola3D(kernel, p, l);
       assignNextLabel(algo.getOutput(), () => construction.getNextLineLabel(existingLabels));
       return [algo, algo.getOutput()];
+    }
+
+    // ---- 列表命令族（官方 AlgoSequence / AlgoElementList / ...）----
+    case 'Sequence': {
+      // Sequence(expr, k, from, to[, step])：活依赖（表达式数值 + 区间端点）
+      const variableName = args[1].trim();
+      const expression = parseExpression(args[0].trim());
+      const allowedVars = [variableName];
+      const dependencies = ctx.makeNumericDeps(expression, allowedVars);
+      const fnDeps = ctx.makeFnDeps(expression);
+      const resolveBound = (text: string): GeoNumeric | number => {
+        const n = ctx.findNumeric(text.trim());
+        return n ?? ctx.evaluateNumber(text);
+      };
+      const from = resolveBound(args[2]);
+      const to = resolveBound(args[3]);
+      const step = args.length >= 5 ? resolveBound(args[4]) : 1;
+      const algo = new AlgoSequence(kernel, expression, variableName, from, to, step, dependencies, fnDeps);
+      algo.commandText = `Sequence(${args[0].trim()}, ${variableName}, ${args[2].trim()}, ${args[3].trim()}${args.length >= 5 ? `, ${args[4].trim()}` : ''})`;
+      const out = algo.getOutput();
+      assignNextLabel(out, () => construction.getNextPointLabel(existingLabels));
+      return [algo, out];
+    }
+    case 'Element': {
+      const list = ctx.findListArg(args[0].trim());
+      if (!list) throw new Error(`Element expects a list`);
+      const index = ctx.findNumeric(args[1].trim()) ?? ctx.evaluateNumber(args[1]);
+      const algo = new AlgoListElement(kernel, list, index);
+      construction.addElement(algo);
+      const out = algo.getPrimaryOutput();
+      if (out) {
+        assignNextLabel(out, () => construction.getNextPointLabel(existingLabels));
+        construction.addElement(out);
+      }
+      algo.update();
+      return [algo, ...(out ? [out] : [])];
+    }
+    case 'First':
+    case 'Last': {
+      const list = ctx.findListArg(args[0].trim());
+      if (!list) throw new Error(`${name} expects a list`);
+      // 单参 → 单元素输出（官方语义）；双参 → 子列表
+      if (args.length === 1) {
+        const algo = new AlgoListElement(kernel, list, name === 'First' ? 1 : list.getChildren().length || 1);
+        construction.addElement(algo);
+        const out = algo.getPrimaryOutput();
+        if (out) {
+          assignNextLabel(out, () => construction.getNextPointLabel(existingLabels));
+          construction.addElement(out);
+        }
+        algo.update();
+        return [algo, ...(out ? [out] : [])];
+      }
+      const n = ctx.findNumeric(args[1].trim()) ?? ctx.evaluateNumber(args[1]);
+      const algo = new AlgoListTransform(kernel, name === 'First' ? 'first' : 'last', list, null, null, n);
+      const outList = algo.getOutput();
+      assignNextLabel(outList, () => construction.getNextPointLabel(existingLabels));
+      return [algo, outList];
+    }
+    case 'Take': {
+      const list = ctx.findListArg(args[0].trim());
+      if (!list) throw new Error(`Take expects a list`);
+      const a = ctx.findNumeric(args[1].trim()) ?? ctx.evaluateNumber(args[1]);
+      const b = ctx.findNumeric(args[2].trim()) ?? ctx.evaluateNumber(args[2]);
+      const algo = new AlgoListTransform(kernel, 'take', list, null, null, a, b);
+      const out = algo.getOutput();
+      assignNextLabel(out, () => construction.getNextPointLabel(existingLabels));
+      return [algo, out];
+    }
+    case 'Sort':
+    case 'Unique':
+    case 'Reverse':
+    case 'RemoveUndefined':
+    case 'Flatten': {
+      const list = ctx.findListArg(args[0].trim());
+      if (!list) throw new Error(`${name} expects a list`);
+      const op = { Sort: 'sort', Unique: 'unique', Reverse: 'reverse', RemoveUndefined: 'removeUndefined', Flatten: 'flatten' }[name] as 'sort' | 'unique' | 'reverse' | 'removeUndefined' | 'flatten';
+      const algo = new AlgoListTransform(kernel, op, list);
+      const out = algo.getOutput();
+      assignNextLabel(out, () => construction.getNextPointLabel(existingLabels));
+      return [algo, out];
+    }
+    case 'Append':
+    case 'Insert':
+    case 'Remove': {
+      const list = ctx.findListArg(args[0].trim());
+      if (!list) throw new Error(`${name} expects a list`);
+      const resolveItem = (text: string) => {
+        const t = text.trim();
+        return ctx.findPoint(t) ?? ctx.findNumeric(t)
+          // 数字字面量项：临时包装（值拷贝进输出列表，不入构造）
+          ?? (() => { const v = Number(t); return Number.isFinite(v) && t !== '' ? new GeoNumeric(kernel, v) : undefined; })();
+      };
+      if (name === 'Remove') {
+        const pos = ctx.findNumeric(args[1].trim()) ?? ctx.evaluateNumber(args[1]);
+        const algo = new AlgoListTransform(kernel, 'remove', list, null, null, pos);
+        const out = algo.getOutput();
+        assignNextLabel(out, () => construction.getNextPointLabel(existingLabels));
+        return [algo, out];
+      }
+      const item = resolveItem(args[1]);
+      if (!item) throw new Error(`${name} expects a numeric or point item`);
+      if (name === 'Append') {
+        const algo = new AlgoListTransform(kernel, 'append', list, null, item);
+        const out = algo.getOutput();
+        assignNextLabel(out, () => construction.getNextPointLabel(existingLabels));
+        return [algo, out];
+      }
+      // Insert(list, item, pos)
+      const pos = ctx.findNumeric(args[2].trim()) ?? ctx.evaluateNumber(args[2]);
+      const algo = new AlgoListTransform(kernel, 'insert', list, null, item, pos);
+      const out = algo.getOutput();
+      assignNextLabel(out, () => construction.getNextPointLabel(existingLabels));
+      return [algo, out];
+    }
+    case 'Join': {
+      // Join(listOfLists) 或 Join(l1, l2, ...)
+      const lists = args.map(a => ctx.findListArg(a.trim())).filter((l): l is NonNullable<typeof l> => !!l);
+      if (lists.length === 0) throw new Error(`Join expects lists`);
+      let algo;
+      if (lists.length === 1) {
+        algo = new AlgoListTransform(kernel, 'join', lists[0]);
+      } else {
+        algo = new AlgoListTransform(kernel, 'join', lists[0], lists[1]);
+      }
+      const out = algo.getOutput();
+      assignNextLabel(out, () => construction.getNextPointLabel(existingLabels));
+      return [algo, out];
+    }
+    case 'Sum':
+    case 'Product': {
+      const list = ctx.findListArg(args[0].trim());
+      if (!list) throw new Error(`${name} expects a list`);
+      const algo = new AlgoListAggregate(kernel, name === 'Sum' ? 'sum' : 'product', list);
+      assignNextLabel(algo.getOutput(), () => construction.getNextNumericLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+    case 'IndexOf': {
+      const list = ctx.findListArg(args[0].trim());
+      if (!list) throw new Error(`IndexOf expects a list`);
+      const item = ctx.findPoint(args[1].trim())
+        ?? ctx.findNumeric(args[1].trim())
+        // 数字字面量：临时包装（sameChild 按值比较，不入构造）
+        ?? (() => { const v = Number(args[1]); return Number.isFinite(v) ? new GeoNumeric(kernel, v) : undefined; })();
+      if (!item) throw new Error(`IndexOf expects a numeric or point item`);
+      const algo = new AlgoListAggregate(kernel, 'indexOf', list, item);
+      assignNextLabel(algo.getOutput(), () => construction.getNextNumericLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+    // ---- 数论命令族（官方 AlgoGCD / AlgoMod / ...）----
+    case 'GCD':
+    case 'LCM': {
+      const a = ctx.evaluateNumber(args[0]);
+      const b = ctx.evaluateNumber(args[1]);
+      const value = name === 'GCD' ? gcd(a, b) : lcm(a, b);
+      return [ctx.createStaticNumeric(value)];
+    }
+    case 'Mod': {
+      const a = ctx.evaluateNumber(args[0]);
+      const b = ctx.evaluateNumber(args[1]);
+      const m = b === 0 ? NaN : a - b * Math.floor(a / b);
+      return [ctx.createStaticNumeric(m)];
+    }
+    case 'Div': {
+      const a = ctx.evaluateNumber(args[0]);
+      const b = ctx.evaluateNumber(args[1]);
+      return [ctx.createStaticNumeric(b === 0 ? NaN : Math.floor(a / b))];
+    }
+    case 'IsPrime': {
+      return [ctx.createStaticNumeric(isPrime(ctx.evaluateNumber(args[0])) ? 1 : 0)];
+    }
+    case 'NextPrime':
+    case 'PreviousPrime': {
+      const v = ctx.evaluateNumber(args[0]);
+      return [ctx.createStaticNumeric(name === 'NextPrime' ? nextPrime(v) : previousPrime(v))];
+    }
+    case 'DivisorsSum': {
+      return [ctx.createStaticNumeric(divisorsSum(ctx.evaluateNumber(args[0])))];
+    }
+    case 'BinomialCoefficient': {
+      const v = binomialCoefficient(ctx.evaluateNumber(args[0]), ctx.evaluateNumber(args[1]));
+      return [ctx.createStaticNumeric(v)];
+    }
+    case 'PrimeFactors':
+    case 'DivisorsList': {
+      const n = ctx.findNumeric(args[0].trim()) ?? ctx.evaluateNumber(args[0]);
+      const algo = name === 'PrimeFactors'
+        ? new AlgoPrimeFactors(kernel, n)
+        : new AlgoDivisorsList(kernel, n);
+      const out = algo.getOutput();
+      assignNextLabel(out, () => construction.getNextPointLabel(existingLabels));
+      return [algo, out];
+    }
+    case 'ToBase': {
+      const text = toBase(ctx.evaluateNumber(args[0]), ctx.evaluateNumber(args[1]));
+      const geo = new GeoText(kernel, text);
+      assignNextLabel(geo, () => construction.getNextPointLabel(existingLabels));
+      return [geo];
+    }
+    case 'FromBase': {
+      // FromBase(文本, 底)：文本参数去引号，输出数值（官方语义）
+      const raw = args[0].trim().replace(/^"(.*)"$/, '$1');
+      return [ctx.createStaticNumeric(fromBase(raw, ctx.evaluateNumber(args[1])))];
     }
 
     default:

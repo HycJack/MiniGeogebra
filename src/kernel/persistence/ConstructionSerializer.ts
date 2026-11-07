@@ -54,6 +54,8 @@ import { AlgoDependentText } from '../algo/AlgoDependentText';
 import { AlgoAngleOriented } from '../algo/AlgoAngle';
 import { GeoText } from '../geo/GeoText';
 import { GeoList } from '../geo/GeoList';
+import { AlgoSequence, AlgoListElement, AlgoListAggregate, AlgoListTransform, LIST_AGGREGATE_OPS, LIST_TRANSFORM_OPS } from '../algo/AlgoListOps';
+import { AlgoPrimeFactors, AlgoDivisorsList } from '../algo/AlgoNumberTheory';
 import { GeoBoolean } from '../geo/GeoBoolean';
 import { AlgoRootList, ROOT_LIST_CAPACITY } from '../algo/AlgoRootList';
 import { AlgoFunctionExtremumPoint } from '../algo/AlgoFunctionExtremumPoint';
@@ -367,6 +369,25 @@ export function collectAlgoExtras(algo: AlgoElement): Partial<SerializedAlgorith
         extras.scalars = [algo.getRadiusValue(), algo.getSidesValue()];
       } else if (algo instanceof AlgoRegularPolygonEdge) {
         extras.scalars = [algo.getSidesValue()];
+      } else if (algo instanceof AlgoSequence) {
+        // 完整命令文本：加载/重定义经 parseAlgebraInput 重走命令分发（活依赖重建）
+        extras.expressionText = algo.getExpressionText();
+      } else if (algo instanceof AlgoListElement) {
+        extras.scalars = [algo.getIndex() instanceof GeoNumeric ? null : algo.getIndex() as number];
+      } else if (algo instanceof AlgoListAggregate) {
+        extras.scalars = [LIST_AGGREGATE_OPS.indexOf(algo.getOp())];
+      } else if (algo instanceof AlgoListTransform) {
+        // [opIdx, mask(bit0=list2/bit1=item), n1(null=活), n2]
+        const mask = (algo.getList2() ? 1 : 0) | (algo.getItem() ? 2 : 0);
+        extras.scalars = [
+          LIST_TRANSFORM_OPS.indexOf(algo.getOp()),
+          mask,
+          algo.getN1() instanceof GeoNumeric || algo.getN1() === null ? null : algo.getN1() as number,
+          algo.getN2() instanceof GeoNumeric || algo.getN2() === null ? null : algo.getN2() as number,
+        ];
+      } else if (algo instanceof AlgoPrimeFactors || algo instanceof AlgoDivisorsList) {
+        const n = algo.getN();
+        extras.scalars = [n instanceof GeoNumeric ? null : n];
       } else if (algo instanceof AlgoDependentCurve) {
         extras.variableName = algo.getParameterName();
         extras.scalars = [...algo.getRange()];
@@ -555,6 +576,42 @@ export function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], s
       return new AlgoDilate(kernel, inputs[0], center, ratioNum ?? ratio);
     }
     case 'AlgoFitPoly':             return new AlgoFitPoly(kernel, inputs as import('../geo/GeoPoint').GeoPoint[], scalars?.[0] ?? 1);
+    case 'AlgoPrimeFactors':
+    case 'AlgoDivisorsList': {
+      const n = inputs.find(i => i instanceof GeoNumeric) as GeoNumeric | undefined
+        ?? scalars?.[0] ?? 0;
+      return type === 'AlgoPrimeFactors'
+        ? new AlgoPrimeFactors(kernel, n)
+        : new AlgoDivisorsList(kernel, n);
+    }
+    case 'AlgoListElement': {
+      const list = inputs[0] as GeoList;
+      const index = inputs.find(i => i instanceof GeoNumeric) as GeoNumeric | undefined
+        ?? scalars?.[0] ?? 1;
+      return new AlgoListElement(kernel, list, index);
+    }
+    case 'AlgoListAggregate': {
+      const op = LIST_AGGREGATE_OPS[scalars?.[0] ?? 0] ?? 'sum';
+      const list = inputs[0] as GeoList;
+      const arg = inputs.length > 1 ? inputs[1] : null;
+      return new AlgoListAggregate(kernel, op, list, arg);
+    }
+    case 'AlgoListTransform': {
+      const op = LIST_TRANSFORM_OPS[scalars?.[0] ?? 0] ?? 'reverse';
+      const mask = scalars?.[1] ?? 0;
+      const list = inputs[0] as GeoList;
+      let cursor = 1;
+      const list2 = mask & 1 ? inputs[cursor++] as GeoList : null;
+      const item = mask & 2 ? inputs[cursor++] as GeoElement : null;
+      const liveNums = inputs.slice(cursor).filter(i => i instanceof GeoNumeric) as GeoNumeric[];
+      const n1 = scalars?.[2] ?? null;
+      const n2 = scalars?.[3] ?? null;
+      return new AlgoListTransform(
+        kernel, op, list, list2, item,
+        n1 ?? liveNums.shift() ?? null,
+        n2 ?? liveNums.shift() ?? null,
+      );
+    }
     case 'AlgoFunctionRootPoint':   {
       const algo = new AlgoFunctionRootPoint(kernel, inputs[0] as GeoFunction, scalars?.[0] ?? -10, scalars?.[1] ?? 10);
       const seed = scalars?.[2];
@@ -756,11 +813,15 @@ export function serialize(
         };
       }
       if (el instanceof GeoList) {
+        // 自有子元素（constIndex=-1，字面量/算法产出）按位以数值落盘；
+        // 引用子元素照旧走 constIndex。null = 该位为引用或非数值自有子元素。
         return {
           type: 'GeoList',
           constIndex: el.constIndex,
           label: el.label,
-          childIndices: el.getChildren().map(c => c.constIndex),
+          childIndices: el.getChildren().map(c => (c.constIndex >= 0 ? c.constIndex : -1)),
+          childScalars: el.getChildren().map(c =>
+            c.constIndex < 0 && c instanceof GeoNumeric ? c.getValue() : null),
           style: styleOf(el),
         };
       }
@@ -1023,7 +1084,7 @@ export function deserialize(kernel: Kernel, json: string): {
   // 多边形：顶点通常已是独立点（步骤 1 已入 index）；顶点若为算法输出则留到
   // 算法链之后再补。先解析“顶点已就绪”的多边形，AlgoPolygonBoolean 等
   // 以多边形为输入的算法才能在下方重建时拿到输入。
-  const listStubs: { el: SerializedElement & { childIndices?: number[] }; instance: GeoList }[] = [];
+  const listStubs: { el: SerializedElement & { childIndices?: number[]; childScalars?: (number | null)[] }; instance: GeoList }[] = [];
   const polygonStubs: SerializedElement[] = [];
 
   const resolveReadyPolygons = (): SerializedElement[] => {
@@ -1063,7 +1124,7 @@ export function deserialize(kernel: Kernel, json: string): {
       instance = new GeoPoint(kernel, new GeoVec3D(c[0], c[1], c[2]));
     } else if (el.type === 'GeoList') {
       instance = new GeoList(kernel, []);
-      listStubs.push({ el: el as SerializedElement & { childIndices?: number[] }, instance: instance as GeoList });
+      listStubs.push({ el: el as SerializedElement & { childIndices?: number[]; childScalars?: (number | null)[] }, instance: instance as GeoList });
       // 立即入 index；children 在算法链重建完之后回填
       construction.addElement(instance);
       index.set(el.constIndex, instance);
@@ -1146,9 +1207,14 @@ export function deserialize(kernel: Kernel, json: string): {
 
   // 2.4) 回填列表子元素（子元素可能是算法输出，算法链已就绪）
   for (const stub of listStubs) {
-    const children = (stub.el.childIndices ?? [])
-      .map(ci => index.get(ci))
-      .filter((c): c is GeoElement => c !== undefined);
+    const children = (stub.el.childIndices ?? []).map((ci, i) => {
+      if (ci >= 0) return index.get(ci);
+      // 自有子元素位：childScalars 有值则重建数值（字面量列表 roundtrip）
+      const scalar = stub.el.childScalars?.[i];
+      return scalar !== null && scalar !== undefined && Number.isFinite(scalar)
+        ? new GeoNumeric(kernel, scalar)
+        : undefined;
+    }).filter((c): c is GeoElement => c !== undefined);
     stub.instance.setChildren(children);
   }
 
@@ -1306,7 +1372,7 @@ export function rebuildAlgorithm(
     return;
   }
   // Expression-based reconstruction for function/numeric dependency algorithms
-  if (a.expressionText && (a.type === 'AlgoDependentFunction' || a.type === 'AlgoDependentNumeric' || a.type === 'AlgoDependentInequality' || a.type === 'AlgoDependentQuadric3D' || a.type === 'AlgoDependentText')) {
+  if (a.expressionText && (a.type === 'AlgoDependentFunction' || a.type === 'AlgoDependentNumeric' || a.type === 'AlgoDependentInequality' || a.type === 'AlgoDependentQuadric3D' || a.type === 'AlgoDependentText' || a.type === 'AlgoSequence')) {
     const label = a.outputLabels[0] || '';
     let algInput: string;
     if (a.type === 'AlgoDependentInequality') {

@@ -54,3 +54,16 @@ export { AlgoPointOnLine3D, AlgoPointOnCircle3D, AlgoPointOnConic3D, AlgoPointOn
 export { AlgoPolygonBoolean } from './AlgoPolygonBoolean';
 export { AlgoPerimeter } from './AlgoPerimeter';
 export { AlgoIntegralDefinite, AlgoTaylorSeriesFunction, AlgoSlopeFunction } from './AlgoFunctionAnalysis';
+
+// ---- 列表操作族（L4/F2-4）----
+export {
+  AlgoSequence, AlgoListElement, AlgoListAggregate, AlgoListTransform,
+  type GeoFunctionView,
+} from './AlgoListOps';
+
+// ---- 数论命令族（L4-A1）----
+export {
+  AlgoPrimeFactors, AlgoDivisorsList,
+  gcd, lcm, isPrime, nextPrime, previousPrime, primeFactors, divisors,
+  divisorsSum, binomialCoefficient, toBase, fromBase,
+} from './AlgoNumberTheory';
