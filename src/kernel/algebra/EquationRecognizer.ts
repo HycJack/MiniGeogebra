@@ -35,6 +35,8 @@ import { GeoSurface } from '../geo/GeoSurface';
 import { AlgoSphere3D, AlgoCylinder3D, AlgoCone3D, AlgoIntersectLineQuadric3D, AlgoPrism3D, AlgoPyramid3D, AlgoVolume3D, AlgoAngleLines3D, AlgoAnglePlanes3D, AlgoIntersectSpheres3D } from '../algo/AlgoPolyhedron3D';
 import { AlgoSequence, AlgoListElement, AlgoListAggregate, AlgoListTransform } from '../algo/AlgoListOps';
 import { AlgoPrimeFactors, AlgoDivisorsList, gcd, lcm, isPrime, nextPrime, previousPrime, divisorsSum, binomialCoefficient, toBase, fromBase } from '../algo/AlgoNumberTheory';
+import { AlgoConicSingleAxis, AlgoConicSemiAxisLength, AlgoConicAxisLength, AlgoConicLinearEccentricity, AlgoCircleSector } from '../algo/AlgoConicProperties';
+import { AlgoFractionText, AlgoScientificText, makeText, nameOf, formulaText, tableText, splitText, textToUnicode, unicodeToText, makeTextList, makeNumericList } from '../algo/AlgoTextOps';
 import { AlgoDependentSurface } from '../algo/AlgoDependentSurface';
 import { AlgoSurfaceOfRevolution } from '../algo/AlgoSurfaceOfRevolution';
 import { GeoCircle3D } from '../geo/GeoCircle3D';
@@ -310,6 +312,28 @@ const COMMAND_ARITY: Record<string, [number, number]> = {
   BinomialCoefficient: [2, 2],
   ToBase: [2, 2],
   FromBase: [2, 2],
+  // ---- 圆锥属性拆分族（L4-A5）----
+  Sector: [3, 3],
+  MajorAxis: [1, 1],
+  MinorAxis: [1, 1],
+  FirstAxis: [1, 1],
+  SecondAxis: [1, 1],
+  SemiMajorAxisLength: [1, 1],
+  SemiMinorAxisLength: [1, 1],
+  FirstAxisLength: [1, 1],
+  SecondAxisLength: [1, 1],
+  LinearEccentricity: [1, 1],
+  // ---- 文本命令族（L4-A7）----
+  FractionText: [1, 1],
+  ScientificText: [1, 1],
+  TableText: [1, 4],
+  FormulaText: [1, 1],
+  Name: [1, 1],
+  Split: [1, 2],
+  TextToUnicode: [1, 1],
+  UnicodeToText: [1, 1],
+  LetterToUnicode: [1, 1],
+  UnicodeToLetter: [1, 1],
 };
 
 /** 全部命令名（字典序）：供输入栏自动补全使用。 */
@@ -3604,6 +3628,124 @@ const dispatchCommand = (
       // FromBase(文本, 底)：文本参数去引号，输出数值（官方语义）
       const raw = args[0].trim().replace(/^"(.*)"$/, '$1');
       return [ctx.createStaticNumeric(fromBase(raw, ctx.evaluateNumber(args[1])))];
+    }
+
+    // ---- 圆锥属性拆分族（官方 AlgoAxes 拆分 / Sector）----
+    case 'MajorAxis':
+    case 'FirstAxis':
+    case 'MinorAxis':
+    case 'SecondAxis': {
+      const conic = ctx.findConic(args[0].trim());
+      if (!conic) throw new Error(`Unknown conic "${args[0].trim()}"`);
+      const which = (name === 'MajorAxis' || name === 'FirstAxis') ? 'major' : 'minor';
+      const algo = new AlgoConicSingleAxis(kernel, conic, which);
+      assignNextLabel(algo.getOutput(), () => construction.getNextLineLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+    case 'SemiMajorAxisLength':
+    case 'SemiMinorAxisLength': {
+      const conic = ctx.findConic(args[0].trim());
+      if (!conic) throw new Error(`Unknown conic "${args[0].trim()}"`);
+      const algo = new AlgoConicSemiAxisLength(kernel, conic, name === 'SemiMajorAxisLength' ? 'major' : 'minor');
+      assignNextLabel(algo.getOutput(), () => construction.getNextNumericLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+    case 'FirstAxisLength':
+    case 'SecondAxisLength': {
+      const conic = ctx.findConic(args[0].trim());
+      if (!conic) throw new Error(`Unknown conic "${args[0].trim()}"`);
+      const algo = new AlgoConicAxisLength(kernel, conic, name === 'FirstAxisLength' ? 'major' : 'minor');
+      assignNextLabel(algo.getOutput(), () => construction.getNextNumericLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+    case 'LinearEccentricity': {
+      const conic = ctx.findConic(args[0].trim());
+      if (!conic) throw new Error(`Unknown conic "${args[0].trim()}"`);
+      const algo = new AlgoConicLinearEccentricity(kernel, conic);
+      assignNextLabel(algo.getOutput(), () => construction.getNextNumericLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+    case 'Sector': {
+      // Sector(circle, A, B)：圆上 A→B 逆时针扇形（官方 CmdCircleArcSector）
+      const circle = ctx.findConic(args[0].trim());
+      const a = resolvePointArg(ctx, args[1]);
+      const b = resolvePointArg(ctx, args[2]);
+      if (!circle) throw new Error(`Unknown conic "${args[0].trim()}"`);
+      const algo = new AlgoCircleSector(kernel, circle, a, b);
+      assignNextLabel(algo.getOutput(), () => construction.getNextLineLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+    // ---- 文本命令族（官方 AlgoFractionText / AlgoTableText / ...）----
+    case 'FractionText':
+    case 'ScientificText': {
+      const n = ctx.findNumeric(args[0].trim()) ?? ctx.evaluateNumber(args[0]);
+      const algo = name === 'FractionText'
+        ? new AlgoFractionText(kernel, n)
+        : new AlgoScientificText(kernel, n);
+      assignNextLabel(algo.getOutput(), () => construction.getNextPointLabel(existingLabels));
+      return [algo, algo.getOutput()];
+    }
+    case 'TableText': {
+      const rows = args.map(a => {
+        const list = ctx.findListArg(a.trim());
+        return list ? list.getChildren() : [];
+      });
+      if (rows.some(r => r.length === 0)) throw new Error(`TableText expects non-empty lists`);
+      const geo = makeText(kernel, tableText(rows));
+      assignNextLabel(geo, () => construction.getNextPointLabel(existingLabels));
+      existingLabels.add(geo.label);
+      construction.addElement(geo);
+      return [geo];
+    }
+    case 'FormulaText':
+    case 'Name': {
+      const obj = construction.getElements().find(
+        el => el instanceof GeoElement && (el as GeoElement).label === args[0].trim()) as GeoElement | undefined;
+      if (!obj) throw new Error(`Unknown object "${args[0].trim()}"`);
+      const geo = makeText(kernel, name === 'Name' ? nameOf(obj) : formulaText(obj));
+      assignNextLabel(geo, () => construction.getNextPointLabel(existingLabels));
+      existingLabels.add(geo.label);
+      construction.addElement(geo);
+      return [geo];
+    }
+    case 'Split': {
+      // Split(text[, delimiters])：文本参数去引号
+      const text = args[0].trim().replace(/^"(.*)"$/, '$1');
+      const delims = args.length >= 2 ? args[1].trim().replace(/^"(.*)"$/, '$1') : undefined;
+      const list = makeTextList(kernel, splitText(text, delims));
+      assignNextLabel(list, () => construction.getNextPointLabel(existingLabels));
+      existingLabels.add(list.label);
+      construction.addElement(list);
+      return [list];
+    }
+    case 'TextToUnicode': {
+      const text = args[0].trim().replace(/^"(.*)"$/, '$1');
+      const list = makeNumericList(kernel, textToUnicode(text));
+      assignNextLabel(list, () => construction.getNextPointLabel(existingLabels));
+      existingLabels.add(list.label);
+      construction.addElement(list);
+      return [list];
+    }
+    case 'UnicodeToText':
+    case 'UnicodeToLetter': {
+      // 码点可来自列表或数字字面量
+      const list = ctx.findListArg(args[0].trim());
+      let text: string;
+      if (list) {
+        text = unicodeToText(list.getChildren().map(c => (c instanceof GeoNumeric ? c.getValue() : NaN)));
+      } else {
+        text = unicodeToText(ctx.evaluateNumber(args[0]));
+      }
+      const geo = makeText(kernel, text);
+      assignNextLabel(geo, () => construction.getNextPointLabel(existingLabels));
+      existingLabels.add(geo.label);
+      construction.addElement(geo);
+      return [geo];
+    }
+    case 'LetterToUnicode': {
+      const text = args[0].trim().replace(/^"(.*)"$/, '$1');
+      const codes = textToUnicode(text);
+      return [ctx.createStaticNumeric(codes.length > 0 ? codes[0] : NaN)];
     }
 
     default:

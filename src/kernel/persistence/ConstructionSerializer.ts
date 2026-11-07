@@ -56,6 +56,8 @@ import { GeoText } from '../geo/GeoText';
 import { GeoList } from '../geo/GeoList';
 import { AlgoSequence, AlgoListElement, AlgoListAggregate, AlgoListTransform, LIST_AGGREGATE_OPS, LIST_TRANSFORM_OPS } from '../algo/AlgoListOps';
 import { AlgoPrimeFactors, AlgoDivisorsList } from '../algo/AlgoNumberTheory';
+import { AlgoConicSingleAxis, AlgoConicSemiAxisLength, AlgoConicAxisLength, AlgoConicLinearEccentricity, AlgoCircleSector } from '../algo/AlgoConicProperties';
+import { AlgoFractionText, AlgoScientificText } from '../algo/AlgoTextOps';
 import { GeoBoolean } from '../geo/GeoBoolean';
 import { AlgoRootList, ROOT_LIST_CAPACITY } from '../algo/AlgoRootList';
 import { AlgoFunctionExtremumPoint } from '../algo/AlgoFunctionExtremumPoint';
@@ -369,6 +371,13 @@ export function collectAlgoExtras(algo: AlgoElement): Partial<SerializedAlgorith
         extras.scalars = [algo.getRadiusValue(), algo.getSidesValue()];
       } else if (algo instanceof AlgoRegularPolygonEdge) {
         extras.scalars = [algo.getSidesValue()];
+      } else if (algo instanceof AlgoFractionText || algo instanceof AlgoScientificText) {
+        const n = algo.getN();
+        extras.scalars = [n instanceof GeoNumeric ? null : n];
+      } else if (algo instanceof AlgoConicSingleAxis || algo instanceof AlgoConicSemiAxisLength || algo instanceof AlgoConicAxisLength) {
+        extras.scalars = [algo.getWhich() === 'minor' ? 1 : 0];
+      } else if (algo instanceof AlgoCircleSector) {
+        void algo; // 输入为 (circle, A, B)，inputs 全引用，无附加标量
       } else if (algo instanceof AlgoSequence) {
         // 完整命令文本：加载/重定义经 parseAlgebraInput 重走命令分发（活依赖重建）
         extras.expressionText = algo.getExpressionText();
@@ -576,6 +585,30 @@ export function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], s
       return new AlgoDilate(kernel, inputs[0], center, ratioNum ?? ratio);
     }
     case 'AlgoFitPoly':             return new AlgoFitPoly(kernel, inputs as import('../geo/GeoPoint').GeoPoint[], scalars?.[0] ?? 1);
+    case 'AlgoFractionText':
+    case 'AlgoScientificText': {
+      const n = inputs.find(i => i instanceof GeoNumeric) as GeoNumeric | undefined
+        ?? scalars?.[0] ?? 0;
+      return type === 'AlgoFractionText'
+        ? new AlgoFractionText(kernel, n)
+        : new AlgoScientificText(kernel, n);
+    }
+    case 'AlgoConicSingleAxis': {
+      const which = scalars?.[0] === 1 ? 'minor' : 'major';
+      return new AlgoConicSingleAxis(kernel, inputs[0] as import('../geo/GeoConic').GeoConic, which);
+    }
+    case 'AlgoConicSemiAxisLength': {
+      const which = scalars?.[0] === 1 ? 'minor' : 'major';
+      return new AlgoConicSemiAxisLength(kernel, inputs[0] as import('../geo/GeoConic').GeoConic, which);
+    }
+    case 'AlgoConicAxisLength': {
+      const which = scalars?.[0] === 1 ? 'minor' : 'major';
+      return new AlgoConicAxisLength(kernel, inputs[0] as import('../geo/GeoConic').GeoConic, which);
+    }
+    case 'AlgoConicLinearEccentricity':
+      return new AlgoConicLinearEccentricity(kernel, inputs[0] as import('../geo/GeoConic').GeoConic);
+    case 'AlgoCircleSector':
+      return new AlgoCircleSector(kernel, inputs[0] as import('../geo/GeoConic').GeoConic, inputs[1] as import('../geo/GeoPoint').GeoPoint, inputs[2] as import('../geo/GeoPoint').GeoPoint);
     case 'AlgoPrimeFactors':
     case 'AlgoDivisorsList': {
       const n = inputs.find(i => i instanceof GeoNumeric) as GeoNumeric | undefined

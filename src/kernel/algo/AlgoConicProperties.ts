@@ -15,6 +15,7 @@ import { GeoNumeric } from '../geo/GeoNumeric';
 import { GeoConic } from '../geo/GeoConic';
 import { GeoVec3D } from '../core/GeoVec3D';
 import { analyzeConic, dualLine, isLineTangentToConic, CanonicalConic } from '../geo/conicSolve';
+import { GeoConicPart, CONIC_PART_SECTOR } from '../geo/GeoConicPart';
 
 const dirAt = (angle: number) => ({ x: Math.cos(angle), y: Math.sin(angle) });
 
@@ -311,4 +312,191 @@ export class AlgoIsTangent extends AlgoElement {
     const tangent = isLineTangentToConic(this.conic.coeffs, this.line.a, this.line.b, this.line.c);
     (this.output[0] as GeoNumeric).setValue(tangent ? 1 : 0);
   }
+}
+
+// ---------------------------------------------------------------------------
+// 轴属性拆分族（官方 MajorAxis/MinorAxis/FirstAxis/SecondAxis/半轴长/全轴长/
+// LinearEccentricity —— AlgoAxes 族拆分，2026-11-08 命令面批）
+// ---------------------------------------------------------------------------
+
+/** 单轴方向：major = λ1 特征方向（长/实轴），minor = 垂直方向。圆返回 null。 */
+function conicAxisDir(conic: GeoConic, which: 'major' | 'minor'): { x: number; y: number } | null {
+  const c = analyzeConic(conic.coeffs);
+  if (!c || c.type === 'parabola' || c.center === null) return null;
+  if (c.a !== null && c.b !== null
+      && Math.abs(c.a - c.b) < 1e-12 * Math.max(c.a, c.b)) return null; // 圆无确定轴
+  const base = c.majorAngle ?? c.theta;
+  const angle = which === 'major' ? base : base + Math.PI / 2;
+  return dirAt(angle);
+}
+
+/** 半轴长：a（长/实）或 b（短/虚）；抛物线 null。 */
+function conicSemiAxis(conic: GeoConic, which: 'major' | 'minor'): number | null {
+  const c = analyzeConic(conic.coeffs);
+  if (!c || c.type === 'parabola') return null;
+  return which === 'major' ? c.a : c.b;
+}
+
+/** 轴直线（过中心；圆/抛物线 undefined）——MajorAxis / FirstAxis 与 MinorAxis / SecondAxis。 */
+export class AlgoConicSingleAxis extends AlgoElement {
+  private outputLine: GeoLine;
+  private conicArg: GeoConic;
+
+  constructor(kernel: IKernel, conic: GeoConic, private which: 'major' | 'minor') {
+    super(kernel);
+    this.conicArg = conic;
+    this.outputLine = new GeoLine(kernel, 0, 0, 0);
+    this.setInputOutput();
+  }
+
+  setInputOutput(): void {
+    this.input = [this.conicArg];
+    this.setOutput([this.outputLine]);
+  }
+
+  compute(): void {
+    this.outputLine.setUndefined();
+    if (!this.conicArg.isDefined()) return;
+    const c = analyzeConic(this.conicArg.coeffs);
+    const dir = conicAxisDir(this.conicArg, this.which);
+    if (!dir || !c?.center) return;
+    // 直线方向 dir → 法向 (dir.y, −dir.x)（与 AlgoConicAxis 同一约定）
+    this.outputLine.a = dir.y;
+    this.outputLine.b = -dir.x;
+    this.outputLine.c = -(dir.y * c.center.x - dir.x * c.center.y);
+    this.outputLine.setDefined();
+  }
+
+  getOutput(): GeoLine { return this.outputLine; }
+  getWhich(): 'major' | 'minor' { return this.which; }
+}
+
+/** 半轴长（SemiMajorAxisLength / SemiMinorAxisLength；抛物线 undefined）。 */
+export class AlgoConicSemiAxisLength extends AlgoElement {
+  private outputValue: GeoNumeric;
+  private conicArg: GeoConic;
+
+  constructor(kernel: IKernel, conic: GeoConic, private which: 'major' | 'minor') {
+    super(kernel);
+    this.conicArg = conic;
+    this.outputValue = new GeoNumeric(kernel, NaN);
+    this.setInputOutput();
+  }
+
+  setInputOutput(): void {
+    this.input = [this.conicArg];
+    this.setOutput([this.outputValue]);
+  }
+
+  compute(): void {
+    const value = this.conicArg.isDefined() ? conicSemiAxis(this.conicArg, this.which) : null;
+    if (value === null || !Number.isFinite(value)) { this.outputValue.setUndefined(); return; }
+    this.outputValue.setValue(value);
+    this.outputValue.setDefined();
+  }
+
+  getOutput(): GeoNumeric { return this.outputValue; }
+  getWhich(): 'major' | 'minor' { return this.which; }
+}
+
+/** 全轴长（FirstAxisLength = 2a；SecondAxisLength = 2b）。 */
+export class AlgoConicAxisLength extends AlgoElement {
+  private outputValue: GeoNumeric;
+  private conicArg: GeoConic;
+
+  constructor(kernel: IKernel, conic: GeoConic, private which: 'major' | 'minor') {
+    super(kernel);
+    this.conicArg = conic;
+    this.outputValue = new GeoNumeric(kernel, NaN);
+    this.setInputOutput();
+  }
+
+  setInputOutput(): void {
+    this.input = [this.conicArg];
+    this.setOutput([this.outputValue]);
+  }
+
+  compute(): void {
+    const semi = this.conicArg.isDefined() ? conicSemiAxis(this.conicArg, this.which) : null;
+    if (semi === null || !Number.isFinite(semi)) { this.outputValue.setUndefined(); return; }
+    this.outputValue.setValue(2 * semi);
+    this.outputValue.setDefined();
+  }
+
+  getOutput(): GeoNumeric { return this.outputValue; }
+  getWhich(): 'major' | 'minor' { return this.which; }
+}
+
+/** 线性离心率 c（半焦距）：椭圆 √(a²−b²)、双曲线 √(a²+b²)；圆 0；抛物线 undefined。 */
+export class AlgoConicLinearEccentricity extends AlgoElement {
+  private outputValue: GeoNumeric;
+  private conicArg: GeoConic;
+
+  constructor(kernel: IKernel, conic: GeoConic) {
+    super(kernel);
+    this.conicArg = conic;
+    this.outputValue = new GeoNumeric(kernel, NaN);
+    this.setInputOutput();
+  }
+
+  setInputOutput(): void {
+    this.input = [this.conicArg];
+    this.setOutput([this.outputValue]);
+  }
+
+  compute(): void {
+    this.outputValue.setUndefined();
+    if (!this.conicArg.isDefined()) return;
+    const c = analyzeConic(this.conicArg.coeffs);
+    if (!c || c.a === null || c.b === null || c.center === null) return;
+    const value = c.type === 'hyperbola'
+      ? Math.sqrt(c.a * c.a + c.b * c.b)
+      : Math.sqrt(Math.max(0, c.a * c.a - c.b * c.b));
+    if (!Number.isFinite(value)) return;
+    this.outputValue.setValue(value);
+    this.outputValue.setDefined();
+  }
+
+  getOutput(): GeoNumeric { return this.outputValue; }
+}
+
+/**
+ * Sector(circle, A, B)：圆上从 A 逆时针扫到 B 的扇形（官方 CmdCircleArcSector
+ * 的 Sector 名——与 Mini 既有 CircularSector(A,B,C) 三点扇形是两条不同命令）。
+ * A/B 不必精确在圆上（按圆心角投影）。
+ */
+export class AlgoCircleSector extends AlgoElement {
+  private outputPart: GeoConicPart;
+
+  constructor(kernel: IKernel, private circle: GeoConic, private a: GeoPoint, private b: GeoPoint) {
+    super(kernel);
+    this.outputPart = new GeoConicPart(kernel, { x: 0, y: 0 }, 1, 0, Math.PI / 2, CONIC_PART_SECTOR, true);
+    this.setInputOutput();
+  }
+
+  setInputOutput(): void {
+    this.input = [this.circle, this.a, this.b];
+    this.setOutput([this.outputPart]);
+  }
+
+  compute(): void {
+    if (!this.circle.isDefined() || !this.a.isDefined() || !this.b.isDefined()
+        || !this.circle.isCircle()) {
+      this.outputPart.setUndefined();
+      return;
+    }
+    const center = this.circle.getCenter();
+    const r = this.circle.getRadius();
+    if (!(r > 0)) { this.outputPart.setUndefined(); return; }
+    const twoPi = 2 * Math.PI;
+    const norm = (t: number) => ((t % twoPi) + twoPi) % twoPi;
+    const start = norm(Math.atan2(this.a.getY() - center.y, this.a.getX() - center.x));
+    const end = norm(Math.atan2(this.b.getY() - center.y, this.b.getX() - center.x));
+    (this.outputPart as unknown as { coeffs: number[] }).coeffs =
+      [1, 0, 1, -2 * center.x, -2 * center.y, center.x * center.x + center.y * center.y - r * r];
+    this.outputPart.setParameters(start, end, true);
+    this.outputPart.setDefined();
+  }
+
+  getOutput(): GeoConicPart { return this.outputPart; }
 }
