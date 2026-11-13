@@ -28,7 +28,7 @@ import { GeoPoint3D } from '../geo/GeoPoint3D';
 import { GeoLine3D } from '../geo/GeoLine3D';
 import { GeoPlane3D } from '../geo/GeoPlane3D';
 import { Coords4 } from '../core/Coords4';
-import { AlgoJoinPoints3D, AlgoMidpoint3D, AlgoPlaneThreePoints3D, AlgoIntersectLinePlane3D, AlgoDistancePointPlane3D, AlgoIntersectPlanes3D, AlgoIntersectLines3D } from '../algo/Algo3D';
+import { AlgoJoinPoints3D, AlgoMidpoint3D, AlgoPlaneThreePoints3D, AlgoIntersectLinePlane3D, AlgoDistancePointPlane3D, AlgoIntersectPlanes3D, AlgoIntersectLines3D, AlgoDistanceTwoPoints3D, AlgoSegmentLength3D, AlgoCircleCenterRadius3D, AlgoCircleCenterPoint3D, AlgoAnglePoints3D, AlgoMidpointSegment3D } from '../algo/Algo3D';
 import { GeoQuadric3D } from '../geo/GeoQuadric3D';
 import { GeoPolyhedron3D } from '../algo/AlgoPolyhedron3D';
 import { GeoSurface } from '../geo/GeoSurface';
@@ -291,7 +291,7 @@ const COMMAND_ARITY: Record<string, [number, number]> = {
   Element: [2, 2],
   First: [1, 2],
   Last: [1, 2],
-  Take: [3, 3],
+  Take: [2, 3],
   Sort: [1, 1],
   Unique: [1, 1],
   Reverse: [1, 1],
@@ -300,7 +300,7 @@ const COMMAND_ARITY: Record<string, [number, number]> = {
   Remove: [2, 2],
   RemoveUndefined: [1, 1],
   Flatten: [1, 1],
-  Join: [1, 2],
+  Join: [1, 16],
   Sum: [1, 1],
   Product: [1, 1],
   IndexOf: [2, 2],
@@ -406,6 +406,23 @@ function resolve3DObject(ctx: Finder3DCtx, label: string): [string, unknown] | n
   if (q) return ['quadric3D', q];
   const ph = ctx.findPolyhedron3D(label);
   if (ph) return ['polyhedron3D', ph];
+  return null;
+}
+
+/** 列表项解析：标签点/数值 → 构造内对象；数字字面量 → **入构造**的静态数值
+ *  （此前临时包装不入构造，constIndex=-1 落盘后算法连同下游被静默丢弃）。 */
+function resolveItemArg(ctx: CommandContext, kernel: Kernel, text: string): GeoElement | null {
+  const t = text.trim();
+  const found = ctx.findPoint(t) ?? ctx.findNumeric(t);
+  if (found) return found;
+  const v = Number(t);
+  if (Number.isFinite(v) && t !== '') return ctx.createStaticNumeric(v);
+  // 内联点元组 (x, y)
+  const tuple = /^\(([^,]+),([^,]+)\)$/.exec(t);
+  if (tuple) {
+    const p = ctx.makeFreePoint(ctx.evaluateNumber(tuple[1]), ctx.evaluateNumber(tuple[2]));
+    return p;
+  }
   return null;
 }
 
@@ -692,20 +709,32 @@ let redefineSeq = 0;
    */
   const makeNumericDepsAutoFree = (expression: ExpressionNode, allowedVariables: string[] = []): GeoNumeric[] => {
     const variables = collectVariables(expression);
-    return Array.from(variables).map(name => {
+    const pendingFree: string[] = [];
+    const resolved = Array.from(variables).map(name => {
       if (allowedVariables.includes(name)) return null;
       const existing = construction.getElements().find(
         el => el instanceof GeoNumeric && (el as GeoNumeric).label === name) as GeoNumeric | undefined;
       if (existing) return existing;
+      // 同名**非数值**对象已占用（点 B 等）：不静默新建数值（会造成同标签双对象）
+      const clashed = construction.getElements().find(
+        el => (el as unknown as { label?: string }).label === name);
+      if (clashed) throw new Error(`Unknown variable "${name}"`);
       if (/^[a-zA-Z]$/.test(name)) {
-        const free = new GeoNumeric(kernel, 1);
-        free.label = name;
-        existingLabels.add(name);
-        construction.addElement(free);
-        return free;
+        pendingFree.push(name);
+        return null;
       }
       throw new Error(`Unknown variable "${name}"`);
     }).filter((dependency): dependency is GeoNumeric => dependency !== null);
+    // 失败不残留：自由数在依赖收集**全部通过**后才创建（此前逐变量立即入构造，
+    // 后续步骤抛错会留下幽灵滑块并随存档序列化）
+    for (const name of pendingFree) {
+      const free = new GeoNumeric(kernel, 1);
+      free.label = name;
+      existingLabels.add(name);
+      construction.addElement(free);
+      resolved.push(free);
+    }
+    return resolved;
   };
 
   /** 找出表达式引用到的滑块依赖（允许列表如参数名除外）。 */
@@ -1020,25 +1049,43 @@ let redefineSeq = 0;
         children.push(found as GeoElement);
         continue;
       }
-      // 数字字面量：自有 GeoNumeric（不进构造、不占标签，constIndex=-1 序列化丢弃）
-      const asNumber = Number(label);
-      if (Number.isFinite(asNumber) && label !== '') {
-        const owned = new GeoNumeric(kernel, asNumber);
-        children.push(owned);
+      // 嵌套列表字面量 {{1,2},{3}}（此前直接抛 Unknown object）
+      if (/^\{.*\}$/.test(label)) {
+        children.push(buildListLiteral(label));
         continue;
       }
-      // 内联点元组 (x, y)：自有点
+      // 数字字面量：**入构造**的静态数值（临时包装 constIndex=-1 会让存档
+      // 丢算法——与 resolveItemArg 同一约定）
+      const asNumber = Number(label);
+      if (Number.isFinite(asNumber) && label !== '') {
+        children.push(staticNumeric(asNumber, existingLabels, construction));
+        continue;
+      }
+      // 内联点元组 (x, y)：物化为构造内自由点（makeFreePoint 走 createdElements undo 差分）
       const tuple = /^\(([^,]+),([^,]+)\)$/.exec(label);
       if (tuple) {
-        const x = evaluateNumber(tuple[1]);
-        const y = evaluateNumber(tuple[2]);
-        const owned = new GeoPoint(kernel, new GeoVec3D(x, y, 1));
-        children.push(owned);
+        children.push(makeFreePoint(evaluateNumber(tuple[1]), evaluateNumber(tuple[2])));
         continue;
       }
       throw new Error(`Unknown object "${label}" in list`);
     }
     return new GeoList(kernel, children);
+  };
+  /** 命令列表参数解析：按标签查构造，字面量则物化为并入构造的列表
+   *  （自有子元素走 childScalars/childPoints roundtrip）。impl 本地闭包版。 */
+  const resolveListCtx = (text: string): GeoList | undefined => {
+    const t = text.trim();
+    const found = construction.getElements().find(
+      el => el instanceof GeoList && (el as GeoList).label === t) as GeoList | undefined;
+    if (found) return found;
+    if (/^\{.*\}$/.test(t)) {
+      const list = buildListLiteral(t);
+      list.label = construction.getNextPointLabel(existingLabels);
+      existingLabels.add(list.label);
+      construction.addElement(list);
+      return list;
+    }
+    return undefined;
   };
 
   const definition = splitAtTopLevelEquals(raw);
@@ -1050,7 +1097,8 @@ let redefineSeq = 0;
       const list = buildListLiteral(rightText);
       list.label = leftText.trim();
       existingLabels.add(list.label);
-      construction.addElement(list);
+      // 不在此处 addElement：与其他定义路径同一契约（返回元素由调用方入构造），
+      // 此前自加 + 调用方再加 → 构造重复条目 → 序列化同一列表出现两次
       return [list];
     }
     const functionHeader = parseFunctionHeader(leftText);
@@ -1317,6 +1365,7 @@ let redefineSeq = 0;
         findPoint, findLine, findFunction, findNumeric, findConic, findPolygon, findCurve, findListArg,
         makeNumericDeps: makeNumericDependencies,
         makeFnDeps: makeFunctionDeps,
+        resolveList: resolveListCtx,
         createStaticNumeric: (value: number) => staticNumeric(value, existingLabels, construction),
         findPoint3D, findLine3D, findPlane3D, findQuadric3D, findPolyhedron3D, findSurface, findCircle3D, findPolyline3D, findConic3D, findNet3D,
       });
@@ -1378,6 +1427,8 @@ interface CommandContext {
   findListArg: (label: string) => GeoList | undefined;
   /** 表达式的数值依赖收集（列表命令族 Sequence 用；闭包在 impl 内）。 */
   makeNumericDeps: (expression: ExpressionNode, allowedVariables?: string[]) => GeoNumeric[];
+  /** 命令列表参数解析：按标签查构造，字面量物化为并入构造的列表。 */
+  resolveList: (text: string) => GeoList | undefined;
   /** 表达式的用户函数依赖（传递闭包）。 */
   makeFnDeps: (ast: ExpressionNode, selfLabel?: string) => GeoFunction[];
   /** 静态数值输出（数论命令）：建自由 GeoNumeric 入构造并分配标签。 */
@@ -1421,10 +1472,14 @@ const resolveObjectArg = (ctx: CommandContext, text: string): GeoElement => {
   throw new Error(`Unknown object "${label}"`);
 };
 
-/** 取函数在其驱动数字作用域下的求值闭包（`f(x) = a*x` 需要带上 `a`）。 */
+/** 取函数在其驱动数字作用域下的求值闭包（`f(x) = a*x` 需要带上 `a`）。
+ *  限域函数（AlgoFunctionRestricted）回溯到源函数的依赖——此前 scope 被清空，
+ *  Root/Extremum/Integral 对 Function(f,a,b) 全线 NaN。 */
 const functionEvaluator = (ctx: CommandContext, fn: GeoFunction): (x: number) => number => {
   const source = fn.parentAlgo;
-  const dependencies: GeoNumeric[] = source instanceof AlgoDependentFunction ? source.getDependencies() : [];
+  const dependencies: GeoNumeric[] = source && typeof (source as unknown as { getDependencies?: () => GeoNumeric[] }).getDependencies === 'function'
+    ? (source as unknown as { getDependencies: () => GeoNumeric[] }).getDependencies()
+    : [];
   return (x: number) => {
     const scope: Scope = new Map();
     dependencies.forEach((dependency, index) => scope.set(dependency.label || `dep${index}`, dependency.getValue()));
@@ -1741,6 +1796,20 @@ const dispatchCommand = (
         if (lineQuadric) {
           const line = lineQuadric[0] instanceof GeoLine3D ? lineQuadric[0] : lineQuadric[1] as GeoLine3D;
           const quadric = lineQuadric[0] instanceof GeoQuadric3D ? lineQuadric[0] : lineQuadric[1] as GeoQuadric3D;
+          // Intersect(l, q, n)：官方 CmdIntersect3D 的单点变体（此前第三参被静默忽略）
+          if (args.length === 3) {
+            const idx = Math.round(ctx.resolveNumber(args[2]));
+            if (!Number.isInteger(idx) || idx < 1) throw new Error('Intersect index must be a positive integer');
+            const probe = new AlgoIntersectLineQuadric3D(kernel, line, quadric);
+            probe.update();
+            const pts = probe.getGeoElements().filter(el => el instanceof GeoPoint3D) as GeoPoint3D[];
+            const chosen = pts[idx - 1];
+            if (!chosen || !chosen.isDefined()) throw new Error(`No intersection #${idx}`);
+            const out = new GeoPoint3D(kernel, chosen.getCoords3());
+            assignNextLabel(out, () => construction.getNextPointLabel(existingLabels));
+            construction.addElement(out);
+            return [out];
+          }
           const algo = new AlgoIntersectLineQuadric3D(kernel, line, quadric);
           assignOutputLabels(ctx, algo.getGeoElements());
           return [algo, ...algo.getGeoElements()];
@@ -3105,16 +3174,34 @@ const dispatchCommand = (
     case 'Line3D':
     case 'Segment3D': {
       const a = ctx.findPoint3D(args[0].trim());
-      const b = ctx.findPoint3D(args[1].trim());
-      if (!a || !b) throw new Error(`Line3D expects two 3D points`);
+      const b = ctx.findPoint3D(args[1]?.trim() ?? '');
+      // 定长形式 Segment(A, len)（官方 CmdSegment3D 继承 CmdSegment 的 (point, number)）
+      if (a && !b) {
+        const lenText = args[1].trim();
+        const len = ctx.findNumeric(lenText) ?? ctx.evaluateNumber(lenText);
+        const seg = new AlgoSegmentLength3D(kernel, a, len);
+        assignNextLabel(seg.getOutput(), () => construction.getNextLineLabel(existingLabels));
+        return [seg, seg.getOutput()];
+      }
+      if (!a || !b) throw new Error(`${name} expects two 3D points, or a point and a length`);
       const algo = new AlgoJoinPoints3D(kernel, a, b, name === 'Segment3D');
       assignNextLabel(algo.getOutput(), () => construction.getNextLineLabel(existingLabels));
       return [algo, algo.getOutput()];
     }
 
     case 'Midpoint3D': {
+      // 单参线段形式 Midpoint(seg3D)（官方 CmdMidpoint3D.java:57-64）——
+      // 此前 args[1] undefined 抛原生 TypeError
+      if (args.length === 1) {
+        const seg = ctx.findLine3D(args[0].trim());
+        if (seg) {
+          const mid = new AlgoMidpointSegment3D(kernel, seg);
+          assignNextLabel(mid.getOutput(), () => construction.getNextPointLabel(existingLabels));
+          return [mid, mid.getOutput()];
+        }
+      }
       const a = ctx.findPoint3D(args[0].trim());
-      const b = ctx.findPoint3D(args[1].trim());
+      const b = ctx.findPoint3D(args[1]?.trim() ?? '');
       if (!a || !b) throw new Error(`Midpoint3D expects two 3D points`);
       const algo = new AlgoMidpoint3D(kernel, a, b);
       assignNextLabel(algo.getOutput(), () => construction.getNextPointLabel(existingLabels));
@@ -3144,7 +3231,14 @@ const dispatchCommand = (
 
     case 'Distance3D': {
       const point = ctx.findPoint3D(args[0].trim());
+      const point2 = ctx.findPoint3D(args[1].trim());
       const plane = ctx.findPlane3D(args[1].trim());
+      // 点×点（官方 CmdDistance3D 回落 CmdDistance 的基础形式，此前抛错）
+      if (point && point2) {
+        const dist = new AlgoDistanceTwoPoints3D(kernel, point, point2);
+        assignNextLabel(dist.getOutput(), () => construction.getNextNumericLabel(existingLabels));
+        return [dist, dist.getOutput()];
+      }
       if (!point || !plane) throw new Error(`Distance3D expects a 3D point and a 3D plane`);
       const algo = new AlgoDistancePointPlane3D(kernel, point, plane);
       assignNextLabel(algo.getOutput(), () => construction.getNextNumericLabel(existingLabels));
@@ -3240,10 +3334,19 @@ const dispatchCommand = (
     }
 
     case 'Angle3D': {
+      // 3D 三点角（官方 CmdAngle3D 继承 CmdAngle 的三点形式，此前抛错）
+      if (args.length === 3) {
+        const [a3, b3, c3] = args.map(arg => ctx.findPoint3D(arg.trim()));
+        if (a3 && b3 && c3) {
+          const ang = new AlgoAnglePoints3D(kernel, a3, b3, c3);
+          assignNextLabel(ang.getOutput(), () => construction.getNextNumericLabel(existingLabels));
+          return [ang, ang.getOutput()];
+        }
+      }
       const l1 = ctx.findLine3D(args[0].trim());
-      const l2 = ctx.findLine3D(args[1].trim());
+      const l2 = ctx.findLine3D(args[1]?.trim() ?? '');
       const p1 = ctx.findPlane3D(args[0].trim());
-      const p2 = ctx.findPlane3D(args[1].trim());
+      const p2 = ctx.findPlane3D(args[1]?.trim() ?? '');
       const algo = l1 && l2
         ? new AlgoAngleLines3D(kernel, l1, l2)
         : p1 && p2
@@ -3298,6 +3401,22 @@ const dispatchCommand = (
     }
 
     case 'Circle3D': {
+      // 圆心+半径 Circle(A, r) 与 圆心+圆上点 Circle(A, B)（官方 CmdCircle3D 两参形；
+      // 此前两参 pts[2]=undefined 直接 TypeError 崩溃）
+      if (args.length === 2) {
+        const center = ctx.findPoint3D(args[0].trim());
+        if (!center) throw new Error(`Unknown 3D point "${args[0].trim()}"`);
+        const onPoint = ctx.findPoint3D(args[1].trim());
+        if (onPoint) {
+          const cp = new AlgoCircleCenterPoint3D(kernel, center, onPoint);
+          assignNextLabel(cp.getOutput(), () => construction.getNextLineLabel(existingLabels));
+          return [cp, cp.getOutput()];
+        }
+        const r = ctx.findNumeric(args[1].trim()) ?? ctx.evaluateNumber(args[1]);
+        const cr = new AlgoCircleCenterRadius3D(kernel, center, r);
+        assignNextLabel(cr.getOutput(), () => construction.getNextLineLabel(existingLabels));
+        return [cr, cr.getOutput()];
+      }
       const pts = args.map(a => {
         const p = ctx.findPoint3D(a.trim());
         if (!p) throw new Error(`Unknown 3D point "${a.trim()}"`);
@@ -3521,33 +3640,33 @@ const dispatchCommand = (
       return [algo, out];
     }
     case 'Element': {
-      const list = ctx.findListArg(args[0].trim());
+      const list = ctx.resolveList(args[0].trim());
       if (!list) throw new Error(`Element expects a list`);
       const index = ctx.findNumeric(args[1].trim()) ?? ctx.evaluateNumber(args[1]);
       const algo = new AlgoListElement(kernel, list, index);
       construction.addElement(algo);
+      algo.update(); // 先算：点列表在 compute 内惰性切换点输出（此前 addElement 的是切换前的数值占位）
       const out = algo.getPrimaryOutput();
       if (out) {
         assignNextLabel(out, () => construction.getNextPointLabel(existingLabels));
         construction.addElement(out);
       }
-      algo.update();
       return [algo, ...(out ? [out] : [])];
     }
     case 'First':
     case 'Last': {
-      const list = ctx.findListArg(args[0].trim());
+      const list = ctx.resolveList(args[0].trim());
       if (!list) throw new Error(`${name} expects a list`);
       // 单参 → 单元素输出（官方语义）；双参 → 子列表
       if (args.length === 1) {
-        const algo = new AlgoListElement(kernel, list, name === 'First' ? 1 : list.getChildren().length || 1);
+        const algo = new AlgoListElement(kernel, list, name === 'First' ? 1 : 'last');
         construction.addElement(algo);
+        algo.update();
         const out = algo.getPrimaryOutput();
         if (out) {
           assignNextLabel(out, () => construction.getNextPointLabel(existingLabels));
           construction.addElement(out);
         }
-        algo.update();
         return [algo, ...(out ? [out] : [])];
       }
       const n = ctx.findNumeric(args[1].trim()) ?? ctx.evaluateNumber(args[1]);
@@ -3557,10 +3676,11 @@ const dispatchCommand = (
       return [algo, outList];
     }
     case 'Take': {
-      const list = ctx.findListArg(args[0].trim());
+      // 官方：Take(list, start, end) 与两参 Take(list, n)（末 n 个）
+      const list = ctx.resolveList(args[0].trim());
       if (!list) throw new Error(`Take expects a list`);
       const a = ctx.findNumeric(args[1].trim()) ?? ctx.evaluateNumber(args[1]);
-      const b = ctx.findNumeric(args[2].trim()) ?? ctx.evaluateNumber(args[2]);
+      const b = args.length >= 3 ? (ctx.findNumeric(args[2].trim()) ?? ctx.evaluateNumber(args[2])) : null;
       const algo = new AlgoListTransform(kernel, 'take', list, null, null, a, b);
       const out = algo.getOutput();
       assignNextLabel(out, () => construction.getNextPointLabel(existingLabels));
@@ -3571,7 +3691,7 @@ const dispatchCommand = (
     case 'Reverse':
     case 'RemoveUndefined':
     case 'Flatten': {
-      const list = ctx.findListArg(args[0].trim());
+      const list = ctx.resolveList(args[0].trim());
       if (!list) throw new Error(`${name} expects a list`);
       const op = { Sort: 'sort', Unique: 'unique', Reverse: 'reverse', RemoveUndefined: 'removeUndefined', Flatten: 'flatten' }[name] as 'sort' | 'unique' | 'reverse' | 'removeUndefined' | 'flatten';
       const algo = new AlgoListTransform(kernel, op, list);
@@ -3582,22 +3702,28 @@ const dispatchCommand = (
     case 'Append':
     case 'Insert':
     case 'Remove': {
-      const list = ctx.findListArg(args[0].trim());
+      // 官方 Insert(object, list, pos)：第二参是列表
+      const list = ctx.resolveList(args[0].trim()) ?? (name === 'Insert' ? ctx.resolveList(args[1].trim()) : undefined);
       if (!list) throw new Error(`${name} expects a list`);
-      const resolveItem = (text: string) => {
-        const t = text.trim();
-        return ctx.findPoint(t) ?? ctx.findNumeric(t)
-          // 数字字面量项：临时包装（值拷贝进输出列表，不入构造）
-          ?? (() => { const v = Number(t); return Number.isFinite(v) && t !== '' ? new GeoNumeric(kernel, v) : undefined; })();
-      };
       if (name === 'Remove') {
+        // 官方 CmdRemove：Remove(list, 位置列表)；兼容 Remove(list, n) 单位置扩展
+        const posList = ctx.resolveList(args[1].trim());
+        if (posList) {
+          const algo = new AlgoListTransform(kernel, 'removePositions', list, posList);
+          const out = algo.getOutput();
+          assignNextLabel(out, () => construction.getNextPointLabel(existingLabels));
+          return [algo, out];
+        }
         const pos = ctx.findNumeric(args[1].trim()) ?? ctx.evaluateNumber(args[1]);
         const algo = new AlgoListTransform(kernel, 'remove', list, null, null, pos);
         const out = algo.getOutput();
         assignNextLabel(out, () => construction.getNextPointLabel(existingLabels));
         return [algo, out];
       }
-      const item = resolveItem(args[1]);
+      // 官方 CmdInsert 参数序 Insert(object, list, position)；兼容 Mini Insert(list, item, pos)
+      const insertOfficial = name === 'Insert' && !ctx.findListArg(args[0].trim()) && !!ctx.findListArg(args[1].trim());
+      const itemArg = insertOfficial ? args[0] : args[1];
+      const item = resolveItemArg(ctx, kernel, itemArg);
       if (!item) throw new Error(`${name} expects a numeric or point item`);
       if (name === 'Append') {
         const algo = new AlgoListTransform(kernel, 'append', list, null, item);
@@ -3605,22 +3731,33 @@ const dispatchCommand = (
         assignNextLabel(out, () => construction.getNextPointLabel(existingLabels));
         return [algo, out];
       }
-      // Insert(list, item, pos)
-      const pos = ctx.findNumeric(args[2].trim()) ?? ctx.evaluateNumber(args[2]);
+      // Insert(list, item, pos) / Insert(item, list, pos)
+      const posArg = insertOfficial ? args[2] : args[2];
+      const pos = ctx.findNumeric(posArg.trim()) ?? ctx.evaluateNumber(posArg);
       const algo = new AlgoListTransform(kernel, 'insert', list, null, item, pos);
       const out = algo.getOutput();
       assignNextLabel(out, () => construction.getNextPointLabel(existingLabels));
       return [algo, out];
     }
     case 'Join': {
-      // Join(listOfLists) 或 Join(l1, l2, ...)
-      const lists = args.map(a => ctx.findListArg(a.trim())).filter((l): l is NonNullable<typeof l> => !!l);
+      // Join(listOfLists) 或 Join(l1, l2, ..., ln)（官方支持任意个列表）
+      const lists = args.map(a => ctx.resolveList(a.trim())).filter((l): l is NonNullable<typeof l> => !!l);
       if (lists.length === 0) throw new Error(`Join expects lists`);
-      let algo;
+      let algo: AlgoListTransform;
       if (lists.length === 1) {
         algo = new AlgoListTransform(kernel, 'join', lists[0]);
       } else {
-        algo = new AlgoListTransform(kernel, 'join', lists[0], lists[1]);
+        // 两个以上列表：先物化一个临时合并列表（自有子元素）再 shallow 展开
+        const merged = new AlgoListTransform(kernel, 'join', lists[0], lists[1]);
+        void merged;
+        // 直接逐个 join 链式：join(join(l1,l2),l3)...
+        let acc = new AlgoListTransform(kernel, 'join', lists[0], lists[1]);
+        for (let i = 2; i < lists.length; i++) {
+          acc = new AlgoListTransform(kernel, 'join', acc.getOutput(), lists[i]);
+          acc.getOutput().label = construction.getNextPointLabel(existingLabels);
+          construction.addElement(acc);
+        }
+        algo = acc;
       }
       const out = algo.getOutput();
       assignNextLabel(out, () => construction.getNextPointLabel(existingLabels));
@@ -3628,19 +3765,25 @@ const dispatchCommand = (
     }
     case 'Sum':
     case 'Product': {
-      const list = ctx.findListArg(args[0].trim());
+      const list = ctx.resolveList(args[0].trim());
       if (!list) throw new Error(`${name} expects a list`);
       const algo = new AlgoListAggregate(kernel, name === 'Sum' ? 'sum' : 'product', list);
-      assignNextLabel(algo.getOutput(), () => construction.getNextNumericLabel(existingLabels));
-      return [algo, algo.getOutput()];
+      construction.addElement(algo);
+      algo.update(); // 先算：点列表求和在 compute 内惰性切换点输出
+      const out = algo.getPrimaryOutput();
+      assignNextLabel(out, () => construction.getNextNumericLabel(existingLabels));
+      existingLabels.add(out.label);
+      construction.addElement(out);
+      return [algo, out];
     }
     case 'IndexOf': {
-      const list = ctx.findListArg(args[0].trim());
+      // 官方 CmdIndexOf 参数序 IndexOf(object, list)；兼容 Mini 早期 IndexOf(list, object)
+      const listA = ctx.resolveList(args[0].trim());
+      const listB = ctx.resolveList(args[1].trim());
+      const list = listB ?? listA;
+      const itemArg = listB ? args[0] : args[1];
       if (!list) throw new Error(`IndexOf expects a list`);
-      const item = ctx.findPoint(args[1].trim())
-        ?? ctx.findNumeric(args[1].trim())
-        // 数字字面量：临时包装（sameChild 按值比较，不入构造）
-        ?? (() => { const v = Number(args[1]); return Number.isFinite(v) ? new GeoNumeric(kernel, v) : undefined; })();
+      const item = resolveItemArg(ctx, kernel, itemArg);
       if (!item) throw new Error(`IndexOf expects a numeric or point item`);
       const algo = new AlgoListAggregate(kernel, 'indexOf', list, item);
       assignNextLabel(algo.getOutput(), () => construction.getNextNumericLabel(existingLabels));
@@ -3657,13 +3800,18 @@ const dispatchCommand = (
     case 'Mod': {
       const a = ctx.evaluateNumber(args[0]);
       const b = ctx.evaluateNumber(args[1]);
-      const m = b === 0 ? NaN : a - b * Math.floor(a / b);
+      // 官方 AlgoMod.java:53-70：结果恒在 [0, |b|)（此前带符号 b，Mod(7,-3)=-2）
+      const absB = Math.abs(b);
+      const m = absB === 0 ? NaN : a - absB * Math.floor(a / absB);
       return [ctx.createStaticNumeric(m)];
     }
     case 'Div': {
       const a = ctx.evaluateNumber(args[0]);
       const b = ctx.evaluateNumber(args[1]);
-      return [ctx.createStaticNumeric(b === 0 ? NaN : Math.floor(a / b))];
+      // 官方 AlgoDiv.java:55-59：负除数用 ceil（此前恒 floor，Div(-7,-2)=3 官方=4）
+      const value = b === 0 ? NaN
+        : (b < 0 ? Math.ceil(a / b) : Math.floor(a / b));
+      return [ctx.createStaticNumeric(value)];
     }
     case 'IsPrime': {
       return [ctx.createStaticNumeric(isPrime(ctx.evaluateNumber(args[0])) ? 1 : 0)];
@@ -3759,7 +3907,7 @@ const dispatchCommand = (
     }
     case 'TableText': {
       const rows = args.map(a => {
-        const list = ctx.findListArg(a.trim());
+        const list = ctx.resolveList(a.trim());
         return list ? list.getChildren() : [];
       });
       if (rows.some(r => r.length === 0)) throw new Error(`TableText expects non-empty lists`);
@@ -3801,7 +3949,7 @@ const dispatchCommand = (
     case 'UnicodeToText':
     case 'UnicodeToLetter': {
       // 码点可来自列表或数字字面量
-      const list = ctx.findListArg(args[0].trim());
+      const list = ctx.resolveList(args[0].trim());
       let text: string;
       if (list) {
         text = unicodeToText(list.getChildren().map(c => (c instanceof GeoNumeric ? c.getValue() : NaN)));
@@ -3832,7 +3980,7 @@ const dispatchCommand = (
       if (name === 'Fit' && args.length === 2) {
         const points: GeoPoint[] = [];
         const firstArg = args[0].trim();
-        const srcList = ctx.findListArg(firstArg);
+        const srcList = ctx.resolveList(firstArg);
         if (srcList) {
           points.push(...srcList.getChildren().filter((c): c is GeoPoint => c instanceof GeoPoint));
         } else if (firstArg.startsWith('{') && firstArg.endsWith('}')) {
@@ -3851,7 +3999,7 @@ const dispatchCommand = (
       // 参数：点列表（或直接列点）；点全部入 input（移动点重新拟合）
       const points: GeoPoint[] = [];
       const firstArg = args[0].trim();
-      const srcList = ctx.findListArg(firstArg);
+      const srcList = ctx.resolveList(firstArg);
       if (srcList) {
         points.push(...srcList.getChildren().filter((c): c is GeoPoint => c instanceof GeoPoint));
       } else if (firstArg.startsWith('{') && firstArg.endsWith('}')) {
@@ -3926,7 +4074,7 @@ const dispatchCommand = (
     }
     case 'Barycenter': {
       // Barycenter(list[, weightsList]) | Barycenter(P1..Pn)
-      const first = ctx.findListArg(args[0].trim());
+      const first = ctx.resolveList(args[0].trim());
       const lit = /^\{(.*)\}$/.exec(args[0].trim());
       let points: GeoPoint[];
       if (first) {
@@ -3944,7 +4092,7 @@ const dispatchCommand = (
       if (points.length === 0) throw new Error(`Barycenter expects points`);
       let weights: GeoNumeric[] = [];
       if (args.length === 2) {
-        const wList = ctx.findListArg(args[1].trim());
+        const wList = ctx.resolveList(args[1].trim());
         if (wList) weights = wList.getChildren().filter((c): c is GeoNumeric => c instanceof GeoNumeric);
       }
       const algo = new AlgoBarycenter(kernel, points, weights);
@@ -4045,7 +4193,7 @@ const dispatchCommand = (
     case 'FitLogistic': {
       const points: GeoPoint[] = [];
       const firstArg = args[0].trim();
-      const srcList = ctx.findListArg(firstArg);
+      const srcList = ctx.resolveList(firstArg);
       if (srcList) {
         points.push(...srcList.getChildren().filter((c): c is GeoPoint => c instanceof GeoPoint));
       } else if (firstArg.startsWith('{') && firstArg.endsWith('}')) {
@@ -4067,7 +4215,7 @@ const dispatchCommand = (
       // Fit(list, f)：f 的自由参数自动发现，LM 数值最小二乘
       const points: GeoPoint[] = [];
       const firstArg = args[0].trim();
-      const srcList = ctx.findListArg(firstArg);
+      const srcList = ctx.resolveList(firstArg);
       if (srcList) {
         points.push(...srcList.getChildren().filter((c): c is GeoPoint => c instanceof GeoPoint));
       } else if (firstArg.startsWith('{') && firstArg.endsWith('}')) {

@@ -20,6 +20,8 @@ export interface View3DStateSnapshot {
 
 let accessor: (() => View3DStateSnapshot | null) | null = null;
 let pending: View3DStateSnapshot | null = null;
+let pendingVersion = 0;
+let lastConsumedVersion = 0;
 
 /** Geometry3DView 挂载时注册实时快照读取器，卸载时注销。 */
 export function registerView3D(a: (() => View3DStateSnapshot | null) | null): void {
@@ -34,10 +36,14 @@ export function snapshotView3D(): View3DStateSnapshot | null {
 /** 反序列化后存入待恢复快照，Geometry3DView 下次挂载时消费。 */
 export function offerView3D(s: View3DStateSnapshot): void {
   pending = s;
+  pendingVersion++;
 }
 
-/** Geometry3DView 挂载时取走待恢复快照（一次性）。 */
+/** Geometry3DView 取走**未消费过**的待恢复快照（版本去重：3D 已挂载时导入
+ *  触发 registration effect 重跑，此前会把过期快照再次消费、相机跳回旧文件）。 */
 export function consumeView3D(): View3DStateSnapshot | null {
+  if (pendingVersion === lastConsumedVersion) return null;
+  lastConsumedVersion = pendingVersion;
   const p = pending;
   pending = null;
   return p;

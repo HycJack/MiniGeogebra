@@ -13,6 +13,8 @@ import { GeoElement } from '../geo/GeoElement';
 import { GeoPoint } from '../geo/GeoPoint';
 import { GeoFunction } from '../geo/GeoFunction';
 import { GeoVec3D } from '../core/GeoVec3D';
+import { AlgoFunctionRestricted } from './AlgoFunctionRestricted';
+import { GeoNumeric } from '../geo/GeoNumeric';
 import { AlgoDependentFunction } from './AlgoDependentFunction';
 import { differentiate } from '../algebra/Differentiator';
 import { evaluate } from '../algebra/ExpressionEvaluator';
@@ -22,13 +24,22 @@ import { findExtrema, ExtremumHit } from '../algebra/Numerics';
 /** 为 f 构造 f′ 求值闭包：AST 只求导一次，每次调用带上驱动滑块的当前值。 */
 export function makeDerivativeEvaluator(fn: GeoFunction): (x: number) => number {
   const ast = differentiate(fn.expression, fn.variableName);
+  // 限域函数：回溯源函数依赖（此前 scope 恒空 → 导数 NaN），并继承定义域钳制
+  let restricted: { min: number; max: number } | null = null;
+  let deps: GeoNumeric[] = [];
+  let source = fn.parentAlgo;
+  if (source instanceof AlgoFunctionRestricted) {
+    deps = source.getDependencies();
+    restricted = { min: source.getSource().getDomainMin(), max: source.getSource().getDomainMax() };
+  } else if (source instanceof AlgoDependentFunction) {
+    deps = source.getDependencies();
+    restricted = { min: fn.getDomainMin(), max: fn.getDomainMax() };
+  }
   return (x: number) => {
+    if (x < (restricted?.min ?? Number.NEGATIVE_INFINITY) || x > (restricted?.max ?? Number.POSITIVE_INFINITY)) return NaN;
     const scope: Scope = new Map();
-    const source = fn.parentAlgo;
-    if (source instanceof AlgoDependentFunction) {
-      source.getDependencies().forEach((dependency, index) =>
-        scope.set(dependency.label || `dep${index}`, dependency.getValue()));
-    }
+    deps.forEach((dependency, index) =>
+      scope.set(dependency.label || `dep${index}`, dependency.getValue()));
     scope.set(fn.variableName, x);
     return evaluate(ast, scope);
   };

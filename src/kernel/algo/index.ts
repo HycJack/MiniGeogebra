@@ -58,7 +58,6 @@ export { AlgoIntegralDefinite, AlgoTaylorSeriesFunction, AlgoSlopeFunction } fro
 // ---- 列表操作族（L4/F2-4）----
 export {
   AlgoSequence, AlgoListElement, AlgoListAggregate, AlgoListTransform,
-  type GeoFunctionView,
 } from './AlgoListOps';
 
 // ---- 数论命令族（L4-A1）----

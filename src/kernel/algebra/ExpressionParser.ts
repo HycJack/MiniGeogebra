@@ -20,6 +20,7 @@ const BUILTIN_FUNCTIONS = new Set([
 const TRIG_FUNCTIONS = new Set(['sin', 'cos', 'tan', 'asin', 'acos', 'atan']);
 
 const PI_LITERAL = '(3.141592653589793)';
+const E_LITERAL = '(2.718281828459045)';
 const DEG_FACTOR = '3.141592653589793/180';
 
 // ---------------------------------------------------------------------------
@@ -102,6 +103,8 @@ export function preprocessInput(input: string): string {
   s = s.replace(/π/g, PI_LITERAL);
   // ASCII 'pi' 同为保留常量（官方词法；\b 防止命中 pin/alpha 等标识符内部）
   s = s.replace(/\bpi\b/g, PI_LITERAL);
+  // 欧拉常量 e（官方保留字；此前 f(x)=e^x 静默创建自由数 e=1 → 1^x 常量函数）
+  s = s.replace(/\be\b/g, E_LITERAL);
   s = replaceSqrt(s);
   return s;
 }

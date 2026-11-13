@@ -8,6 +8,7 @@ import { IKernel } from '../core/Interfaces';
 import { AlgoElement } from './AlgoElement';
 import { GeoFunction } from '../geo/GeoFunction';
 import { GeoNumeric } from '../geo/GeoNumeric';
+import { AlgoDependentFunction } from './AlgoDependentFunction';
 
 export class AlgoFunctionRestricted extends AlgoElement {
   private outputFunction: GeoFunction;
@@ -47,4 +48,13 @@ export class AlgoFunctionRestricted extends AlgoElement {
   getOutput(): GeoFunction { return this.outputFunction; }
   getLo(): GeoNumeric | number { return this.lo; }
   getHi(): GeoNumeric | number { return this.hi; }
+  /** 源函数（AlgoDependentFunction）的数值依赖——Root/Integral/求导等
+   *  命令侧求值闭包需要它重建 scope（此前限域函数 scope 被清空 → 全线 NaN）。 */
+  getSource(): GeoFunction { return this.source; }
+  /** 与 AlgoDependentFunction 同形：求值闭包/导数链按鸭子类型取依赖。 */
+  getDependencies(): GeoNumeric[] {
+    return this.source.parentAlgo instanceof AlgoDependentFunction
+      ? this.source.parentAlgo.getDependencies()
+      : [];
+  }
 }

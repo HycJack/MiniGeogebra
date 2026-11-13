@@ -668,7 +668,7 @@ const handleExport = useCallback(() => {
     else if (cmd.type === 'move') restoreState(cmd.oldState);
     else if (cmd.type === 'numeric') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el instanceof GeoNumeric) el.setValue(cmd.oldValue); }
     else if (cmd.type === 'boolean') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el instanceof GeoBoolean) el.setValue(cmd.oldValue); }
-    else if (cmd.type === 'rename') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el) el.label = cmd.oldLabel; rewriteLinkedLabels(cmd.newLabel, cmd.oldLabel); rewriteExpressions(cmd.newLabel, cmd.oldLabel); if (cmd.bump) { const b = kernel.getConstruction().getElementById(cmd.bump.element.id); if (b) b.label = cmd.bump.oldLabel; rewriteExpressions(cmd.bump.newLabel, cmd.bump.oldLabel); } }
+    else if (cmd.type === 'rename') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el) el.label = cmd.oldLabel; rewriteLinkedLabels(cmd.newLabel, cmd.oldLabel); rewriteExpressions(cmd.newLabel, cmd.oldLabel); if (cmd.bump) { const b = kernel.getConstruction().getElementById(cmd.bump.element.id); if (b) b.label = cmd.bump.oldLabel; rewriteLinkedLabels(cmd.bump.newLabel, cmd.bump.oldLabel); rewriteExpressions(cmd.bump.newLabel, cmd.bump.oldLabel); } }
     else if (cmd.type === 'style') applyStyleDirectly(cmd.element, cmd.before);
     else if (cmd.type === 'uiMove') setUIElementsTracked(prev => prev.map(u => u.id === cmd.id ? { ...u, x: cmd.from.x, y: cmd.from.y } : u));
     kernel.getConstruction().updateAllAlgorithms(); setRenderRev(r => r + 1);
@@ -684,7 +684,9 @@ const handleExport = useCallback(() => {
     else if (cmd.type === 'move') restoreState(cmd.newState);
     else if (cmd.type === 'numeric') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el instanceof GeoNumeric) el.setValue(cmd.newValue); }
     else if (cmd.type === 'boolean') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el instanceof GeoBoolean) el.setValue(cmd.newValue); }
-    else if (cmd.type === 'rename') { const el = kernel.getConstruction().getElementById(cmd.element.id); if (el) el.label = cmd.newLabel; rewriteLinkedLabels(cmd.oldLabel, cmd.newLabel); rewriteExpressions(cmd.oldLabel, cmd.newLabel); if (cmd.bump) { const b = kernel.getConstruction().getElementById(cmd.bump.element.id); if (b) b.label = cmd.bump.newLabel; rewriteExpressions(cmd.bump.oldLabel, cmd.bump.newLabel); } }
+    else if (cmd.type === 'rename') { // 重做按正向操作的逆序回放 bump：先让位（A→A_1）再抢标签（B→A）——
+      // 顺序反了会把刚指向新主人的 'A' token 一并改写到旧占用者
+      if (cmd.bump) { const b = kernel.getConstruction().getElementById(cmd.bump.element.id); if (b) b.label = cmd.bump.newLabel; rewriteLinkedLabels(cmd.bump.oldLabel, cmd.bump.newLabel); rewriteExpressions(cmd.bump.oldLabel, cmd.bump.newLabel); } const el = kernel.getConstruction().getElementById(cmd.element.id); if (el) el.label = cmd.newLabel; rewriteLinkedLabels(cmd.oldLabel, cmd.newLabel); rewriteExpressions(cmd.oldLabel, cmd.newLabel); }
     else if (cmd.type === 'style') applyStyleDirectly(cmd.element, cmd.after);
     else if (cmd.type === 'uiMove') setUIElementsTracked(prev => prev.map(u => u.id === cmd.id ? { ...u, x: cmd.to.x, y: cmd.to.y } : u));
     kernel.getConstruction().updateAllAlgorithms(); setRenderRev(r => r + 1);
@@ -916,7 +918,10 @@ const handleExport = useCallback(() => {
           gridSnap = true;
           gridRadius = 0.125 * gridStep;
         }
-        const snapped = applySnap(x, y, snapRadius, gridSnap, snapToPoint, kernel.getConstruction().getElements().filter(el => el instanceof GeoPoint) as GeoPoint[], gridStep, gridRadius);
+        // 排除被拖点：起手必在自身 12px 热区内，不自排会吸到自身位置产生抖动
+        const snapPoints = kernel.getConstruction().getElements()
+          .filter(el => el instanceof GeoPoint && el !== draggedElement) as GeoPoint[];
+        const snapped = applySnap(x, y, snapRadius, gridSnap, snapToPoint, snapPoints, gridStep, gridRadius);
         x = snapped.x; y = snapped.y;
       }
     }
@@ -1130,6 +1135,14 @@ const handleExport = useCallback(() => {
         }
         let tx = x + dragGrabOffsetRef.current.x;
         let ty = y + dragGrabOffsetRef.current.y;
+        // sticky 吸附对"含抓取偏移的目标位"判定（此前对鼠标位判定，落点差一个
+        // 抓取偏移，拖点"贴"不到另一个点上）；格点吸附仍以鼠标位为准（官方同构）
+        if (!multiDragRef.current && !e.shiftKey) {
+          const others0 = kernel.getConstruction().getElements()
+            .filter(el => el instanceof GeoPoint && el !== draggedElement && el.isIndependent()) as GeoPoint[];
+          const sticky = applySnap(tx, ty, SNAP_POINT_RADIUS / coord.xScale, false, true, others0);
+          if (sticky.type === 'point') { tx = sticky.x; ty = sticky.y; dragGrabOffsetRef.current = null; }
+        }
         const ref = multiDragRef.current;
         if (e.shiftKey && ref) {
           // E1-4：Shift 锁主轴（以拖拽起点为基准，位移大者胜出）

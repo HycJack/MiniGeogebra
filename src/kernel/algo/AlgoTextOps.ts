@@ -29,9 +29,11 @@ export function fractionText(value: number): string {
   let curP = Math.floor(x);
   let curQ = 1;
   let best = { p: curP, q: 1 };
-  for (let i = 0; i < 40; i++) {
-    // 当前收敛子达标 → 采用
-    if (Math.abs(target - curP / curQ) < 1e-12 * Math.max(1, target)) {
+  // 官方精度 1e-8（Kernel.STANDARD_PRECISION，AlgoFractionText.decimalToFraction）：
+  // 分母上限放宽到 1e9 防失控——此前 1e-6 相对精度 + 1e6 分母把极小值打成 "0/1"
+  const tol = 1e-8 * Math.max(1, target);
+  for (let i = 0; i < 60; i++) {
+    if (Math.abs(target - curP / curQ) < tol) {
       best = { p: curP, q: curQ };
       break;
     }
@@ -41,12 +43,12 @@ export function fractionText(value: number): string {
     const term = Math.floor(x);
     const nextP = term * curP + prevP;
     const nextQ = term * curQ + prevQ;
-    if (nextQ > 1e6) break;  // 分母上限：保留上一收敛子
+    if (nextQ > 1e9) break;
     prevP = curP; prevQ = curQ;
     curP = nextP; curQ = nextQ;
     best = { p: curP, q: curQ };
   }
-  if (best.q === 0) return sign + String(value);
+  if (best.q === 0 || (best.p === 0 && target > 1e-12)) return sign + String(value);
   return `${sign}${best.p}/${best.q}`;
 }
 
@@ -123,9 +125,10 @@ export function formulaText(obj: GeoElement): string {
 export function tableText(rows: GeoElement[][]): string {
   // 单元格：有标签用标签；自有数值/点（字面量子元素）用值/坐标
   const cell = (el: GeoElement): string => {
-    if (el.label) return el.label;
-    if (el instanceof GeoNumeric) return String(el.getValue());
+    // 官方显示**值**：数值/点直接取值；其余（函数等）用标签或代数描述
+    if (el instanceof GeoNumeric && Number.isFinite(el.getValue())) return String(el.getValue());
     if (el instanceof GeoPoint) return `(${el.getX()}, ${el.getY()})`;
+    if (el.label) return el.label;
     return el.getAlgebraDescription();
   };
   return rows.map(row => row.map(cell).join(' & ')).join(' \\\\ ');
@@ -148,7 +151,7 @@ export function textToUnicode(text: string): number[] {
 export function unicodeToText(input: number | number[]): string {
   const codes = Array.isArray(input) ? input : [input];
   return codes
-    .filter(c => Number.isFinite(c) && c > 0)
+    .filter(c => Number.isFinite(c) && c > 0 && c <= 0x10FFFF)
     .map(c => String.fromCodePoint(Math.round(c)))
     .join('');
 }

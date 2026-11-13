@@ -71,16 +71,24 @@ function levenbergMarquardt(
     }
     // (JᵀJ + λ·diag)·Δ = −Jᵀr
     const jtj: number[][] = Array.from({ length: k }, () => new Array(k).fill(0));
+    const diag: number[] = new Array(k).fill(0);
     const jtr: number[] = new Array(k).fill(0);
     for (let a = 0; a < k; a++) {
       for (let b = 0; b < k; b++) {
         let sum = 0;
         for (let i = 0; i < m; i++) sum += J[i][a] * J[i][b];
-        jtj[a][b] = sum + (a === b ? lambda * Math.max(1, Math.abs(jtj[a][b])) * 0 + lambda : 0);
+        jtj[a][b] = sum;
       }
+      diag[a] = jtj[a][a];
       let sum2 = 0;
       for (let i = 0; i < m; i++) sum2 += J[i][a] * r[i];
       jtr[a] = -sum2;
+    }
+    // 标准 Marquardt 阻尼 λ·diag(JᵀJ)（量纲自适应；对角为零时退回 λ·I）——
+    // 此前死代码 `lambda * Math.max(...) * 0` 实际是 Levenberg 原始 λ·I，
+    // 参数量纲差异大时（FitSin a~1 / b~100）各方向阻尼失衡
+    for (let a = 0; a < k; a++) {
+      jtj[a][a] += lambda * (diag[a] > 1e-12 ? diag[a] : 1);
     }
     const delta = solveLinear(jtj, jtr);
     if (!delta || delta.some(d => !Number.isFinite(d))) {
@@ -100,7 +108,7 @@ function levenbergMarquardt(
       if (improvement < 1e-14 * Math.max(1, current)) break; // 收敛
     } else {
       lambda *= 10;
-      if (lambda > 1e10) break; // 停在当前最优
+      if (lambda > 1e10) return null; // 不收敛：不把劣解当结果输出
     }
   }
   return theta;
@@ -164,7 +172,13 @@ export class AlgoFitGeneral extends AlgoElement {
       params.forEach((p, i) => scope.set(p, theta[i]));
       return evaluate(this.model.expression, scope, userFns ?? undefined);
     };
-    const theta = levenbergMarquardt(samples, model, params.map(() => 1));
+    // 官方 FitRealFunction：自由参数（滑块）当前值作 LM 初值——拖动滑块重跑拟合
+    const scopeMap = this.model.getScopeShallow();
+    const theta0 = params.map(p => {
+      const v = scopeMap.get(p);
+      return v !== undefined && Number.isFinite(v) && v !== 0 ? v : 1;
+    });
+    const theta = levenbergMarquardt(samples, model, theta0);
     if (!theta) { this.outputFunction.setUndefined(); return; }
     const subst = new Map(params.map((p, i) => [p, theta[i]]));
     const ast = substituteNumbers(this.model.expression, subst);
@@ -198,6 +212,7 @@ export class AlgoFitSin extends AlgoElement {
       .map(p => ({ x: p.getX(), y: p.getY() }))
       .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
     if (samples.length < 4) { this.outputFunction.setUndefined(); return; }
+    samples.sort((p, q) => p.x - q.x); // 周期图/跨度假定按 x 升序（乱序列表此前直接 undefined）
 
     // 初值：d = 均值、a = 振幅、b = 周期图峰值频率、c = 相位
     let sy = 0;
@@ -215,14 +230,16 @@ export class AlgoFitSin extends AlgoElement {
     const bMax = Math.max(Math.PI, (Math.PI * samples.length) / Math.max(span, 1e-9));
     for (let i = 1; i <= steps; i++) {
       const b = (bMax * i) / steps;
-      let re = 0, im = 0;
+      // a·sin(bx+c) = a·sin c·cos bx + a·cos c·sin bx：拟合 cos/sin 系数
+      // (C, S) = (Σz·cos bx, Σz·sin bx)，则 a·cos c = C·K、a·sin c = S·K → c = atan2(S, C)
+      let cc = 0, ss = 0;
       for (const s of samples) {
         const z = s.y - d0;
-        re += z * Math.cos(b * s.x);
-        im += -z * Math.sin(b * s.x);
+        cc += z * Math.cos(b * s.x);
+        ss += z * Math.sin(b * s.x);
       }
-      const mag = Math.hypot(re, im);
-      if (mag > bestMag) { bestMag = mag; bestB = b; bestPhase = Math.atan2(im, re); }
+      const mag = Math.hypot(cc, ss);
+      if (mag > bestMag) { bestMag = mag; bestB = b; bestPhase = Math.atan2(ss, cc); }
     }
     const model: Model = (t, x) => t[0] * Math.sin(t[1] * x + t[2]) + t[3];
     const theta = levenbergMarquardt(samples, model, [a0, bestB, bestPhase, d0]);
@@ -263,6 +280,7 @@ export class AlgoFitLogistic extends AlgoElement {
       .map(p => ({ x: p.getX(), y: p.getY() }))
       .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
     if (samples.length < 3) { this.outputFunction.setUndefined(); return; }
+    samples.sort((p, q) => p.x - q.x);
 
     const yValues = samples.map(s => s.y);
     const a0 = Math.max(...yValues) * 1.05;
@@ -271,8 +289,9 @@ export class AlgoFitLogistic extends AlgoElement {
       ? Math.abs(a0 / first.y - 1) : 1;
     // k：用首末两点斜率启发
     const last = samples[samples.length - 1];
+    // 由 a/y − 1 = b·e^(−kx) → k = −Δln(a/y−1)/Δx（此前少一个负号，初值形状反向）
     const k0 = Math.abs(last.x - first.x) > 1e-12
-      ? Math.log(Math.max(1e-9, Math.abs(a0 / Math.max(1e-9, Math.abs(last.y)) - 1)) / Math.max(1e-9, b0)) / (last.x - first.x)
+      ? -Math.log(Math.max(1e-9, Math.abs(a0 / Math.max(1e-9, Math.abs(last.y)) - 1)) / Math.max(1e-9, b0)) / (last.x - first.x)
       : 1;
     const model: Model = (t, x) => t[0] / (1 + t[1] * Math.exp(-t[2] * x));
     const theta = levenbergMarquardt(samples, model, [a0, Math.max(1e-9, b0), Number.isFinite(k0) ? k0 : 1]);

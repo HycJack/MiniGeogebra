@@ -103,14 +103,16 @@ describe('L4-A7 文本命令族（官方 AlgoFractionText / AlgoTableText / ...�
   it('FractionText：连分数有理逼近（纯函数）', () => {
     expect(fractionText(0.5)).toBe('1/2');
     expect(fractionText(1.75)).toBe('7/4');
+    expect(fractionText(1e-7)).toBe('1/10000000'); // 官方 1e-8 精度（此前 '0/1'）
+    expect(fractionText(-1e-7)).toBe('-1/10000000');
     expect(fractionText(3)).toBe('3');
     {
       // √2：分母上限内的最佳有理逼近（不硬编码收敛子，验证逼近精度）
       const f = fractionText(Math.SQRT2);
       const [pStr, qStr] = f.split('/');
       expect(qStr).toBeDefined();
-      expect(Math.abs(Number(pStr) / Number(qStr) - Math.SQRT2)).toBeLessThan(1e-11);
-      expect(Number(qStr)).toBeLessThanOrEqual(1e6);
+      expect(Math.abs(Number(pStr) / Number(qStr) - Math.SQRT2)).toBeLessThan(1.5e-8); // 官方精度 1e-8（相对量）
+      expect(Number(qStr)).toBeLessThanOrEqual(1e9);
     }
   });
 

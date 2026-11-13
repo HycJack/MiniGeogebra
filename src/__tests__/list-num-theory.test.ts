@@ -148,6 +148,9 @@ describe('L4/F2-4 列表命令族（官方 AlgoSequence/AlgoElementList/...）',
     expect(findEl(k, GeoNumeric, 's').getValue()).toBe(10);
     expect(findEl(k, GeoNumeric, 'p').getValue()).toBe(24);
     expect(findEl(k, GeoNumeric, 'ix').getValue()).toBe(3);
+    addInput(k, 'miss = IndexOf(lst, 99)');
+    // 官方 AlgoIndexOf：未找到保持 undefined（此前输出 0）
+    expect(findEl(k, GeoNumeric, 'miss').isDefined()).toBe(false);
     expect(numValues(findEl(k, GeoList, 'fl'))).toEqual([1, 2, 3, 4, 1, 2, 3, 4]);
   });
 

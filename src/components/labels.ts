@@ -124,13 +124,22 @@ export function getLabelAnchor(el: GeoElement, scale: number, bounds?: LabelBoun
     const len2 = el.a * el.a + el.b * el.b;
     if (len2 < 1e-12) return null;
     const o = offset(el, 10);
-    // 有视口：取可见弦的中点（随视图平移/缩放跟随，绘制与命中传同一 bounds 保持一致）
+    // 有视口：标签钉在直线离开视口的屏幕边缘并粘滞（官方 DrawLine.setLabelPosition，
+    // DrawLine.java:364-418）——取可见弦端点中与上一次锚点 1-范数距离最小者，
+    // 平移视图时标签位置基本稳定；加屏幕内钳制（官方 ensureLabelDrawsOnScreen）。
     if (bounds) {
       const chord = lineWorldEndpoints(el, bounds);
       if (!chord) return null;
+      const prev = lineLabelAnchorCache.get(el);
+      const anchor = prev
+        ? (Math.abs(chord.p0.x - prev.x) + Math.abs(chord.p0.y - prev.y)
+          <= Math.abs(chord.p1.x - prev.x) + Math.abs(chord.p1.y - prev.y) ? chord.p0 : chord.p1)
+        : { x: (chord.p0.x + chord.p1.x) / 2, y: (chord.p0.y + chord.p1.y) / 2 };
+      lineLabelAnchorCache.set(el, anchor);
+      const margin = 8 / scale;
       return {
-        x: (chord.p0.x + chord.p1.x) / 2 + o.dx,
-        y: (chord.p0.y + chord.p1.y) / 2 + o.dy,
+        x: Math.min(Math.max(anchor.x + o.dx, bounds.minX + margin), bounds.maxX - margin),
+        y: Math.min(Math.max(anchor.y + o.dy, bounds.minY + margin), bounds.maxY - margin),
         align: 'left', baseline: 'bottom',
       };
     }

@@ -51,6 +51,30 @@ export class ArcLengthTable {
     void prevT;
   }
 
+  /** 参数 → 弧长（正查线性插值；空洞之间返回洞前累积值）。 */
+  arcLengthAt(t: number): number | null {
+    if (this.ts.length < 2) return null;
+    const tt = ((t - this.ts[0]) % (this.ts[this.ts.length - 1] - this.ts[0]) + (this.ts[this.ts.length - 1] - this.ts[0]))
+      % (this.ts[this.ts.length - 1] - this.ts[0]) + this.ts[0];
+    // 二分找 ts[i-1] <= tt <= ts[i]
+    let lo = 0;
+    let hi = this.ts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.ts[mid] < tt) lo = mid + 1;
+      else hi = mid;
+    }
+    const i = Math.max(1, lo);
+    const t0 = this.ts[i - 1];
+    const t1 = this.ts[i];
+    if (t1 <= t0) return this.ss[i - 1];
+    const f = (tt - t0) / (t1 - t0);
+    // 跨空洞（参数间距异常大）不插值，取洞前值
+    const domainStepA = (this.ts[this.ts.length - 1] - this.ts[0]) / Math.max(1, this.ts.length - 1);
+    if (Math.abs(t1 - t0) > domainStepA * 4) return this.ss[i - 1];
+    return this.ss[i - 1] + f * (this.ss[i] - this.ss[i - 1]);
+  }
+
   /** 弧长 → 参数（有效段内二分反查；空洞两侧不跨段插值）。 */
   tAtArcLength(s: number): number | null {
     if (this.ts.length < 2 || this.total <= 0) return null;

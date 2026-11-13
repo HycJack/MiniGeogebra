@@ -45,15 +45,8 @@ export function applySnap(
   const gridEps = gridRadius ?? radius;
   let best: { x: number; y: number; dist: number; type?: 'grid' | 'point'; point?: GeoPoint } | null = null;
 
-  if (snapToGrid && gridStep !== undefined) {
-    const gx = Math.round(x / gridStep) * gridStep;
-    const gy = Math.round(y / gridStep) * gridStep;
-    const d = Math.hypot(gx - x, gy - y);
-    if (d < gridEps && (!best || d < best.dist)) {
-      best = { x: gx, y: gy, dist: d, type: 'grid' };
-    }
-  }
-
+  // 官方优先级（EuclidianController.java:4111-4145）：sticky 点**先于**网格——
+  // 点热区内有点即吸点，网格只兜底；此前纯比距离会让格交点抢走更近的点
   if (snapToPoint && points.length > 0) {
     // 取**最近**点：此前命中第一个优于当前 best 的点就 break，
     // 吸附结果取决于构造顺序（A 距 3 先出现、B 距 1 后出现时会吸到 A）。
@@ -65,6 +58,15 @@ export function applySnap(
       if (d < radius && d < (best?.dist ?? Infinity)) {
         best = { x: p.getX(), y: p.getY(), dist: d, type: 'point', point: p };
       }
+    }
+  }
+
+  if (snapToGrid && gridStep !== undefined && !best) {
+    const gx = Math.round(x / gridStep) * gridStep;
+    const gy = Math.round(y / gridStep) * gridStep;
+    const d = Math.hypot(gx - x, gy - y);
+    if (d < gridEps) {
+      best = { x: gx, y: gy, dist: d, type: 'grid' };
     }
   }
 

@@ -74,6 +74,10 @@ export class AlgoDerivative extends AlgoElement implements FunctionDefinition {
       scope.set(dependency.label || `dep${index}`, dependency.getValue());
     });
     this.outputFunction.setScope(scope);
+    // 限域源函数：导数继承定义域（此前域外有定义，官方 If 语义域外 undefined）
+    if (this.sourceFn.getDomainMin() !== Number.NEGATIVE_INFINITY || this.sourceFn.getDomainMax() !== Number.POSITIVE_INFINITY) {
+      this.outputFunction.setDomain(this.sourceFn.getDomainMin(), this.sourceFn.getDomainMax());
+    }
     this.outputFunction.setDefined();
   }
 

@@ -30,12 +30,21 @@ const mean = (pts: { x: number; y: number }[]): { x: number; y: number } => {
 const dist = (a: { x: number; y: number }, b: { x: number; y: number }): number =>
   Math.hypot(a.x - b.x, a.y - b.y);
 
-/** 仿比 AffineRatio(P, A, B)：P = A + λ(B−A) 的 λ（有符号）。 */
-export function affineRatio(P: { x: number; y: number }, A: { x: number; y: number }, B: { x: number; y: number }): number {
+/** 仿比 AffineRatio(A, B, C)：C = A + λ(B−A) 的 λ（有符号）——官方
+ *  AlgoAffineRatio.java/GeoPoint.affineRatio 的参数序（第三点用前两点表出）。
+ *  此前 Mini 实现 (P−A)/(B−A) 参数序与官方相反，同输入结果完全不同。 */
+export function affineRatio(A: { x: number; y: number }, B: { x: number; y: number }, C: { x: number; y: number }): number {
   const abx = B.x - A.x, aby = B.y - A.y;
   const denom = abx * abx + aby * aby;
   if (denom < 1e-300) return NaN;
-  return ((P.x - A.x) * abx + (P.y - A.y) * aby) / denom;
+  return ((C.x - A.x) * abx + (C.y - A.y) * aby) / denom;
+}
+
+/** 共线判定（相对容差）：AffineRatio/CrossRatio 对非共线输入官方置 undefined。 */
+function collinear3(A: { x: number; y: number }, B: { x: number; y: number }, C: { x: number; y: number }): boolean {
+  const cross = (B.x - A.x) * (C.y - A.y) - (C.x - A.x) * (B.y - A.y);
+  const scale = Math.hypot(B.x - A.x, B.y - A.y) * Math.hypot(C.x - A.x, C.y - A.y);
+  return Math.abs(cross) < 1e-9 * Math.max(scale, 1e-30);
 }
 
 /** 交比 CrossRatio(A,B,C,D) = (AC/BC)/(AD/BD)（有符号线段比）。 */
@@ -85,11 +94,12 @@ export class AlgoAffineRatio extends AlgoElement {
 
   compute(): void {
     if (![this.p, this.a, this.b].every(g => g.isDefined())) { this.outputValue.setUndefined(); return; }
-    const value = affineRatio(
-      { x: this.p.getX(), y: this.p.getY() },
-      { x: this.a.getX(), y: this.a.getY() },
-      { x: this.b.getX(), y: this.b.getY() },
-    );
+    const S = { x: this.p.getX(), y: this.p.getY() };
+    const M = { x: this.a.getX(), y: this.a.getY() };
+    const E = { x: this.b.getX(), y: this.b.getY() };
+    // 官方共线检查：非共线 undefined（此前返回投影值）
+    if (!collinear3(S, M, E)) { this.outputValue.setUndefined(); return; }
+    const value = affineRatio(S, M, E);
     if (!Number.isFinite(value)) { this.outputValue.setUndefined(); return; }
     this.outputValue.setValue(value);
     this.outputValue.setDefined();
@@ -115,12 +125,13 @@ export class AlgoCrossRatio extends AlgoElement {
 
   compute(): void {
     if (![this.a, this.b, this.c, this.d].every(g => g.isDefined())) { this.outputValue.setUndefined(); return; }
-    const value = crossRatio(
-      { x: this.a.getX(), y: this.a.getY() },
-      { x: this.b.getX(), y: this.b.getY() },
-      { x: this.c.getX(), y: this.c.getY() },
-      { x: this.d.getX(), y: this.d.getY() },
-    );
+    const pA = { x: this.a.getX(), y: this.a.getY() };
+    const pB = { x: this.b.getX(), y: this.b.getY() };
+    const pC = { x: this.c.getX(), y: this.c.getY() };
+    const pD = { x: this.d.getX(), y: this.d.getY() };
+    // 官方共线检查（AlgoCrossRatio.java:78-93）
+    if (!collinear3(pA, pB, pC) || !collinear3(pA, pB, pD)) { this.outputValue.setUndefined(); return; }
+    const value = crossRatio(pA, pB, pC, pD);
     if (!Number.isFinite(value)) { this.outputValue.setUndefined(); return; }
     this.outputValue.setValue(value);
     this.outputValue.setDefined();
@@ -154,9 +165,12 @@ export class AlgoBarycenter extends AlgoElement {
       return;
     }
     let sx = 0, sy = 0, sw = 0;
+    // 官方 AlgoBarycenter.java:101-119：权重可为负、长度不符置 undefined
+    //（此前 |w| 且不匹配静默退化为均匀权重）
     const useWeights = this.weights.length === this.points.length;
+    if (this.weights.length > 0 && !useWeights) { this.outputPoint.setUndefined(); return; }
     for (let i = 0; i < this.points.length; i++) {
-      const w = useWeights ? Math.abs(this.weights[i].getValue()) : 1;
+      const w = useWeights ? this.weights[i].getValue() : 1;
       if (!Number.isFinite(w)) { this.outputPoint.setUndefined(); return; }
       sx += this.points[i].getX() * w;
       sy += this.points[i].getY() * w;
@@ -403,6 +417,8 @@ export function triangleCenter(n: number, A: { x: number; y: number }, B: { x: n
       const s = (a + b + c) / 2;
       return barycentric(A, B, C, s - a, s - b, s - c);
     }
+    case 9: // X9 Mittenpunkt：a(a−b−c) : b(b−c−a) : c(c−a−b)（官方 AlgoKimberlingWeights:213）
+      return barycentric(A, B, C, a * (a - b - c), b * (b - c - a), c * (c - a - b));
     case 10: { // X10 Spieker：(b+c : c+a : a+b)
       return barycentric(A, B, C, b + c, c + a, a + b);
     }

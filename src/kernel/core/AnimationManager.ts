@@ -100,9 +100,9 @@ export class AnimationManager {
 
         let dt = now - this.lastTime;
         this.lastTime = now;
-        // 切后台回来 dt 巨大：钳到 100ms，否则单帧步长按 2fps 标定会跳过
-        // 差不多整个区间宽度的十分之一
-        dt = Math.min(dt, 100);
+        // 切后台回来 dt 巨大：钳到 2× 节流间隔（钳制上限必须 ≥ 最低帧率间隔，
+        // 否则自适应降档后每帧 dt 都被钳、步长按钳后值标定 → 动画恒定减速 ~40%）
+        dt = Math.min(dt, Math.max(100, (2000 / AnimationManager.MIN_ANIMATION_FRAME_RATE)));
 
         // 步长按真实间隔标定（60/120Hz 屏幕上不会成倍偏快）；
         // 频率下限只防 dt 异常时单帧跳变过大。

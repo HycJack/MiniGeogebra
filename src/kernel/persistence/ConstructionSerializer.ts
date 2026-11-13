@@ -403,7 +403,9 @@ export function collectAlgoExtras(algo: AlgoElement): Partial<SerializedAlgorith
         // 完整命令文本：加载/重定义经 parseAlgebraInput 重走命令分发（活依赖重建）
         extras.expressionText = algo.getExpressionText();
       } else if (algo instanceof AlgoListElement) {
-        extras.scalars = [algo.getIndex() instanceof GeoNumeric ? null : algo.getIndex() as number];
+        // -1 哨兵 = 单参 Last 模式（索引活取列表长度）
+        extras.scalars = [algo.getIndex() === 'last' ? -1
+          : algo.getIndex() instanceof GeoNumeric ? null : algo.getIndex() as number];
       } else if (algo instanceof AlgoListAggregate) {
         extras.scalars = [LIST_AGGREGATE_OPS.indexOf(algo.getOp())];
       } else if (algo instanceof AlgoListTransform) {
@@ -709,7 +711,8 @@ export function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], s
       const list = inputs[0] as GeoList;
       const index = inputs.find(i => i instanceof GeoNumeric) as GeoNumeric | undefined
         ?? scalars?.[0] ?? 1;
-      return new AlgoListElement(kernel, list, index);
+      // -1 哨兵还原单参 Last 模式
+      return new AlgoListElement(kernel, list, index === -1 ? 'last' : index);
     }
     case 'AlgoListAggregate': {
       const op = LIST_AGGREGATE_OPS[scalars?.[0] ?? 0] ?? 'sum';
@@ -823,7 +826,11 @@ export function createAlgo(kernel: Kernel, type: string, inputs: GeoElement[], s
     case 'AlgoIntersectLinePlane3D': return new AlgoIntersectLinePlane3D(kernel, inputs[0] as GeoLine3D, inputs[1] as GeoPlane3D);
     case 'AlgoDistancePointPlane3D': return new AlgoDistancePointPlane3D(kernel, inputs[0] as GeoPoint3D, inputs[1] as GeoPlane3D);
     // ---- 阶段5：曲面/多面体/测量 ----
-    case 'AlgoSphere3D':             return new AlgoSphere3D(kernel, inputs[0] as GeoPoint3D, scalars?.[0] ?? 1);
+    case 'AlgoSphere3D':
+      // Sphere(A, B) 点半径形式：inputs[1] 活引用恢复（此前只存快照距离，B 移动不再联动）
+      return inputs.length >= 2 && inputs[1] instanceof GeoPoint3D
+        ? new AlgoSphere3D(kernel, inputs[0] as GeoPoint3D, inputs[1] as GeoPoint3D)
+        : new AlgoSphere3D(kernel, inputs[0] as GeoPoint3D, scalars?.[0] ?? 1);
     case 'AlgoCylinder3D': {
       // 有限高：活滑块走 inputs[1]，冻结值走 scalars[1]；缺省无限
       const h = inputs[1] instanceof GeoNumeric ? inputs[1] : (scalars?.[1] ?? null);
@@ -943,6 +950,9 @@ export function serialize(
           childIndices: el.getChildren().map(c => (c.constIndex >= 0 ? c.constIndex : -1)),
           childScalars: el.getChildren().map(c =>
             c.constIndex < 0 && c instanceof GeoNumeric ? c.getValue() : null),
+          // 自有**点**子元素按位落盘（此前 null → 重载被 filter 掉，字面量点列表变空）
+          childPoints: el.getChildren().map(c =>
+            c.constIndex < 0 && c instanceof GeoPoint ? [c.getX(), c.getY()] : null),
           style: styleOf(el),
         };
       }
@@ -1205,7 +1215,7 @@ export function deserialize(kernel: Kernel, json: string): {
   // 多边形：顶点通常已是独立点（步骤 1 已入 index）；顶点若为算法输出则留到
   // 算法链之后再补。先解析“顶点已就绪”的多边形，AlgoPolygonBoolean 等
   // 以多边形为输入的算法才能在下方重建时拿到输入。
-  const listStubs: { el: SerializedElement & { childIndices?: number[]; childScalars?: (number | null)[] }; instance: GeoList }[] = [];
+  const listStubs: { el: SerializedElement & { childIndices?: number[]; childScalars?: (number | null)[]; childPoints?: ([number, number] | null)[] }; instance: GeoList }[] = [];
   const polygonStubs: SerializedElement[] = [];
 
   const resolveReadyPolygons = (): SerializedElement[] => {
@@ -1245,7 +1255,11 @@ export function deserialize(kernel: Kernel, json: string): {
       instance = new GeoPoint(kernel, new GeoVec3D(c[0], c[1], c[2]));
     } else if (el.type === 'GeoList') {
       instance = new GeoList(kernel, []);
-      listStubs.push({ el: el as SerializedElement & { childIndices?: number[]; childScalars?: (number | null)[] }, instance: instance as GeoList });
+      // 标签在此赋值：stub 走 continue 跳过下方的公共 label 块（此前独立
+      // 列表 l1 = {1,2,3} 的标签重载后静默丢失）
+      instance.label = el.label;
+      if (instance.label) instance.labelWanted = false;
+      listStubs.push({ el: el as SerializedElement & { childIndices?: number[]; childScalars?: (number | null)[]; childPoints?: ([number, number] | null)[] }, instance: instance as GeoList });
       // 立即入 index；children 在算法链重建完之后回填
       construction.addElement(instance);
       index.set(el.constIndex, instance);
@@ -1304,6 +1318,7 @@ export function deserialize(kernel: Kernel, json: string): {
       continue;
     }
     instance.label = el.label;
+    if (instance.label) (instance as unknown as { labelWanted?: boolean }).labelWanted = false;
     restoreStyle(instance, el.style);
     construction.addElement(instance);
     index.set(el.constIndex, instance);
@@ -1330,11 +1345,16 @@ export function deserialize(kernel: Kernel, json: string): {
   for (const stub of listStubs) {
     const children = (stub.el.childIndices ?? []).map((ci, i) => {
       if (ci >= 0) return index.get(ci);
-      // 自有子元素位：childScalars 有值则重建数值（字面量列表 roundtrip）
+      // 自有子元素位：childScalars/childPoints 有值则重建（字面量列表 roundtrip）
       const scalar = stub.el.childScalars?.[i];
-      return scalar !== null && scalar !== undefined && Number.isFinite(scalar)
-        ? new GeoNumeric(kernel, scalar)
-        : undefined;
+      if (scalar !== null && scalar !== undefined && Number.isFinite(scalar)) {
+        return new GeoNumeric(kernel, scalar);
+      }
+      const pt = stub.el.childPoints?.[i];
+      if (pt) {
+        return new GeoPoint(kernel, new GeoVec3D(pt[0], pt[1], 1));
+      }
+      return undefined;
     }).filter((c): c is GeoElement => c !== undefined);
     stub.instance.setChildren(children);
   }
@@ -1422,7 +1442,11 @@ export function deserialize(kernel: Kernel, json: string): {
   let coord: CoordinateSystem | undefined;
   if (data.view) {
     const v = data.view;
-    coord = new CoordinateSystem(v.width, v.height, v.xZero, v.yZero, v.xScale, v.yScale);
+    // 仅旗标块（无 coord 导出）的兜底 view 带零尺度——直接还原会让 2D 视图
+    // 塌缩成一点且 zoom 对 scale<=0 拒绝恢复；跳过坐标还原只保留旗标
+    if (v.xScale > 0 && v.yScale > 0 && v.width > 0 && v.height > 0) {
+      coord = new CoordinateSystem(v.width, v.height, v.xZero, v.yZero, v.xScale, v.yScale);
+    }
   }
 
   const flags = (data as ConstructionJSON).view;

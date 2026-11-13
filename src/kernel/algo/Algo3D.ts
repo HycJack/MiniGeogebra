@@ -11,6 +11,7 @@ import { GeoElement } from '../geo/GeoElement';
 import { GeoPoint3D } from '../geo/GeoPoint3D';
 import { GeoLine3D } from '../geo/GeoLine3D';
 import { GeoPlane3D } from '../geo/GeoPlane3D';
+import { GeoCircle3D } from '../geo/GeoCircle3D';
 import { GeoNumeric } from '../geo/GeoNumeric';
 import { Coords4 } from '../core/Coords4';
 
@@ -193,7 +194,7 @@ export class AlgoIntersectPlanes3D extends AlgoElement {
     const t1 = n2.cross(dir);
     const t2 = dir.cross(n1);
     const point = t1.scale(d1).add(t2.scale(d2)).scale(1 / dir.normSquared());
-    this.outputLine.setGeometry(point.toPoint(), dir.asDirection());
+    this.outputLine.setGeometry(point.toPoint(), dir.asDirection()); // toPoint 归一 w=1（origin 不变量）
     this.outputLine.setDefined();
   }
 }
@@ -234,6 +235,186 @@ export class AlgoIntersectLines3D extends AlgoElement {
     // 异面（两最近点距离超出相对容差）→ undefined
     if (p1.sub(p2).norm() > 1e-7 * Math.max(1, w.norm())) return;
     this.outputPoint.setCoords(p1.x, p1.y, p1.z);
+    this.outputPoint.setDefined();
+  }
+}
+
+/** 两 3D 点距离（官方 CmdDistance3D 的 point×point 回落分支）。 */
+export class AlgoDistanceTwoPoints3D extends AlgoElement {
+  private outputNumeric: GeoNumeric;
+
+  constructor(kernel: IKernel, private a: GeoPoint3D, private b: GeoPoint3D) {
+    super(kernel);
+    this.outputNumeric = new GeoNumeric(kernel, 0);
+    this.setInputOutput();
+  }
+
+  setInputOutput(): void {
+    this.input = [this.a, this.b];
+    this.setOutput([this.outputNumeric]);
+  }
+
+  getOutput(): GeoNumeric { return this.outputNumeric; }
+
+  compute(): void {
+    if (!this.a.isDefined() || !this.b.isDefined()) { this.outputNumeric.setUndefined(); return; }
+    const d = this.a.getCoords3().distanceTo(this.b.getCoords3());
+    if (!Number.isFinite(d)) { this.outputNumeric.setUndefined(); return; }
+    this.outputNumeric.setValue(d);
+    this.outputNumeric.setDefined();
+  }
+}
+
+/** 定长线段（官方 CmdSegment3D 继承 CmdSegment 的 (point, number) 形式）：
+ *  从 A 出发沿 xOy 平面朝向 x 轴正向的长 len 线段（官方 Segment3D(A, r) 同语义）。 */
+export class AlgoSegmentLength3D extends AlgoElement {
+  private outputLine: GeoLine3D;
+
+  constructor(kernel: IKernel, private a: GeoPoint3D, private len: GeoNumeric | number) {
+    super(kernel);
+    this.outputLine = new GeoLine3D(kernel);
+    this.setInputOutput();
+  }
+
+  setInputOutput(): void {
+    this.input = [this.a, ...(this.len instanceof GeoNumeric ? [this.len] : [])];
+    this.setOutput([this.outputLine]);
+  }
+
+  getOutput(): GeoLine3D { return this.outputLine; }
+
+  compute(): void {
+    this.outputLine.setUndefined();
+    if (!this.a.isDefined()) return;
+    const len = typeof this.len === 'number' ? this.len : this.len.getValue();
+    if (!Number.isFinite(len) || len <= 0) return;
+    this.outputLine.setGeometry(
+      this.a.getCoords3(),
+      Coords4.fromDirection(1, 0, 0),
+      { tMin: 0, tMax: len },
+    );
+    this.outputLine.setDefined();
+  }
+}
+
+/** 圆心+半径圆（xOy 平面取向，官方 CmdCircle3D 的 circle(label, a, r) 形）。 */
+export class AlgoCircleCenterRadius3D extends AlgoElement {
+  private outputCircle: GeoCircle3D;
+
+  constructor(kernel: IKernel, private center: GeoPoint3D, private radius: GeoNumeric | number) {
+    super(kernel);
+    this.outputCircle = new GeoCircle3D(kernel);
+    this.setInputOutput();
+  }
+
+  setInputOutput(): void {
+    this.input = [this.center, ...(this.radius instanceof GeoNumeric ? [this.radius] : [])];
+    this.setOutput([this.outputCircle]);
+  }
+
+  getOutput(): GeoCircle3D { return this.outputCircle; }
+
+  compute(): void {
+    this.outputCircle.setUndefined();
+    if (!this.center.isDefined()) return;
+    const r = typeof this.radius === 'number' ? this.radius : this.radius.getValue();
+    if (!Number.isFinite(r) || r <= 0) return;
+    this.outputCircle.setCircle(this.center.getCoords3(), Coords4.fromDirection(0, 0, 1), r);
+    this.outputCircle.setDefined();
+  }
+}
+
+/** 圆心+圆上点圆（官方 CmdCircle3D 的 circle(label, a, b) 形：圆心 A、过 B，
+ *  取向按 A→B 与 z 轴的外积法向）。 */
+export class AlgoCircleCenterPoint3D extends AlgoElement {
+  private outputCircle: GeoCircle3D;
+
+  constructor(kernel: IKernel, private center: GeoPoint3D, private pointOn: GeoPoint3D) {
+    super(kernel);
+    this.outputCircle = new GeoCircle3D(kernel);
+    this.setInputOutput();
+  }
+
+  setInputOutput(): void {
+    this.input = [this.center, this.pointOn];
+    this.setOutput([this.outputCircle]);
+  }
+
+  getOutput(): GeoCircle3D { return this.outputCircle; }
+
+  compute(): void {
+    this.outputCircle.setUndefined();
+    if (!this.center.isDefined() || !this.pointOn.isDefined()) return;
+    const c = this.center.getCoords3();
+    const p = this.pointOn.getCoords3();
+    const radius = c.distanceTo(p);
+    if (!Number.isFinite(radius) || radius <= 1e-12) return;
+    // 法向：径向 CP 与 z 轴的外积（平行时回退 z 轴，官方同语义）
+    const radial = p.sub(c).asDirection();
+    let normal = radial.cross(Coords4.fromDirection(0, 0, 1));
+    if (normal.norm() < 1e-12) normal = Coords4.fromDirection(0, 0, 1);
+    this.outputCircle.setCircle(c, normal, radius);
+    this.outputCircle.setDefined();
+  }
+}
+
+/** 3D 三点角（官方 CmdAngle3D 继承 CmdAngle 的三点形式，输出 [0,π] 投影角）。 */
+export class AlgoAnglePoints3D extends AlgoElement {
+  private outputNumeric: GeoNumeric;
+
+  constructor(kernel: IKernel, private a: GeoPoint3D, private b: GeoPoint3D, private c: GeoPoint3D) {
+    super(kernel);
+    this.outputNumeric = new GeoNumeric(kernel, 0);
+    this.outputNumeric.isAngle = true;
+    this.setInputOutput();
+  }
+
+  setInputOutput(): void {
+    this.input = [this.a, this.b, this.c];
+    this.setOutput([this.outputNumeric]);
+  }
+
+  getOutput(): GeoNumeric { return this.outputNumeric; }
+
+  compute(): void {
+    if (!this.a.isDefined() || !this.b.isDefined() || !this.c.isDefined()) {
+      this.outputNumeric.setUndefined();
+      return;
+    }
+    const v1 = this.a.getCoords3().sub(this.b.getCoords3()).asDirection();
+    const v2 = this.c.getCoords3().sub(this.b.getCoords3()).asDirection();
+    const denom = v1.norm() * v2.norm();
+    if (denom < 1e-12) { this.outputNumeric.setUndefined(); return; }
+    const cos = Math.max(-1, Math.min(1, v1.dot(v2) / denom));
+    this.outputNumeric.setValue(Math.acos(cos));
+    this.outputNumeric.setDefined();
+  }
+}
+
+/** 3D 线段中点（官方 CmdMidpoint3D 的 segment(label, segment) 单参形式）。 */
+export class AlgoMidpointSegment3D extends AlgoElement {
+  private outputPoint: GeoPoint3D;
+
+  constructor(kernel: IKernel, private seg: GeoLine3D) {
+    super(kernel);
+    this.outputPoint = new GeoPoint3D(kernel);
+    this.setInputOutput();
+  }
+
+  setInputOutput(): void {
+    this.input = [this.seg];
+    this.setOutput([this.outputPoint]);
+  }
+
+  getOutput(): GeoPoint3D { return this.outputPoint; }
+
+  compute(): void {
+    this.outputPoint.setUndefined();
+    if (!this.seg.isDefined()) return;
+    const limits = this.seg.getLimits();
+    if (!limits) return; // 非线段（无界直线）不适用
+    const mid = this.seg.pointAt((limits.tMin + limits.tMax) / 2);
+    this.outputPoint.setCoords(mid.getX(), mid.getY(), mid.getZ());
     this.outputPoint.setDefined();
   }
 }

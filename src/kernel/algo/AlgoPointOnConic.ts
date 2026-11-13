@@ -90,10 +90,14 @@ export class AlgoPointOnConic extends AlgoElement {
     }
     const table = this.getArcTable();
     if (!table) return this.param.doAnimationStep(frameRate);
-    if (Number.isNaN(this.param.getValue()) === false && this.lastValidT !== null
-        && Math.abs(((this.param.getValue() - this.lastValidT) % (2 * Math.PI))) > 1e-9) {
-      // 外部改值（拖拽/输入栏）：弧长游标同步到新参数
-      this.arcPos = table.tAtArcLength(this.lastValidT) ?? this.arcPos;
+    // 外部改值（拖拽/输入栏）：比较 normalize 后的最小角差（裸 % 在负值区
+    // 会落在 ±2π 附近造成假阳性同步），命中则把弧长游标正查回新参数
+    if (this.lastValidT !== null && Number.isFinite(this.param.getValue())) {
+      const diff = Math.abs(normalizeAngle(this.param.getValue()) - this.lastValidT);
+      const angularGap = Math.min(diff, 2 * Math.PI - diff);
+      if (angularGap > 1e-9) {
+        this.arcPos = table.arcLengthAt(this.lastValidT) ?? this.arcPos;
+      }
     }
     const speed = Math.abs(this.param.animationSpeed) || 1;
     const ds = (table.total * speed) / (AnimationManager.STANDARD_ANIMATION_TIME * frameRate) * this.animDir;
@@ -120,9 +124,9 @@ export class AlgoPointOnConic extends AlgoElement {
     // 空扇区守卫：落点无效则反弹回最后有效参数（双曲线两支不跨支）
     if (!this.conic.pointAtAngle(newT)) {
       this.animDir = this.animDir === 1 ? -1 : 1;
-      if (this.lastValidT !== null) {
+      if (this.lastValidT !== null && this.conic.pointAtAngle(this.lastValidT)) {
         this.param.setValue(this.lastValidT);
-        this.arcPos = table.tAtArcLength(this.lastValidT) ?? this.arcPos;
+        this.arcPos = table.arcLengthAt(this.lastValidT) ?? this.arcPos;
       }
       this.outputPoint.setUndefined();
       return true;

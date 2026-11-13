@@ -32,8 +32,9 @@ describe('L4-A6 几何度量杂项（官方 AlgoAffineRatio / AlgoCrossRatio / .
     const k = makeKernel();
     addInput(k, 'A = (0, 0)');
     addInput(k, 'B = (4, 0)');
-    addInput(k, 'P = (1, 2)');   // λ = 0.25
-    addInput(k, 'ar = AffineRatio(P, A, B)');
+    addInput(k, 'P = (1, 0)');   // 共线：λ = (1−0)/(4−0) = 0.25
+    addInput(k, 'ar = AffineRatio(A, B, P)');
+    // 官方参数序 AffineRatio(A, B, C) = (C−A)/(B−A)（此前与官方相反）
     expect(findEl(k, GeoNumeric, 'ar').getValue()).toBeCloseTo(0.25, 9);
   });
 
@@ -157,6 +158,9 @@ describe('TriangleCenter：Kimberling X(1)–X(10)', () => {
       expect(p.y).toBeGreaterThan(0);
       expect(p.x / 4 + p.y / 3).toBeLessThan(1);
     }
+  });
+  it('X9 Mittenpunkt 定义（官方 AlgoKimberlingWeights:213）', () => {
+    expect(triangleCenter(9, A, B, C)).not.toBeNull();
   });
   it('X11+ 返回 undefined', () => {
     expect(triangleCenter(11, A, B, C)).toBeNull();

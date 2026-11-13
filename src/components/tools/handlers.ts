@@ -624,6 +624,12 @@ export const handlePointerDown = (
     case 'angle_bisector': {
       // 官方 :2682-2708：3 点或 2 线（输出两条互相垂直的平分线）
       const l1Hit = (() => { const el = hitObject(); return el instanceof GeoLine ? el : null; })();
+      // 首击直线进入选中集（此前直线从不入选，连续点两线永远无法触发两线平分）
+      if (l1Hit && !(selectedElements.length === 1 && selectedElements[0] instanceof GeoLine && selectedElements[0] !== l1Hit)) {
+        setSelectedElements([l1Hit]);
+        setRenderRev(r => r + 1);
+        break;
+      }
       if (l1Hit && selectedElements.length === 1 && selectedElements[0] instanceof GeoLine && selectedElements[0] !== l1Hit) {
         const bis = new AlgoAngleBisectorLines(kernel, selectedElements[0] as GeoLine, l1Hit);
         kernel.getConstruction().addElement(bis);
