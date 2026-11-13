@@ -9,8 +9,8 @@ export interface ArcLengthSampler {
   /** 参数域 [tMin, tMax]。 */
   tMin: number;
   tMax: number;
-  /** 参数 → 平面点；路径空洞（如双曲线空扇区）返回 null。 */
-  pointAt(t: number): { x: number; y: number } | null;
+  /** 参数 → 采样点（z 可缺省按 0）；路径空洞（如双曲线空扇区）返回 null。 */
+  pointAt(t: number): { x: number; y: number; z?: number } | null;
   /** 采样数（默认 360）。 */
   samples?: number;
 }
@@ -26,13 +26,13 @@ export class ArcLengthTable {
     const n = sampler.samples ?? 360;
     const width = sampler.tMax - sampler.tMin;
     let acc = 0;
-    let prev: { x: number; y: number } | null = null;
+    let prev: { x: number; y: number; z?: number } | null = null;
     let prevT = 0;
     for (let i = 0; i <= n; i++) {
       const t = sampler.tMin + (width * i) / n;
       const p = sampler.pointAt(t);
       if (p && prev) {
-        acc += Math.hypot(p.x - prev.x, p.y - prev.y);
+        acc += Math.hypot(p.x - prev.x, p.y - prev.y, (p.z ?? 0) - (prev.z ?? 0));
         this.ts.push(t);
         this.ss.push(acc);
       } else if (p && !prev) {

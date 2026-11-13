@@ -1566,7 +1566,13 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
     return () => window.removeEventListener('keydown', onKey);
   }, [tool3d, draw]);
 
+  // 多点触控守卫：第二根手指落下不得重置/重入拖拽状态（此前任一手指
+  // pointerdown 整体覆盖 dragRef、任一 pointerup 清空——双指行为未定义）
+  const activePointerIdRef = useRef<number | null>(null);
+
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (activePointerIdRef.current !== null && activePointerIdRef.current !== e.pointerId) return;
+    activePointerIdRef.current = e.pointerId;
     const canvas = e.currentTarget;
     canvas.style.cursor = 'grabbing';
     dragRef.current = { mode: 'none', lastX: e.clientX, lastY: e.clientY, moved: false, dragPoint: null, zPlane: 0, startState: null };
@@ -1639,6 +1645,8 @@ export const Geometry3DView: React.FC<Props> = ({ kernel, renderRev, selectedEle
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (activePointerIdRef.current !== null && activePointerIdRef.current !== e.pointerId) return;
+    activePointerIdRef.current = null;
     const drag = dragRef.current;
     const wasClick = !drag.moved && (drag.mode === 'orbit' || drag.mode === 'point3d');
     if (drag.mode === 'point3d' && drag.dragPoint) {

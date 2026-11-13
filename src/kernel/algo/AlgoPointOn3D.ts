@@ -19,10 +19,20 @@ import { GeoPolyline3D } from '../geo/GeoPolyline3D';
 import { GeoPlane3D } from '../geo/GeoPlane3D';
 import { GeoQuadric3D } from '../geo/GeoQuadric3D';
 import { GeoNumeric } from '../geo/GeoNumeric';
+import { PathAnimator } from '../core/PathAnimation';
 import { Coords4 } from '../core/Coords4';
 
 /** 直线/线段/射线上的参数点：param = 直线参数 t（有限限界夹回）。 */
 export class AlgoPointOnLine3D extends AlgoElement {
+  private pathAnimator = new PathAnimator(() => this.param, () => ({
+    tMin: this.line.getLimits()?.tMin ?? -50,
+    tMax: this.line.getLimits()?.tMax ?? 50,
+    pointAt: (t: number) => {
+      const p = this.line.pointAt(t);
+      return { x: p.getX(), y: p.getY(), z: p.getZ() };
+    },
+    key: () => `${this.line.getOrigin().x},${this.line.getOrigin().y},${this.line.getOrigin().z},${this.line.getDirection().x},${this.line.getDirection().y},${this.line.getDirection().z}`,
+  }));
   private outputPoint: GeoPoint3D;
 
   constructor(kernel: IKernel, private line: GeoLine3D, private param: GeoNumeric) {
@@ -35,6 +45,11 @@ export class AlgoPointOnLine3D extends AlgoElement {
   setInputOutput(): void {
     this.input = [this.line, this.param];
     this.setOutput([this.outputPoint]);
+  }
+
+  /** 匀速动画通道（L6-5）。 */
+  advancePathAnimation(frameRate: number): boolean {
+    return this.pathAnimator.advance(frameRate);
   }
 
   getOutput(): GeoPoint3D { return this.outputPoint; }
@@ -63,6 +78,15 @@ export class AlgoPointOnLine3D extends AlgoElement {
 
 /** 3D 圆上的参数点：param = 圆心角弧度（与 2D AlgoPointOnConic 一致）。 */
 export class AlgoPointOnCircle3D extends AlgoElement {
+  private pathAnimator = new PathAnimator(() => this.param, () => ({
+    tMin: 0,
+    tMax: 2 * Math.PI,
+    pointAt: (t: number) => {
+      const p = this.circle.pointAt(t);
+      return { x: p.getX(), y: p.getY(), z: p.getZ() };
+    },
+    key: () => `${this.circle.getCenter().x},${this.circle.getCenter().y},${this.circle.getCenter().z},${this.circle.getRadius()}`,
+  }));
   private outputPoint: GeoPoint3D;
 
   constructor(kernel: IKernel, private circle: GeoCircle3D, private param: GeoNumeric) {
@@ -75,6 +99,11 @@ export class AlgoPointOnCircle3D extends AlgoElement {
   setInputOutput(): void {
     this.input = [this.circle, this.param];
     this.setOutput([this.outputPoint]);
+  }
+
+  /** 匀速动画通道（L6-5）。 */
+  advancePathAnimation(frameRate: number): boolean {
+    return this.pathAnimator.advance(frameRate);
   }
 
   getOutput(): GeoPoint3D { return this.outputPoint; }

@@ -42,7 +42,7 @@ import { futureValue, presentValue, payment as financePayment, rate as financeRa
 import { AlgoFunctionRestricted } from '../algo/AlgoFunctionRestricted';
 import { AlgoAffineRatio, AlgoCrossRatio, AlgoBarycenter, AlgoAreConcurrent, AlgoInteriorAngles, AlgoDirection, AlgoDynamicCoordinates, AlgoPathParameter, AlgoTriangleCenterN } from '../algo/AlgoGeoMeasures';
 import { AlgoIteration, AlgoIterationList } from '../algo/AlgoIteration';
-import { AlgoFitGeneral, AlgoFitSin, AlgoFitLogistic } from '../algo/AlgoFitNonlinear';
+import { AlgoFitGeneral, AlgoFitSin, AlgoFitLogistic, AlgoFitImplicit } from '../algo/AlgoFitNonlinear';
 import { AlgoDependentSurface } from '../algo/AlgoDependentSurface';
 import { AlgoSurfaceOfRevolution } from '../algo/AlgoSurfaceOfRevolution';
 import { GeoCircle3D } from '../geo/GeoCircle3D';
@@ -301,8 +301,10 @@ const COMMAND_ARITY: Record<string, [number, number]> = {
   RemoveUndefined: [1, 1],
   Flatten: [1, 1],
   Join: [1, 16],
-  Sum: [1, 1],
-  Product: [1, 1],
+  Sum: [1, 2],
+  Product: [1, 2],
+  AxisStepX: [0, 0],
+  AxisStepY: [0, 0],
   IndexOf: [2, 2],
   // ---- 数论命令族（L4-A1）----
   GCD: [2, 2],
@@ -367,6 +369,7 @@ const COMMAND_ARITY: Record<string, [number, number]> = {
   IterationList: [3, 3],
   FitSin: [1, 1],
   FitLogistic: [1, 1],
+  FitImplicit: [2, 2],
   FitGeneral: [2, 2],   // 官方 Fit(list, f)——别名注册避免与 FitLine 冲突，分发时 Fit [2] 路由至此
 };
 
@@ -3763,11 +3766,21 @@ const dispatchCommand = (
       assignNextLabel(out, () => construction.getNextPointLabel(existingLabels));
       return [algo, out];
     }
+    // AxisStepX/Y：轴步长经 ViewOptions 由视图层回写（官方 view.getGridDistances）
+    case 'AxisStepX':
+    case 'AxisStepY': {
+      const step = name === 'AxisStepX' ? kernel.getOptions().axisStepX : kernel.getOptions().axisStepY;
+      return [ctx.createStaticNumeric(step)];
+    }
     case 'Sum':
     case 'Product': {
       const list = ctx.resolveList(args[0].trim());
       if (!list) throw new Error(`${name} expects a list`);
-      const algo = new AlgoListAggregate(kernel, name === 'Sum' ? 'sum' : 'product', list);
+      // Sum(list, n)/Product(list, n)：截断前 n 项（官方 AlgoStats1D Truncate）
+      const n = args.length === 2
+        ? (ctx.findNumeric(args[1].trim()) ?? ctx.evaluateNumber(args[1]))
+        : null;
+      const algo = new AlgoListAggregate(kernel, name === 'Sum' ? 'sum' : 'product', list, null, n);
       construction.addElement(algo);
       algo.update(); // 先算：点列表求和在 compute 内惰性切换点输出
       const out = algo.getPrimaryOutput();
@@ -4189,6 +4202,30 @@ const dispatchCommand = (
       return [algo, out];
     }
     // ---- 非线性拟合（官方 AlgoFit / AlgoFitSin / AlgoFitLogistic）----
+    case 'FitImplicit': {
+      const points: GeoPoint[] = [];
+      const firstArg = args[0].trim();
+      const srcList = ctx.resolveList(firstArg);
+      if (srcList) {
+        points.push(...srcList.getChildren().filter((c): c is GeoPoint => c instanceof GeoPoint));
+      } else if (firstArg.startsWith('{') && firstArg.endsWith('}')) {
+        for (const label of firstArg.slice(1, -1).split(',')) {
+          const p = ctx.findPoint(label.trim());
+          if (p) points.push(p);
+        }
+      }
+      const order = Math.round(ctx.resolveNumber(args[1]));
+      if (points.length < 3) throw new Error(`FitImplicit expects at least three points`);
+      const algo = new AlgoFitImplicit(kernel, points, order);
+      const out = algo.getOutput() as unknown as { label?: string } | null;
+      if (!out) throw new Error(`FitImplicit expects order 1 or 2`);
+      assignNextLabel(out as never, () => order === 1
+        ? construction.getNextLineLabel(existingLabels)
+        : construction.getNextCircleLabel(existingLabels));
+      existingLabels.add(out.label ?? '');
+      construction.addElement(out as unknown as GeoElement);
+      return [algo, out as unknown as GeoElement];
+    }
     case 'FitSin':
     case 'FitLogistic': {
       const points: GeoPoint[] = [];

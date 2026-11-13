@@ -4,18 +4,14 @@ import { GeoPoint } from '../geo/GeoPoint';
 import { GeoConic } from '../geo/GeoConic';
 import { GeoNumeric, AnimationType } from '../geo/GeoNumeric';
 import { GeoVec3D } from '../core/GeoVec3D';
-import { ArcLengthTable } from '../core/ArcLength';
-import { AnimationManager } from '../core/AnimationManager';
+import { PathAnimator } from '../core/PathAnimation';
 
 export class AlgoPointOnConic extends AlgoElement {
   private outputPoint: GeoPoint;
   /** 最近一次落在曲线上的参数（动画反弹回退点）。 */
   private lastValidT: number | null = null;
-  // ---- 弧长匀速动画（官方 PathNormalizer 语义，L6-5）----
-  private arcTable: ArcLengthTable | null = null;
-  private arcTableKey = '';
-  private arcPos = 0;
-  private animDir: 1 | -1 = 1;
+  /** 弧长匀速动画器（官方 PathNormalizer 语义，L6-5，状态机共享于 PathAnimator）。 */
+  private pathAnimator = new PathAnimator(() => this.param, () => this.conicSampler());
 
   constructor(
     kernel: IKernel,
@@ -53,88 +49,25 @@ export class AlgoPointOnConic extends AlgoElement {
     this.outputPoint.setDefined();
   }
 
+  /** 匀速动画通道（GeoPoint.doAnimationStep 优先调用；测试直驱入口）。 */
+  advancePathAnimation(frameRate: number): boolean {
+    return this.pathAnimator.advance(frameRate);
+  }
+
+  /** 圆锥曲线采样器（弧长表输入；系数签名失效重建）。 */
+  private conicSampler() {
+    return {
+      tMin: 0,
+      tMax: 2 * Math.PI,
+      pointAt: (t: number) => this.conic.pointAtAngle(t),
+      key: () => this.conic.coeffs.join(','),
+    };
+  }
+
   getOutput(): GeoPoint {
     return this.outputPoint;
   }
 
-  /** 曲线系数签名：曲线移动（依赖点拖拽/动画驱动）时弧长表失效重建。 */
-  private coeffsKey(): string {
-    return this.conic.coeffs.join(',');
-  }
-
-  private getArcTable(): ArcLengthTable | null {
-    const key = this.coeffsKey();
-    if (this.arcTable && key === this.arcTableKey) return this.arcTable;
-    const table = new ArcLengthTable({
-      tMin: 0,
-      tMax: 2 * Math.PI,
-      pointAt: t => this.conic.pointAtAngle(t),
-    });
-    if (table.total <= 1e-9) return null;
-    this.arcTable = table;
-    this.arcTableKey = key;
-    this.arcPos = this.param.getValue() >= 0 ? table.tAtArcLength(this.param.getValue()) ?? 0 : 0;
-    return table;
-  }
-
-  /**
-   * 路径点动画的匀速通道（GeoPoint.doAnimationStep 优先调用）：
-   * 按弧长推进 arcPos，经反查表落到参数 t——曲率大处不再视觉加速。
-   * 状态机对齐 GeoNumeric：OSCILLATING 两端反弹、INCREASING/DECREASING 环绕、
-   * INCREASING_ONCE 到终点停、RANDOM 走参数滑块原通道（随机跳值无需匀速）。
-   */
-  advancePathAnimation(frameRate: number): boolean {
-    const type = this.param.animationType;
-    if (type === AnimationType.RANDOM || !this.param.isAnimating()) {
-      return this.param.doAnimationStep(frameRate);
-    }
-    const table = this.getArcTable();
-    if (!table) return this.param.doAnimationStep(frameRate);
-    // 外部改值（拖拽/输入栏）：比较 normalize 后的最小角差（裸 % 在负值区
-    // 会落在 ±2π 附近造成假阳性同步），命中则把弧长游标正查回新参数
-    if (this.lastValidT !== null && Number.isFinite(this.param.getValue())) {
-      const diff = Math.abs(normalizeAngle(this.param.getValue()) - this.lastValidT);
-      const angularGap = Math.min(diff, 2 * Math.PI - diff);
-      if (angularGap > 1e-9) {
-        this.arcPos = table.arcLengthAt(this.lastValidT) ?? this.arcPos;
-      }
-    }
-    const speed = Math.abs(this.param.animationSpeed) || 1;
-    const ds = (table.total * speed) / (AnimationManager.STANDARD_ANIMATION_TIME * frameRate) * this.animDir;
-    this.arcPos += ds;
-    const width = 2 * Math.PI;
-    switch (type) {
-      case AnimationType.OSCILLATING: {
-        if (this.arcPos >= table.total) { this.arcPos = table.total; this.animDir = -1; }
-        else if (this.arcPos <= 0) { this.arcPos = 0; this.animDir = 1; }
-        break;
-      }
-      case AnimationType.INCREASING_ONCE: {
-        if (this.arcPos >= table.total) {
-          this.arcPos = table.total;
-          this.param.setAnimating(false);
-        }
-        break;
-      }
-      default:
-        break; // INCREASING/DECREASING：tAtArcLength 内部环绕
-    }
-    const newT = table.tAtArcLength(this.arcPos);
-    if (newT === null) return false;
-    // 空扇区守卫：落点无效则反弹回最后有效参数（双曲线两支不跨支）
-    if (!this.conic.pointAtAngle(newT)) {
-      this.animDir = this.animDir === 1 ? -1 : 1;
-      if (this.lastValidT !== null && this.conic.pointAtAngle(this.lastValidT)) {
-        this.param.setValue(this.lastValidT);
-        this.arcPos = table.arcLengthAt(this.lastValidT) ?? this.arcPos;
-      }
-      this.outputPoint.setUndefined();
-      return true;
-    }
-    this.lastValidT = newT;
-    this.param.setValue(newT);
-    return true;
-  }
 
   /**
    * 把鼠标位置投影到圆锥曲线上：取“锚点 → 鼠标”方向的极角作为参数。

@@ -3,6 +3,7 @@ import { AlgoElement } from './AlgoElement';
 import { GeoPoint } from '../geo/GeoPoint';
 import { GeoSegment } from '../geo/GeoSegment';
 import { GeoNumeric } from '../geo/GeoNumeric';
+import { PathAnimator } from '../core/PathAnimation';
 import { GeoVec3D } from '../core/GeoVec3D';
 
 export class AlgoPointOnSegment extends AlgoElement {
@@ -24,6 +25,16 @@ export class AlgoPointOnSegment extends AlgoElement {
     this.setOutput([this.outputPoint]);
   }
 
+  private pathAnimator = new PathAnimator(() => this.param, () => (() => ({
+      tMin: 0,
+      tMax: 1,
+      pointAt: (t: number) => ({
+        x: this.segment.startPoint.getX() + t * (this.segment.endPoint.getX() - this.segment.startPoint.getX()),
+        y: this.segment.startPoint.getY() + t * (this.segment.endPoint.getY() - this.segment.startPoint.getY()),
+      }),
+      key: () => `${this.segment.startPoint.getX()},${this.segment.startPoint.getY()},${this.segment.endPoint.getX()},${this.segment.endPoint.getY()}`,
+    }))());
+
   compute(): void {
     const t = this.param.getValue();
     
@@ -38,6 +49,11 @@ export class AlgoPointOnSegment extends AlgoElement {
     
     this.outputPoint.setCoords(x, y, 1);
     this.outputPoint.setDefined();
+  }
+
+  /** 匀速动画通道（L6-5：弧长归一，官方 PathNormalizer 语义）。 */
+  advancePathAnimation(frameRate: number): boolean {
+    return this.pathAnimator.advance(frameRate);
   }
 
   getOutput(): GeoPoint {

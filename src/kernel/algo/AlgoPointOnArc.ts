@@ -6,6 +6,7 @@ import { IKernel } from '../core/Interfaces';
 import { AlgoElement } from './AlgoElement';
 import { GeoElement } from '../geo/GeoElement';
 import { GeoNumeric } from '../geo/GeoNumeric';
+import { PathAnimator } from '../core/PathAnimation';
 import { GeoPoint } from '../geo/GeoPoint';
 import { GeoArc } from '../geo/GeoArc';
 import { GeoConicPart } from '../geo/GeoConicPart';
@@ -29,7 +30,34 @@ export class AlgoPointOnArc extends AlgoElement {
     this.setOutput([this.outputPoint]);
   }
 
+  /** 匀速动画通道（L6-5：弧长归一，官方 PathNormalizer 语义）。 */
+  advancePathAnimation(frameRate: number): boolean {
+    return this.pathAnimator.advance(frameRate);
+  }
+
   getOutput(): GeoPoint { return this.outputPoint; }
+
+  private pathAnimator = new PathAnimator(() => this.param, () => (() => {
+      const c = this.arc.getCenter();
+      const r = this.arc.getRadius();
+      const start = this.arc.getStartAngle();
+      const ccw = this.arc.isCounterClockwise();
+      const TWO_PI = 2 * Math.PI;
+      const sweep = ccw
+        ? ((start - this.arc.getEndAngle()) % TWO_PI + TWO_PI) % TWO_PI
+        : ((this.arc.getEndAngle() - start) % TWO_PI + TWO_PI) % TWO_PI;
+      const dirSign = ccw ? -1 : 1;
+      return {
+        tMin: 0,
+        tMax: sweep,
+        pointAt: (t: number) => {
+          const theta = start + dirSign * t;
+          const p = this.arc.pointAtAngle(theta);
+          return p ?? null;
+        },
+        key: () => `${c.x},${c.y},${r},${start},${this.arc.getEndAngle()},${ccw}`,
+      };
+    })());
 
   compute(): void {
     if (!this.arc.isDefined()) {

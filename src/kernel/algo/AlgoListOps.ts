@@ -258,6 +258,7 @@ export class AlgoListAggregate extends AlgoElement {
     private op: ListAggregateOp,
     private list: GeoList,
     private arg: GeoElement | null = null, // indexOf 的目标项
+    private truncate: GeoNumeric | number | null = null, // 官方 Sum(list, n)：前 n 项
   ) {
     super(kernel);
     this.outputValue = new GeoNumeric(kernel, NaN);
@@ -266,11 +267,20 @@ export class AlgoListAggregate extends AlgoElement {
   }
 
   setInputOutput(): void {
-    this.input = [this.list, ...(this.arg ? [this.arg] : [])];
+    this.input = [this.list, ...(this.arg ? [this.arg] : []), ...liveNumerics(this.truncate)];
   }
 
   compute(): void {
-    const children = this.list.getChildren();
+    // 官方 AlgoStats1D Truncate 语义：n<1 或 n>size → undefined、n=0 → 0、
+    // 否则只聚合前 n 项
+    let children = this.list.getChildren();
+    if (this.truncate !== null) {
+      const n = Math.round(valueOf(this.truncate));
+      if (!Number.isFinite(n)) { this.outputValue.setUndefined(); return; }
+      if (n === 0) { this.outputValue.setValue(this.op === 'product' ? 1 : 0); this.outputValue.setDefined(); return; }
+      if (n < 1 || n > children.length) { this.outputValue.setUndefined(); return; }
+      children = children.slice(0, n);
+    }
     switch (this.op) {
       case 'sum': {
         // 官方 CmdSum：点/向量列表求和返回点（FoldComputer 语义，此前点被无声跳过）

@@ -17,6 +17,9 @@ export class ViewOptions {
   rounding = 2;
   angleUnit: AngleUnit = 'degree';
   pointCapturing: PointCapturingMode = 'automatic';
+  /** 轴步长（AxisStepX/Y 命令读）：视图层缩放时回写，默认 1。 */
+  axisStepX = 1;
+  axisStepY = 1;
 
   /** UI 修改选项后调用；刷新由调用方负责（如 GeometryCanvas 的 setRenderRev）。 */
   set(patch: Partial<{ rounding: number; angleUnit: AngleUnit; pointCapturing: PointCapturingMode }>): void {

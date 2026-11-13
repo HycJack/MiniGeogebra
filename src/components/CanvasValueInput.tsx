@@ -79,7 +79,7 @@ const CanvasValueInput: React.FC<Props> = ({ request, onClose, ignorePointerDown
       ref={wrapperRef}
       className="fixed z-[1100] w-52 bg-white border border-gray-300 rounded-lg shadow-lg p-2"
       style={{ left, top }}
-      onMouseDown={e => e.stopPropagation()}
+      onPointerDown={e => e.stopPropagation()}
       onKeyDown={e => e.stopPropagation()}
     >
       <div className="text-xs text-gray-500 mb-1 truncate" title={request.title}>{request.title}</div>

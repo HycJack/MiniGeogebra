@@ -887,6 +887,11 @@ const handleExport = useCallback(() => {
     renderer.restore();
   }, [view, renderRev, selectedElements, mousePos, mode, polygonPoints, hoveredPoint, coord, showGrid, showAxes, renderer, functionHover, kernel, navStep, traceRecorder, redrawTrace]);
 
+  // 轴步长回写（官方 AxisStepX/Y 读 view.getGridDistances）：缩放/平移后同步
+  useEffect(() => {
+    kernel.getOptions().axisStepX = calculateGridStep(coord.xScale);
+    kernel.getOptions().axisStepY = calculateGridStep(coord.yScale);
+  }, [kernel, coord]);
   useEffect(() => { schedule(); }, [schedule]);
 
   // ─── 坐标 / 鼠标辅助 ─────────────────────────────────────────────
@@ -950,11 +955,32 @@ const handleExport = useCallback(() => {
   const rightDownPosRef = useRef<{ x: number; y: number } | null>(null);
   // ── 多选整体拖动（E1-3）+ Shift 轴向约束（E1-4）的拖拽起点快照 ──
   const multiDragRef = useRef<{ primary0: { x: number; y: number }; items: { el: GeoPoint; x0: number; y0: number }[] } | null>(null);
+  // ── 多点触控守卫 + 双指捏合（Pointer Events 迁移配套）──
+  // 只跟踪主指针：第二根手指落下不得重入工具逻辑（此前触屏拖点时第二指
+  // 按下即凭空再建一个点、或把拖拽打断成平移）
+  const activePointerRef = useRef<number | null>(null);
+  const pinchRef = useRef<{ dist0: number; mid0: { x: number; y: number }; scale0: number; zero0: { x: number; y: number } } | null>(null);
+  const activeTouchesRef = useRef<Map<number, { clientX: number; clientY: number }>>(new Map());
   // ── 画布滑条拖拽（官方 MoveMode.NUMERIC / MoveMode.SLIDER）──
   const sliderValueDragRef = useRef<{ num: GeoNumeric; oldValue: number } | null>(null);
   const sliderMoveRef = useRef<{ num: GeoNumeric; startX: number; startY: number; origX: number; origY: number; moved: boolean } | null>(null);
 
   const handleMouseDown = (e: React.PointerEvent) => {
+    // 多点触控守卫：已有活动指针时忽略第二根手指（触屏隐式捕获使两指事件
+    // 都投递到 canvas）；双指且第一指未在拖对象 → 进入捏合缩放
+    activeTouchesRef.current.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
+    if (activePointerRef.current !== null && activePointerRef.current !== e.pointerId) {
+      if (activeTouchesRef.current.size === 2 && !draggedElement && !isPanning) {
+        startPinch();
+      }
+      return;
+    }
+    activePointerRef.current = e.pointerId;
+    if (e.pointerType !== 'mouse') {
+      // 触屏：清除悬停态（指尖遮挡 tooltip 且抬指后无 mousemove 自愈）
+      setHoveredPoint(null);
+      setFunctionHover(null);
+    }
     const { screenX, screenY, x, y } = getMousePos(e, true);
     lastClientPosRef.current = { x: e.clientX, y: e.clientY };
     // 数值输入浮层打开时点击画布 = 取消输入并**消费本次点击**（评审 U4：
@@ -1041,7 +1067,53 @@ const handleExport = useCallback(() => {
     }
   };
 
+  /** 双指捏合缩放（触屏唯一缩放手段——touchAction:none 已禁浏览器原生捏合）。 */
+  const startPinch = () => {
+    const pts = [...activeTouchesRef.current.values()];
+    if (pts.length < 2) return;
+    const [p1, p2] = pts;
+    const dist0 = Math.hypot(p2.clientX - p1.clientX, p2.clientY - p1.clientY);
+    if (dist0 < 20) return;
+    const mid0 = { x: (p1.clientX + p2.clientX) / 2, y: (p1.clientY + p2.clientY) / 2 };
+    pinchRef.current = {
+      dist0,
+      mid0,
+      scale0: coord.xScale,
+      zero0: {
+        x: coord.xZero + mid0.x - coord.xZero, // 中点世界坐标锚定
+        y: coord.yZero - mid0.y,
+      },
+    };
+    // 记录中点对应的世界坐标（缩放绕该点）
+    const worldMid = coord.screenToWorld(mid0.x, mid0.y);
+    pinchRef.current.zero0 = { x: worldMid.x, y: worldMid.y };
+    // 中断进行中的平移
+    setIsPanning(false);
+  };
+
   const handleMouseMove = (e: React.PointerEvent) => {
+    // 触点跟踪（捏合用）：pointermove 无 button 语义，按 pointerId 记录
+    if (activeTouchesRef.current.has(e.pointerId)) {
+      activeTouchesRef.current.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
+    }
+    const isTouch = e.pointerType !== 'mouse';
+    // 捏合中：两指距离比例 → 绕中点缩放（跳过常规 hover/拖拽逻辑）
+    if (pinchRef.current && activeTouchesRef.current.size >= 2) {
+      const pts = [...activeTouchesRef.current.values()];
+      const [p1, p2] = pts;
+      const dist = Math.hypot(p2.clientX - p1.clientX, p2.clientY - p1.clientY);
+      const factor = dist / pinchRef.current.dist0;
+      setCoord(prev => {
+        // 缩放上限钳制：factor 超界时收敛到边界值（保持捏合中点不动，复用
+        // CoordinateSystem.zoom 的焦点数学）
+        const target = pinchRef.current!.scale0 * factor;
+        let clampedFactor = factor;
+        if (target > MAX_SCALE) clampedFactor = MAX_SCALE / prev.xScale;
+        else if (target < MIN_SCALE) clampedFactor = MIN_SCALE / prev.xScale;
+        return prev.zoom(clampedFactor, pinchRef.current!.mid0.x, pinchRef.current!.mid0.y);
+      });
+      return;
+    }
     const { screenX, screenY, x, y } = getMousePos(e, true, 'move'); setMousePos({ x, y });
     lastClientPosRef.current = { x: e.clientX, y: e.clientY };
     if (isPanning) { setCoord(prev => prev.panBy(screenX - lastPanPos.x, screenY - lastPanPos.y)); setLastPanPos({ x: screenX, y: screenY }); setRenderRev(r => r + 1); return; }
@@ -1070,6 +1142,12 @@ const handleExport = useCallback(() => {
       draggingLabel.labelOffsetX = labelDragStart.ox + (screenX - labelDragStart.sx);
       draggingLabel.labelOffsetY = labelDragStart.oy + (screenY - labelDragStart.sy);
       setRenderRev(r => r + 1);
+      return;
+    }
+    // 触屏：跳过 hover 态（指尖遮挡 tooltip 且抬指后无 mousemove 自愈，会永久滞留）
+    if (isTouch) {
+      if (hoveredPoint) setHoveredPoint(null);
+      if (functionHover) setFunctionHover(null);
       return;
     }
     const elements = kernel.getConstruction().getElements().filter((el): el is GeoElement => el instanceof GeoElement && el.isEffectivelyVisible() && (navStep === null || el.constIndex <= navStep));
@@ -1210,7 +1288,16 @@ const handleExport = useCallback(() => {
     }
   };
 
-  const handleMouseUp = () => {
+  const handleMouseUp = (e?: React.PointerEvent) => {
+    // 多点触控簿记：抬指移除触点、结束捏合；主指针抬起才清活动指针
+    if (e && e.pointerId !== undefined) activeTouchesRef.current.delete(e.pointerId);
+    if (activeTouchesRef.current.size < 2) pinchRef.current = null;
+    if (e && activePointerRef.current === e.pointerId) activePointerRef.current = null;
+    if (e && e.pointerType !== 'mouse') {
+      // 触屏抬指：hover 态无后续 mousemove 自愈，主动清除（此前永久滞留）
+      setHoveredPoint(null);
+      setFunctionHover(null);
+    }
     if (isPanning) {
       setIsPanning(false);
       // Move 工具空白"点击"（几乎无位移）= 清选区（GeoGebra 语义：拖拽平移、单击取消选择）

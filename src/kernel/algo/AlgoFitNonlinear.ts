@@ -11,7 +11,10 @@
 import { IKernel } from '../core/Interfaces';
 import { AlgoElement } from './AlgoElement';
 import { GeoPoint } from '../geo/GeoPoint';
+import { GeoElement } from '../geo/GeoElement';
 import { GeoFunction } from '../geo/GeoFunction';
+import { GeoConic } from '../geo/GeoConic';
+import { GeoLine } from '../geo/GeoLine';
 import { ExpressionNode } from '../algebra/ExpressionNode';
 import { evaluate } from '../algebra/ExpressionEvaluator';
 import { collectVariables } from '../algebra/ExpressionNode';
@@ -305,4 +308,125 @@ export class AlgoFitLogistic extends AlgoElement {
     this.outputFunction.setExpressionDef(ast, expressionToString(ast));
     this.outputFunction.setDefined();
   }
+}
+
+// ---------------------------------------------------------------------------
+// FitImplicit(list, order)：隐式多项式拟合（官方 AlgoFitImplicit.java）
+// 设计矩阵 M 的行 = 单项式 (x^p·y^q, p+q≤order)，取 MᵀM 的**最小特征向量**
+// 作为系数（SVD 零空间拟合：min ||Mv||² s.t. ||v||=1）。order 1 → 直线、
+// 2 → 圆锥曲线（GeoConic 六系数）。点数少于单项式数 → undefined。
+// ---------------------------------------------------------------------------
+
+/** n×n 实对称矩阵的 Jacobi 特征分解：返回 (特征值升序, 特征向量按列)。 */
+function jacobiEigen(sym: number[][]): { values: number[]; vectors: number[][] } {
+  const n = sym.length;
+  const a = sym.map(row => [...row]);
+  const v: number[][] = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => (i === j ? 1 : 0)));
+  for (let sweep = 0; sweep < 100; sweep++) {
+    let off = 0;
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) off += a[i][j] * a[i][j];
+    }
+    if (off < 1e-24) break;
+    for (let p = 0; p < n - 1; p++) {
+      for (let q = p + 1; q < n; q++) {
+        if (Math.abs(a[p][q]) < 1e-18) continue;
+        const theta = (a[q][q] - a[p][p]) / (2 * a[p][q]);
+        const t = Math.sign(theta || 1) / (Math.abs(theta) + Math.sqrt(theta * theta + 1));
+        const c = 1 / Math.sqrt(t * t + 1);
+        const s = t * c;
+        for (let i = 0; i < n; i++) {
+          const aip = a[i][p], aiq = a[i][q];
+          a[i][p] = c * aip - s * aiq;
+          a[i][q] = s * aip + c * aiq;
+        }
+        for (let i = 0; i < n; i++) {
+          const api = a[p][i], aqi = a[q][i];
+          a[p][i] = c * api - s * aqi;
+          a[q][i] = s * api + c * aqi;
+        }
+        for (let i = 0; i < n; i++) {
+          const vpi = v[i][p], vqi = v[i][q];
+          v[i][p] = c * vpi - s * vqi;
+          v[i][q] = s * vpi + c * vqi;
+        }
+      }
+    }
+  }
+  const values = a.map((row, i) => row[i]);
+  // 特征值升序排序（向量列同步）
+  const order = values.map((val, i) => [val, i] as [number, number]).sort((x, y) => x[0] - y[0]);
+  return {
+    values: order.map(o => o[0]),
+    vectors: order.map(o => v.map(row => row[o[1]])),
+  };
+}
+
+export class AlgoFitImplicit extends AlgoElement {
+  private outputConic: GeoConic | null = null;
+  private outputLine: GeoLine | null = null;
+  private points: GeoPoint[];
+  private order: number;
+
+  constructor(kernel: IKernel, points: GeoPoint[], order: number) {
+    super(kernel);
+    this.points = points;
+    this.order = Math.max(1, Math.min(2, Math.round(order))); // v1：order 1（直线）/ 2（圆锥）
+    if (this.order === 1) {
+      this.outputLine = new GeoLine(kernel, 0, 0, 0);
+      this.setInputOutput();
+    } else {
+      this.outputConic = new GeoConic(kernel, []);
+      this.setInputOutput();
+    }
+  }
+
+  setInputOutput(): void {
+    this.input = this.points;
+    this.setOutput([(this.outputConic ?? this.outputLine) as unknown as GeoElement]);
+  }
+
+  compute(): void {
+    const out = (this.outputConic ?? this.outputLine) as unknown as { setUndefined(): void };
+    out.setUndefined();
+    const samples = this.points
+      .filter(p => p.isDefined())
+      .map(p => ({ x: p.getX(), y: p.getY() }))
+      .filter(p => Number.isFinite(p.x) && Number.isFinite(p.y));
+    const nMono = ((this.order + 1) * (this.order + 2)) / 2;
+    if (samples.length < nMono) return;
+
+    // 设计矩阵 M（行 = 点，列 = 单项式，官方次序 i=0..order、p=0..i、q=i−p）
+    const monomials: [number, number][] = [];
+    for (let i = 0; i <= this.order; i++) {
+      for (let p = 0; p <= i; p++) monomials.push([p, i - p]);
+    }
+    // MᵀM（对称）
+    const mtm: number[][] = Array.from({ length: nMono }, () => new Array(nMono).fill(0));
+    for (const s of samples) {
+      const row = monomials.map(([px, py]) => Math.pow(s.x, px) * Math.pow(s.y, py));
+      for (let a = 0; a < nMono; a++) {
+        for (let b = 0; b < nMono; b++) mtm[a][b] += row[a] * row[b];
+      }
+    }
+    const { values, vectors } = jacobiEigen(mtm);
+    // 最小特征向量（零空间方向）；负号无关
+    const smallest = vectors[0].map(x => -x);
+
+    if (this.order === 1 && this.outputLine) {
+      // 单项式次序 [1, y, x]：v[0]=F、v[1]=E(y)、v[2]=D(x)
+      const [F, E, D] = smallest;
+      this.outputLine.a = D;
+      this.outputLine.b = E;
+      this.outputLine.c = F;
+      this.outputLine.setDefined();
+    } else if (this.order === 2 && this.outputConic) {
+      // 次序 [1, y, x, y², xy, x²] → v[5]=A(x²)、v[4]=B(xy)、v[3]=C(y²)、v[2]=D(x)、v[1]=E(y)、v[0]=F
+      const [F, E, D, C, B, A] = smallest;
+      this.outputConic.coeffs = [A, B, C, D, E, F];
+      this.outputConic.setDefined();
+    }
+  }
+
+  getOutput(): GeoElement | null { return this.outputConic ?? this.outputLine; }
 }

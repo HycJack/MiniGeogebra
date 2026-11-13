@@ -2,6 +2,7 @@ import { IKernel } from '../core/Interfaces';
 import { AlgoElement } from './AlgoElement';
 import { GeoFunction } from '../geo/GeoFunction';
 import { GeoNumeric } from '../geo/GeoNumeric';
+import { PathAnimator } from '../core/PathAnimation';
 import { GeoPoint } from '../geo/GeoPoint';
 import { GeoVec3D } from '../core/GeoVec3D';
 
@@ -24,6 +25,20 @@ export class AlgoPointOnFunction extends AlgoElement {
     this.setOutput([this.outputPoint]);
   }
 
+  private pathAnimator = new PathAnimator(() => this.param, () => (() => {
+      const lo = Number.isFinite(this.fn.getDomainMin()) ? this.fn.getDomainMin() : -20;
+      const hi = Number.isFinite(this.fn.getDomainMax()) ? this.fn.getDomainMax() : 20;
+      return {
+        tMin: lo,
+        tMax: hi,
+        pointAt: (t: number) => {
+          const y = this.fn.evaluateAt(t);
+          return Number.isFinite(y) ? { x: t, y } : null;
+        },
+        key: () => this.fn.expressionText,
+      };
+    })());
+
   compute(): void {
     const x = this.param.getValue();
     const y = this.fn.evaluateAt(x);
@@ -33,6 +48,11 @@ export class AlgoPointOnFunction extends AlgoElement {
     } else {
       this.outputPoint.setUndefined();
     }
+  }
+
+  /** 匀速动画通道（L6-5：弧长归一，官方 PathNormalizer 语义）。 */
+  advancePathAnimation(frameRate: number): boolean {
+    return this.pathAnimator.advance(frameRate);
   }
 
   getOutput(): GeoPoint {

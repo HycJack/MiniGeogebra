@@ -9,6 +9,7 @@ import { AlgoElement } from './AlgoElement';
 import { GeoPoint } from '../geo/GeoPoint';
 import { GeoRay } from '../geo/GeoRay';
 import { GeoNumeric } from '../geo/GeoNumeric';
+import { PathAnimator } from '../core/PathAnimation';
 import { GeoVec3D } from '../core/GeoVec3D';
 
 export class AlgoPointOnRay extends AlgoElement {
@@ -26,7 +27,24 @@ export class AlgoPointOnRay extends AlgoElement {
     this.setOutput([this.outputPoint]);
   }
 
+  /** 匀速动画通道（L6-5：弧长归一，官方 PathNormalizer 语义）。 */
+  advancePathAnimation(frameRate: number): boolean {
+    return this.pathAnimator.advance(frameRate);
+  }
+
   getOutput(): GeoPoint { return this.outputPoint; }
+
+  private pathAnimator = new PathAnimator(() => this.param, () => (() => {
+      const sx = this.ray.startPoint.getX(), sy = this.ray.startPoint.getY();
+      const dx = this.ray.secondPoint.getX() - sx, dy = this.ray.secondPoint.getY() - sy;
+      const len = Math.hypot(dx, dy) || 1;
+      return {
+        tMin: 0,
+        tMax: 50,
+        pointAt: (t: number) => ({ x: sx + (t * dx) / len, y: sy + (t * dy) / len }),
+        key: () => `${sx},${sy},${this.ray.secondPoint.getX()},${this.ray.secondPoint.getY()}`,
+      };
+    })());
 
   compute(): void {
     const t = Math.max(0, this.param.getValue());
